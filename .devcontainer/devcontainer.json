@@ -1,0 +1,22 @@
+{
+    "name": "Ilyes Dev Container",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "options": [
+            "--network=host"
+        ]
+    },
+    "runArgs": [
+        "--gpus=all",
+        "--network=host"
+    ],
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-toolsai.jupyter"
+            ]
+        }
+    },
+    "remoteUser": "vscode"
+}
