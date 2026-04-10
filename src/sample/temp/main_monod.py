@@ -1,6 +1,5 @@
 import os
 import sys
-import psutil
 from utils.plotting_utils import *
 import matplotlib.pyplot as plt
 plt.style.use('style.mplstyle')

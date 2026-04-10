@@ -7,7 +7,7 @@ import seaborn as sns
 # ADD PROJECT DIRECTORY TO SYSTEM PATH
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 
                     "D:/Stage_IAA_LRGP")))
-from src.config import *
+from src.sample.config import *
 #=== FUNCTION TO SAVE TRAINED MODEL ===#
 def save_model(model, dirname, filename):
     """

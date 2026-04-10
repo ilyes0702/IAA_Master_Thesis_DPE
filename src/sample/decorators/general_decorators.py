@@ -12,30 +12,11 @@ else:
     # fallback to current working directory
     base_dir = os.getcwd()
 
-sys.path.append(os.path.abspath(os.path.join(base_dir,
-                    "C:/Users/Stagiaire/Documents/Stage_Ilyes_Ait_Aissa/03_Code/Stage_Ilyes_Ait_Aissa_Repo")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from config import *
 import matplotlib.pyplot as plt
-from dictionaries.variable_names import axis_label_mapping
+#from dictionaries.variable_names import axis_label_mapping
 
-#=== DECORATOR TO APPLY AXIS LABELS FROM LABEL MAPPING ===#
-def apply_axis_labels(func):
-    def wrapper(*args, **kwargs):
-        # Call the original plotting function
-        result = func(*args, **kwargs)
-        # Force rendering of the plot
-        plt.gcf().canvas.draw()
-        # Get the current axes
-        ax = plt.gca()
-        
-        # Apply the axis label mapping
-        if ax.get_xlabel() in axis_label_mapping:
-            ax.set_xlabel(axis_label_mapping[ax.get_xlabel()])
-        if ax.get_ylabel() in axis_label_mapping:
-            ax.set_ylabel(axis_label_mapping[ax.get_ylabel()])
-
-        return result
-    return wrapper
 
 #=== DECORATOR TO SAVE IMAGE ===#
 def save_image_decorator(func):

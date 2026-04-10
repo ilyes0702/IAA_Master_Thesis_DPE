@@ -3,8 +3,7 @@ import sys
 import os
 import seaborn as sns
 # ADD PROJECT DIRECTORY TO SYSTEM PATH
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 
-                    "C:/Users/Stagiaire/Documents/Stage_Ilyes_Ait_Aissa/03_Code/Project_IAA")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # IMPORT DATA PROCESSING MODULES
 import numpy as np
@@ -24,7 +23,7 @@ from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from sklearn.metrics import PredictionErrorDisplay
 
 # IMPORT CUSTOM MODULES
-from decorators.general_decorators import *
+from src.sample.decorators.general_decorators import *
 
 
 
@@ -141,7 +140,7 @@ def create_misclassification_plot(y_true, y_pred, X, dirname, filename):
     
     ax.set_aspect(np.diff(ax.get_xlim()) / np.diff(ax.get_ylim()))
 
-    from src.utils.general_utils import apply_axis_label_mapping
+    from src.sample.utils.general_utils import apply_axis_label_mapping
     apply_axis_label_mapping(ax)
     plt.tight_layout()
 
@@ -226,7 +225,7 @@ def create_individual_scatter_plots(ds, features, label_, color_by_A12=False, co
 
                 ax.set_xlabel(feature_x)
                 ax.set_ylabel(feature_y)
-                from src.utils.general_utils import apply_axis_label_mapping
+                from src.sample.utils.general_utils import apply_axis_label_mapping
                 apply_axis_label_mapping(ax)
 
                 # Add background regions
@@ -354,7 +353,7 @@ def create3DScatterPlot(df, label_name, class_names, dirname, filename):
     ax.set_ylabel('A2', fontweight ='bold')
     ax.set_zlabel('A3', fontweight ='bold')
 
-    from src.utils.general_utils import apply_axis_label_mapping
+    from src.sample.utils.general_utils import apply_axis_label_mapping
     apply_axis_label_mapping(ax)    
     # Mapping class labels to custom names
     label_mapping = {0: class_names[0], 1: class_names[1]}
@@ -404,7 +403,7 @@ def plot_histogram_and_kde(df, feature,  dirname, filename, title=None,bins=30, 
     ax.set_xlabel(feature, fontsize=12)
     ax.set_ylabel("Density", fontsize=12)
     ax.set_aspect(np.diff(ax.get_xlim())/np.diff(ax.get_ylim()))
-    from src.utils.general_utils import apply_axis_label_mapping
+    from src.sample.utils.general_utils import apply_axis_label_mapping
     apply_axis_label_mapping(ax)
     # Save the plot to a buffer
     buf = BytesIO()
@@ -494,7 +493,6 @@ def createParetoPlot_simple(df, indexList, dirname, filename):
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
     ax.set_xlabel("-PESR [%]")
     ax.set_ylabel("LCOE [USD/MWh]")
-    apply_axis_labels(ax)
 
     plt.tight_layout()
 
@@ -592,7 +590,7 @@ def createParetoPlot(df,indexList, color_column, dirname, filename):
     # ax.set_title(plot_title)
     ax.set_aspect(np.diff(ax.get_xlim())/np.diff(ax.get_ylim()))
     plt.tight_layout()
-    from src.utils.general_utils import apply_axis_label_mapping
+    from src.sample.utils.general_utils import apply_axis_label_mapping
     apply_axis_label_mapping(ax)
     # Save the plot to a buffer
     buf = BytesIO()
@@ -637,7 +635,7 @@ def create_multiple_pareto_curves_new(
     import matplotlib.cm as cm
     from matplotlib.patches import Patch
     from matplotlib.colors import to_hex
-    from src.utils.general_utils import apply_axis_label_mapping
+    from src.sample.utils.general_utils import apply_axis_label_mapping
     from io import BytesIO
     from PIL import Image
 
@@ -766,7 +764,7 @@ def create_multiple_pareto_curves(datasets, dirname, filename, color_by_flow_rat
     Returns:
         PIL.Image: The generated plot as a PIL Image.
     """
-    from src.utils.general_utils import apply_axis_label_mapping
+    from src.sample.utils.general_utils import apply_axis_label_mapping
     import matplotlib.cm as cm
     import matplotlib.pyplot as plt
     from matplotlib.patches import Patch
@@ -909,7 +907,7 @@ def plot_multiple_pareto_subplots(
     from matplotlib.colors import to_hex
     from PIL import Image
     from io import BytesIO
-    from src.utils.general_utils import apply_axis_label_mapping
+    from src.sample.utils.general_utils import apply_axis_label_mapping
     from mpl_toolkits.axes_grid1 import make_axes_locatable
 
     if global_structure_color_map is None:
@@ -1154,7 +1152,6 @@ def plot_confusion_matrix(cm, dirname, filename):
 
 #=== FUNCTION TO CREATE SCATTER MATRIX ===#
 @save_image_decorator
-@apply_axis_labels
 def createScatterMatrix(ds, columns, dirname, filename):
     """
     Generates a scatter matrix plot to visualize pairwise relationships between features.
@@ -1286,7 +1283,7 @@ def plot_pareto_front(
     ax.set_xlabel(xlabel if xlabel else obj1)
     ax.set_ylabel(ylabel if ylabel else obj2)
 
-    from src.utils.general_utils import apply_axis_label_mapping
+    from src.sample.utils.general_utils import apply_axis_label_mapping
     apply_axis_label_mapping(ax)
 
     # Always show the legend if handles exist
@@ -1295,7 +1292,6 @@ def plot_pareto_front(
 
     ax.set_aspect(np.diff(ax.get_xlim()) / np.diff(ax.get_ylim()))
     plt.tight_layout()
-    apply_axis_labels(ax)
     buf = BytesIO()
     plt.savefig(buf, format="PNG", dpi=600)
     buf.seek(0)
@@ -1404,14 +1400,13 @@ def plot_pareto_front_with_rectangles(
 
     ax.set_xlabel(xlabel if xlabel else obj1)
     ax.set_ylabel(ylabel if ylabel else obj2)
-    from src.utils.general_utils import apply_axis_label_mapping
+    from src.sample.utils.general_utils import apply_axis_label_mapping
     apply_axis_label_mapping(ax)
 
     # Only show legend for points
     ax.legend(title=color_by if color_by else None)
     ax.set_aspect(np.diff(ax.get_xlim()) / np.diff(ax.get_ylim()))
     plt.tight_layout()
-    apply_axis_labels(ax)
     buf = BytesIO()
     plt.savefig(buf, format="PNG", dpi=600)
     buf.seek(0)
@@ -1514,7 +1509,6 @@ def generate_confusion_matrix(model, ds, dirname, filename):
 
 #=== FUNCTION TO CREATE A CONTOUR PLOT ===#
 @save_image_decorator
-@apply_axis_labels
 def create_contour_plot(data,dirname, filename):
     """
     Create a contour plot from a NumPy array with shape (n, 3).
@@ -1570,7 +1564,6 @@ def create_contour_plot(data,dirname, filename):
 
 #=== FUNCTION TO CREATE A PARITY PLOT AND A RESIDUAL PLOT ===# 
 @save_image_decorator
-@apply_axis_labels
 def create_parity_plot(y, y_pred, dirname, filename, include_residuals=False):
     """
     Generates a parity plot to evaluate regression model performance.
@@ -1632,7 +1625,7 @@ def create_parity_plot(y, y_pred, dirname, filename, include_residuals=False):
 
 
      # --- Set round-number ticks and padding ---
-    from src.utils.general_utils import get_tick_step
+    from src.sample.utils.general_utils import get_tick_step
     for ax in axs:
         # Get current limits
         x_min, x_max = ax.get_xlim()

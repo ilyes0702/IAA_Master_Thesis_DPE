@@ -15,10 +15,10 @@ sys.path.append(os.path.abspath(os.path.join(
 )))
 
 # Import custom modules
-from src.decorators.general_decorators import *
-from src.utils.saving_utils import *
-from src.config import *
-from src.dictionaries.variable_names import axis_label_mapping
+
+from sample.decorators.general_decorators import *
+from src.sample.utils.saving_utils import *
+from src.sample.config import *
 
 
 #=== FUNCTION TO CHOOSE NICE TICK STEP ===#
@@ -55,27 +55,6 @@ def get_tick_step(data_min, data_max, n_ticks=6):
 
 
 
-#=== FUNCTION TO APPLY AXIS LABEL MAPPING ===#
-@log_execution_time
-def apply_axis_label_mapping(ax):
-    """
-    Update the labels of the given matplotlib axes based on a predefined mapping.
-
-    Parameters:
-    - ax (matplotlib.axes.Axes): The axes object to modify.
-
-    Returns:
-    - None: The function updates the axis labels in place.
-
-    This function checks whether the current x-label and y-label exist in the 
-    `axis_label_mapping` dictionary. If found, it updates the labels accordingly.
-    """
-    # Apply the axis label mapping
-    if ax.get_xlabel() in axis_label_mapping:
-        ax.set_xlabel(axis_label_mapping[ax.get_xlabel()])
-    if ax.get_ylabel() in axis_label_mapping:
-        ax.set_ylabel(axis_label_mapping[ax.get_ylabel()])
-    return()
 
 #=== FUNCTION TO ADD CLASS LABELS DI/DF TO DATAFRAME ===#
 @log_execution_time
