@@ -12,6 +12,9 @@ venv/
 # due to using nox and pytest
 .nox
 .cache
+<<<<<<< HEAD
 .venv/
 
 *.png
+=======
+>>>>>>> 8032f796a4adba801e346d6a1ad551867b52ce03
