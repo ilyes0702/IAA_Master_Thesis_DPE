@@ -4,9 +4,7 @@ import joblib
 import sys
 import os
 import seaborn as sns
-# ADD PROJECT DIRECTORY TO SYSTEM PATH
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 
-                    "D:/Stage_IAA_LRGP")))
+
 from src.sample.config import *
 #=== FUNCTION TO SAVE TRAINED MODEL ===#
 def save_model(model, dirname, filename):
@@ -53,8 +51,8 @@ def save_df_to_csv(df, dirname, filename, max_path_length=255):
     df = df.round(2)
     
      # Check full path length
-    dirname = f"reports/{date}/{date_and_time}/{dirname}"
-    filename = f"{date_and_time}_{filename}"
+    dirname = f"reports/{date}/{date_and_time}/{dirname}/"
+    filename = f"{date_and_time}_{filename}.csv"
     os.makedirs(dirname, exist_ok=True)
     full_path = os.path.join(dirname, filename)
     if len(full_path) > max_path_length:
