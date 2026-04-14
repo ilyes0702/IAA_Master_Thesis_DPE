@@ -1,8 +1,8 @@
 import os
 import sys
-from utils.plotting_utils import *
+from src.sample.utils.plotting_utils import *
 import matplotlib.pyplot as plt
-plt.style.use('style.mplstyle')
+plt.style.use('src/sample/style.mplstyle')
 
 import numpy as np
 import pandas as pd
