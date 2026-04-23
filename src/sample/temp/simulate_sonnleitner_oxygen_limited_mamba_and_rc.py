@@ -189,7 +189,7 @@ def simulate(controller, t, mode, device=None):
 # ============================================================
 if __name__ == "__main__":
 
-    T = 8
+    T = 20
     t = np.arange(0, T, dt)
 
     print("Generating teacher data...")
@@ -209,6 +209,8 @@ if __name__ == "__main__":
         t[WINDOW:], [X_ref, X_esn, X_mamba],
         labels=["Reference", "RC + FB", "Mamba + FB"],
         title="Oxygen-Limited Sonnleitner Tracking",
+        xlabel="Time (s)",
+        ylabel="Biomass Concentration (g/L)",
         dirname="sonnleitner_oxygen_limited",
         filename="sonnleitner_rc_vs_mamba_tracking.png"
     )

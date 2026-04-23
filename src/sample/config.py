@@ -19,9 +19,6 @@ if not os.path.exists(path_name):
 exlog_path_name = path_name + date_and_time + "_execution_log.txt"
 
 
-absolute_project_path = "D:/Stage_IAA_LRGP"
-
-
 # Configure logging to display ERROR and above
 logging.basicConfig(filename=exlog_path_name, 
                     level=logging.INFO, 

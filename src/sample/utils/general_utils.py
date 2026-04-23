@@ -6,20 +6,354 @@ import pandas as pd
 
 # import machine learning modules
 import joblib
-
-
-# ADD PROJECT DIRECTORY TO SYSTEM PATH
-sys.path.append(os.path.abspath(os.path.join(
-    os.path.dirname(__file__), 
-    "C:/Users/Stagiaire/Documents/Stage_Ilyes_Ait_Aissa_Repo"
-)))
-
-# Import custom modules
-
-from sample.decorators.general_decorators import *
+from src.sample.decorators.general_decorators import *
 from src.sample.utils.saving_utils import *
 from src.sample.config import *
+from src.sample.utils.plotting_utils import plot_signals
+import torch
+import torch.nn as nn
+U_MAX = 1.0
+MU_MAX = 0.12
 
+def train_controller_old(model, process, epochs, seq_len=1000, dt=0.1,
+                      amp=1, freq=0.5, jump_height=0.02, device='cuda'):
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    criterion = nn.MSELoss()
+
+    loss_history = []
+    all_training_pairs = []
+
+    print(f"Training Mamba and saving {epochs} individual time-series CSVs...")
+
+    for epoch in range(epochs):
+        state = np.array([1.0, 5e-3])
+        epoch_y_norm =[]
+        epoch_u_norm = []
+        epoch_series_data = []
+
+        phase = np.random.uniform(0, 2 * np.pi)
+
+        # 1. Generate Raw Data for this Epoch
+        for t_idx in range(seq_len):
+            t = t_idx * dt
+            u_sine = amp * np.sin(2 * np.pi * freq * t + phase) + amp
+            u_rect = jump_height if (t_idx // 10) % 2 == 0 else 0
+            u_signal = np.clip(u_sine + u_rect, 0, U_MAX)
+
+            x1, x2 = state
+            state, mu = process.step(state, u_signal, t, dt=dt)
+
+            # Store raw data for the individual CSV
+            epoch_series_data.append({
+                "t": t,
+                "biomass_x1": x1,
+                "substrate_x2": x2,
+                "mu_growth": mu,
+                "u_control": u_signal
+            })
+
+            epoch_u_norm.append(u_signal / U_MAX)
+            epoch_y_norm.append(mu / MU_MAX)
+
+        # --- Add y(t), y(t+dt), and u(t) to the epoch data ---
+        y_t = np.array(epoch_y_norm[:-1])
+        y_next = np.array(epoch_y_norm[1:])
+        u_target_raw = np.array(epoch_u_norm[:-1])
+        for i in range(len(y_t)):
+            epoch_series_data[i].update({
+                "y_t": y_t[i],
+                "y_t+dt": y_next[i],
+                "u_t": u_target_raw[i],
+            })
+
+        # --- SAVE INDIVIDUAL CSV FOR THIS EPOCH ---
+        df_epoch = pd.DataFrame(epoch_series_data)
+        save_df_to_csv(
+            df_epoch,
+            dirname="ex06/training_episodes",
+            filename=f"train_series_epoch_{epoch+1:04d}"
+        )
+
+        # 2. Prepare Inverse Mapping [y(t), y(t+1)] -> u(t) for Training
+        combined_input = np.stack([y_t, y_next], axis=1)
+        y_tensor = torch.from_numpy(np.array([combined_input])).float().to(device)
+        u_target = torch.tensor([u_target_raw], dtype=torch.float32).unsqueeze(-1).to(device)
+
+        # 3. Optimization
+        model.train()
+        optimizer.zero_grad()
+        u_pred = model(y_tensor)
+        loss = criterion(u_pred, u_target)
+        loss.backward()
+        optimizer.step()
+
+        loss_history.append(loss.item())
+
+        # Keep global record of mapping pairs for a summary file
+        for i in range(len(u_target_raw)):
+            all_training_pairs.append({
+                "epoch": epoch + 1,
+                "y_t": y_t[i],
+                "y_t+dt": y_next[i],
+                "u_t": u_target_raw[i],
+            })
+
+        if (epoch + 1) % 100 == 0:
+            print(f"Epoch {epoch+1}/{epochs} | Loss: {loss.item():.6f} | CSV Saved")
+
+    df_loss = pd.DataFrame({"epoch": range(1, epochs + 1), "loss": loss_history})
+    df_train_full = pd.DataFrame(all_training_pairs)
+
+    save_df_to_csv(df_loss, dirname="ex06", filename="mamba_training_loss_history")
+
+
+    plot_signals(df_loss["epoch"].values, [df_loss["loss"].values],
+                labels=["MSE Loss"], xlabel="Epoch", ylabel="Loss",
+                title="Mamba Training Convergence",
+                dirname="ex06", filename="mamba_training_loss_plot")
+    df_train_describe = df_train_full[["y_t", "u_t"]].describe().reset_index()
+
+    save_df_to_csv(df_train_full, dirname="ex06", filename="mamba_training_data_full")
+    save_df_to_csv(df_train_describe, dirname="ex06", filename="mamba_training_data_stats")
+
+    return()
+
+
+def train_controller(model, plant, epochs, seq_len=1000, dt=0.1, device='cuda', dirname="ex06"):
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    criterion = nn.MSELoss()
+    
+    loss_history = []
+    all_training_pairs = []
+
+    print(f"Training Mamba on {plant.__class__.__name__}...")
+
+    for epoch in range(epochs):
+        state = plant.get_initial_state()
+        epoch_raw_history = []
+        
+        # 1. Data Collection (Generate trajectory)
+        for t_idx in range(seq_len):
+            t = t_idx * dt
+            u_signal = plant.generate_random_u(t)
+            y_t = plant.get_y(state)
+            
+            # Step plant
+            state_next, y_next = plant.step(state, u_signal, t, dt)
+            
+            # Record detailed data using plant's parse_state helper
+            record = {
+                "t": t,
+                "y_t": y_t,
+                "y_t+dt": y_next,
+                "u_t": u_signal,
+                **plant.parse_state(state)
+            }
+            epoch_raw_history.append(record)
+            state = state_next
+
+        # --- SAVE INDIVIDUAL CSV FOR THIS EPOCH (Old feature) ---
+        df_epoch = pd.DataFrame(epoch_raw_history)
+        save_df_to_csv(
+            df_epoch, 
+            dirname=f"{dirname}/training_episodes", 
+            filename=f"train_series_epoch_{epoch+1:04d}"
+        )
+
+        # 2. Prepare Inverse Mapping [y_t, y_t+dt] -> u_t
+        inputs = df_epoch[["y_t", "y_t+dt"]].values
+        targets = df_epoch["u_t"].values
+        
+        x_tensor = torch.from_numpy(np.array([inputs])).float().to(device)
+        y_target = torch.from_numpy(np.array([targets])).float().unsqueeze(-1).to(device)
+
+        # 3. Optimization
+        model.train()
+        optimizer.zero_grad()
+        u_pred = model(x_tensor)
+        loss = criterion(u_pred, y_target)
+        loss.backward()
+        optimizer.step()
+
+        loss_history.append(loss.item())
+
+        # Keep global record for summary
+        # We only take y_t, y_t+dt, u_t to keep the summary file manageable
+        summary_slice = df_epoch[["y_t", "y_t+dt", "u_t"]].copy()
+        summary_slice["epoch"] = epoch + 1
+        all_training_pairs.append(summary_slice)
+
+        if (epoch + 1) % 100 == 0:
+            print(f"Epoch {epoch+1}/{epochs} | Loss: {loss.item():.6f}")
+
+    # --- FINAL SAVING AND PLOTTING ---
+    df_loss = pd.DataFrame({"epoch": range(1, epochs + 1), "loss": loss_history})
+    df_train_full = pd.concat(all_training_pairs, ignore_index=True)
+    df_train_describe = df_train_full[["y_t", "u_t"]].describe().reset_index()
+
+    # Save summary files
+    save_df_to_csv(df_loss, dirname=dirname, filename="mamba_training_loss_history")
+    save_df_to_csv(df_train_full, dirname=dirname, filename="mamba_training_data_full")
+    save_df_to_csv(df_train_describe, dirname=dirname, filename="mamba_training_data_stats")
+
+    # Plot Convergence
+    plot_signals(
+        df_loss["epoch"].values, [df_loss["loss"].values],
+        labels=["MSE Loss"], xlabel="Epoch", ylabel="Loss",
+        title=f"Mamba Convergence ({plant.__class__.__name__})",
+        dirname=dirname, filename="mamba_training_loss_plot"
+    )
+
+    return()
+# Import custom modules
+
+# def simulate_stabilization(model, process, mu_star=0.5, duration_h=50, dt=0.01, device='cpu'):
+#     model.eval()
+#     steps = int(duration_h / dt)
+
+#     state = np.array([1.0, 5e-3])
+#     results = {"t": [], "mu": [], "u": [], "u_ff": [], "u_fb": [], "x1": [], "x2": []}
+
+#     Kp = 0.00
+
+#     current_context = []
+
+#     for i in range(steps):
+#         t = i * dt
+
+#         _, mu_meas = process.step(state, 0, t, dt=0)
+
+#         y_t_norm = mu_meas / MU_MAX
+#         r_next_norm = mu_star / MU_MAX
+
+#         step_input = np.array([[y_t_norm, r_next_norm]])
+#         current_context.append(step_input)
+
+#         input_tensor = torch.tensor(np.array(current_context), dtype=torch.float32).transpose(0, 1).to(device)
+
+#         with torch.no_grad():
+#             u_pred_seq = model(input_tensor)
+#             u_ff = float(u_pred_seq[0, -1, 0]) * U_MAX
+
+#         u_fb = Kp * (mu_star - mu_meas)
+#         u_total = np.clip(u_ff + u_fb, 0, U_MAX)
+
+#         results["t"].append(t)
+#         results["mu"].append(mu_meas)
+#         results["u"].append(u_total)
+#         results["u_ff"].append(u_ff)
+#         results["u_fb"].append(u_fb)
+#         results["x1"].append(state[0])
+#         results["x2"].append(state[1])
+
+#         state, _ = process.step(state, u_total, t, dt)
+    
+#     df_sim = pd.DataFrame(results)
+#     save_df_to_csv(df_sim, dirname="ex06", filename="mamba_simulation_data")
+#     t_data = df_sim["t"].values
+#     target_mu = mu_star
+
+#     plot_signals(t_data, [df_sim["mu"].values, np.full_like(t_data, target_mu)],
+#                 labels=["Actual Growth Rate (mu)", "Target (mu*)"],
+#                 xlabel="Time (h)", ylabel="Growth rate (1/h)",
+#                 title="Growth Rate Stabilization",
+#                 dirname="ex06", filename="mamba_stabilization_mu")
+
+#     plot_signals(t_data, [df_sim["u"].values], labels=["Control Signal (u)"],
+#                 xlabel="Time (h)", ylabel="Dilution Rate (1/h)",
+#                 title="Control Action", dirname="ex06", filename="mamba_control")
+
+#     plot_signals(t_data, [df_sim["x1"].values], labels=["Biomass (x1)"],
+#                 xlabel="Time (h)", ylabel="g/L", title="Biomass Evolution",
+#                 dirname="ex06", filename="mamba_stabilization_x1")
+
+#     plot_signals(t_data, [df_sim["x2"].values], labels=["Substrate (x2)"],
+#                 xlabel="Time (h)", ylabel="g/L", title="Substrate Evolution",
+#                 dirname="ex06", filename="mamba_stabilization_x2")
+    
+#     df_metrics = pd.DataFrame({
+#         "time": df_sim["t"],
+#         "error": target_mu - df_sim["mu"],
+#         "abs_error": np.abs(target_mu - df_sim["mu"])
+#     })
+
+#     save_df_to_csv(df_metrics, dirname="ex06", filename="mamba_control_metrics")
+
+#     return()
+
+
+def simulate_control(model, plant, reference_signal, duration, dt, device, dirname="ex06"):
+    model.eval()
+    state = plant.get_initial_state()
+    history = []
+    current_context = []
+    steps = int(duration / dt)
+
+    print(f"Starting generic simulation for {duration}h...")
+
+    for i in range(steps):
+        t = i * dt
+        y_meas = plant.get_y(state)
+        
+        # 1. Reference Logic
+        r_t = reference_signal[i] if isinstance(reference_signal, np.ndarray) else reference_signal
+
+        # 2. Normalization & Inference
+        y_norm = y_meas / plant.Y_MAX
+        r_norm = r_t / plant.Y_MAX
+
+        step_input = np.array([[y_norm, r_norm]])
+        current_context.append(step_input)
+        
+        # Maintain a sliding window or full history for Mamba context
+        input_tensor = torch.tensor(np.array(current_context), dtype=torch.float32).transpose(0, 1).to(device)
+
+        with torch.no_grad():
+            u_norm = float(model(input_tensor)[0, -1, 0])
+        
+        u_phys = np.clip(u_norm * plant.U_MAX, 0, plant.U_MAX)
+
+        # 3. Physics Step
+        next_state, _ = plant.step(state, u_phys, t, dt)
+        
+        # 4. Data Collection
+        # Combines general control signals with plant-specific internal states
+        record = {
+            "t": t, 
+            "y": y_meas, 
+            "r": r_t, 
+            "u": u_phys, 
+            "error": r_t - y_meas,
+            **plant.parse_state(state) 
+        }
+        history.append(record)
+        state = next_state
+
+    # --- Data Processing & Saving ---
+    df_sim = pd.DataFrame(history)
+    save_df_to_csv(df_sim, dirname=dirname, filename=f"{plant.__class__.__name__}_sim_data")
+
+    # --- Automated Plotting ---
+    t_data = df_sim["t"].values
+    
+    # Use the plant's own config to decide what to plot
+    plot_configs = plant.get_plot_config()
+    
+    for idx, config in enumerate(plot_configs):
+        signals = [df_sim[col].values for col in config["cols"]]
+        
+        plot_signals(
+            t_data, 
+            signals,
+            labels=config["labels"],
+            xlabel="Time (h)",
+            ylabel=config["ylabel"],
+            dirname=dirname,
+            filename=f"plot_{idx}_{config['title'].lower().replace(' ', '_')}"
+        )
+
+    print(f"Simulation finished. Data and {len(plot_configs)} plots saved to {dirname}.")
+    return()
 
 #=== FUNCTION TO CHOOSE NICE TICK STEP ===#
 def get_tick_step(data_min, data_max, n_ticks=6):
