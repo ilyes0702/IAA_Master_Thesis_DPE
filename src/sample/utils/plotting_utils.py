@@ -46,7 +46,7 @@ def plot_signals(
     Generic plotting function for time-series or x-y signals.
     """
 
-    fig, ax = plt.subplots(figsize=figsize)
+    fig, ax = plt.subplots(figsize=figsize, layout= "constrained")
 
     for i, sig in enumerate(signals):
         if labels is not None:
@@ -75,7 +75,7 @@ def plot_signals(
         plt.show()
 
     
-    plt.tight_layout()
+    #plt.tight_layout()
 
     # Save the plot to a buffer
     buf = BytesIO()

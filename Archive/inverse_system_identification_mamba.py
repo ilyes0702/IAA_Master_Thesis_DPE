@@ -4,7 +4,7 @@ import torch
 
 # Choose your plant model here - swap between different process models
 from src.sample.classes.PenicilinFermentationProcessTropophase import FermentationProcess
-from src.sample.classes.simple_models import LinearGrowth
+from src.sample.classes.simple_models import SimpleLinearPlant
 
 from src.sample.classes.MambaInverseController import MambaInverseController
 from src.sample.utils.general_utils import simulate_control, train_controller
@@ -16,9 +16,10 @@ print(f"Using device: {device}")
 if __name__ == "__main__":
     # --- SELECT YOUR PLANT MODEL HERE ---
     # Swap these lines to use different process models
-    plant = FermentationProcess()
-    #plant = LinearGrowth()
-    
+    #plant = FermentationProcess()
+    plant = SimpleLinearPlant()
+    dt = 0.01
+    dirname = plant.__class__.__name__
     # --- SELECT YOUR CONTROLLER MODEL HERE ---
     # Swap these lines to use different controller architectures
     controller = MambaInverseController().to(device)
@@ -28,11 +29,11 @@ if __name__ == "__main__":
     train_controller(
         model=controller, 
         plant=plant, 
-        epochs=200, 
-        seq_len=1000, 
-        dt=0.1, 
+        epochs=8000, 
+        seq_len=10000, 
+        dt=dt, 
         device=device,
-        dirname="ex06"
+        dirname=dirname
     )
     
     # 2. Simulation
@@ -41,7 +42,7 @@ if __name__ == "__main__":
         plant=plant, 
         reference_signal=plant.ref_value, 
         duration=50, 
-        dt=0.01, 
+        dt=dt, 
         device=device,
-        dirname="ex06"
+        dirname=dirname
     )

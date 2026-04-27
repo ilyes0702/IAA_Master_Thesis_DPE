@@ -1,0 +1,4 @@
+2026-04-27 13:08:45 - Image successfully saved as 'plot_0_growth_rate'
+2026-04-27 13:08:47 - Image successfully saved as 'plot_1_control_action'
+2026-04-27 13:08:49 - Image successfully saved as 'plot_2_biomass'
+2026-04-27 13:08:50 - Image successfully saved as 'plot_3_substrate'

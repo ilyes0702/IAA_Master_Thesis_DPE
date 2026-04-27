@@ -1,4 +1,4 @@
-# import standard libraries
+# Import standard libraries
 import os
 import sys
 import numpy as np
@@ -12,114 +12,9 @@ from src.sample.config import *
 from src.sample.utils.plotting_utils import plot_signals
 import torch
 import torch.nn as nn
-U_MAX = 1.0
-MU_MAX = 0.12
 
-def train_controller_old(model, process, epochs, seq_len=1000, dt=0.1,
-                      amp=1, freq=0.5, jump_height=0.02, device='cuda'):
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    criterion = nn.MSELoss()
-
-    loss_history = []
-    all_training_pairs = []
-
-    print(f"Training Mamba and saving {epochs} individual time-series CSVs...")
-
-    for epoch in range(epochs):
-        state = np.array([1.0, 5e-3])
-        epoch_y_norm =[]
-        epoch_u_norm = []
-        epoch_series_data = []
-
-        phase = np.random.uniform(0, 2 * np.pi)
-
-        # 1. Generate Raw Data for this Epoch
-        for t_idx in range(seq_len):
-            t = t_idx * dt
-            u_sine = amp * np.sin(2 * np.pi * freq * t + phase) + amp
-            u_rect = jump_height if (t_idx // 10) % 2 == 0 else 0
-            u_signal = np.clip(u_sine + u_rect, 0, U_MAX)
-
-            x1, x2 = state
-            state, mu = process.step(state, u_signal, t, dt=dt)
-
-            # Store raw data for the individual CSV
-            epoch_series_data.append({
-                "t": t,
-                "biomass_x1": x1,
-                "substrate_x2": x2,
-                "mu_growth": mu,
-                "u_control": u_signal
-            })
-
-            epoch_u_norm.append(u_signal / U_MAX)
-            epoch_y_norm.append(mu / MU_MAX)
-
-        # --- Add y(t), y(t+dt), and u(t) to the epoch data ---
-        y_t = np.array(epoch_y_norm[:-1])
-        y_next = np.array(epoch_y_norm[1:])
-        u_target_raw = np.array(epoch_u_norm[:-1])
-        for i in range(len(y_t)):
-            epoch_series_data[i].update({
-                "y_t": y_t[i],
-                "y_t+dt": y_next[i],
-                "u_t": u_target_raw[i],
-            })
-
-        # --- SAVE INDIVIDUAL CSV FOR THIS EPOCH ---
-        df_epoch = pd.DataFrame(epoch_series_data)
-        save_df_to_csv(
-            df_epoch,
-            dirname="ex06/training_episodes",
-            filename=f"train_series_epoch_{epoch+1:04d}"
-        )
-
-        # 2. Prepare Inverse Mapping [y(t), y(t+1)] -> u(t) for Training
-        combined_input = np.stack([y_t, y_next], axis=1)
-        y_tensor = torch.from_numpy(np.array([combined_input])).float().to(device)
-        u_target = torch.tensor([u_target_raw], dtype=torch.float32).unsqueeze(-1).to(device)
-
-        # 3. Optimization
-        model.train()
-        optimizer.zero_grad()
-        u_pred = model(y_tensor)
-        loss = criterion(u_pred, u_target)
-        loss.backward()
-        optimizer.step()
-
-        loss_history.append(loss.item())
-
-        # Keep global record of mapping pairs for a summary file
-        for i in range(len(u_target_raw)):
-            all_training_pairs.append({
-                "epoch": epoch + 1,
-                "y_t": y_t[i],
-                "y_t+dt": y_next[i],
-                "u_t": u_target_raw[i],
-            })
-
-        if (epoch + 1) % 100 == 0:
-            print(f"Epoch {epoch+1}/{epochs} | Loss: {loss.item():.6f} | CSV Saved")
-
-    df_loss = pd.DataFrame({"epoch": range(1, epochs + 1), "loss": loss_history})
-    df_train_full = pd.DataFrame(all_training_pairs)
-
-    save_df_to_csv(df_loss, dirname="ex06", filename="mamba_training_loss_history")
-
-
-    plot_signals(df_loss["epoch"].values, [df_loss["loss"].values],
-                labels=["MSE Loss"], xlabel="Epoch", ylabel="Loss",
-                title="Mamba Training Convergence",
-                dirname="ex06", filename="mamba_training_loss_plot")
-    df_train_describe = df_train_full[["y_t", "u_t"]].describe().reset_index()
-
-    save_df_to_csv(df_train_full, dirname="ex06", filename="mamba_training_data_full")
-    save_df_to_csv(df_train_describe, dirname="ex06", filename="mamba_training_data_stats")
-
-    return()
-
-
-def train_controller(model, plant, epochs, seq_len=1000, dt=0.1, device='cuda', dirname="ex06"):
+### 00
+def train_controller(model, plant, epochs, seq_len, dt, model_config,device='cuda', dirname="name_directory"):
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.MSELoss()
     
@@ -129,19 +24,24 @@ def train_controller(model, plant, epochs, seq_len=1000, dt=0.1, device='cuda', 
     print(f"Training Mamba on {plant.__class__.__name__}...")
 
     for epoch in range(epochs):
+        # 1. Randomize parameters if the plant supports it
+        if hasattr(plant, 'reset_trajectory'):
+            plant.reset_trajectory()
+            
         state = plant.get_initial_state()
         epoch_raw_history = []
         
-        # 1. Data Collection (Generate trajectory)
+        # --- Data Collection Phase ---
         for t_idx in range(seq_len):
             t = t_idx * dt
             u_signal = plant.generate_random_u(t)
-            y_t = plant.get_y(state)
             
-            # Step plant
+            # Pass 't' to get_y to account for time-dependent Volume (V)
+            y_t = plant.get_y(state, t) 
+            
+            # Step plant (ensure plant.step also uses/returns correct y_next)
             state_next, y_next = plant.step(state, u_signal, t, dt)
             
-            # Record detailed data using plant's parse_state helper
             record = {
                 "t": t,
                 "y_t": y_t,
@@ -152,33 +52,41 @@ def train_controller(model, plant, epochs, seq_len=1000, dt=0.1, device='cuda', 
             epoch_raw_history.append(record)
             state = state_next
 
-        # --- SAVE INDIVIDUAL CSV FOR THIS EPOCH (Old feature) ---
+        # Create DataFrame for this epoch
         df_epoch = pd.DataFrame(epoch_raw_history)
-        save_df_to_csv(
-            df_epoch, 
-            dirname=f"{dirname}/training_episodes", 
-            filename=f"train_series_epoch_{epoch+1:04d}"
-        )
+        
+        # Optional: Save every X epochs to save disk space if training is long
+        if (epoch + 1) % 10 == 0 or epoch == 0:
+            save_df_to_csv(
+                df_epoch, 
+                dirname=f"{dirname}/training_episodes", 
+                filename=f"train_series_epoch_{epoch+1:04d}"
+            )
 
+        # --- Training Phase ---
         # 2. Prepare Inverse Mapping [y_t, y_t+dt] -> u_t
         inputs = df_epoch[["y_t", "y_t+dt"]].values
         targets = df_epoch["u_t"].values
         
+        # Use torch.from_numpy and np.array to avoid the "slow tensor creation" warning
         x_tensor = torch.from_numpy(np.array([inputs])).float().to(device)
         y_target = torch.from_numpy(np.array([targets])).float().unsqueeze(-1).to(device)
 
-        # 3. Optimization
         model.train()
         optimizer.zero_grad()
+        
+        # Forward pass through Mamba
         u_pred = model(x_tensor)
+        
         loss = criterion(u_pred, y_target)
         loss.backward()
         optimizer.step()
 
         loss_history.append(loss.item())
+        
+     
 
-        # Keep global record for summary
-        # We only take y_t, y_t+dt, u_t to keep the summary file manageable
+        # Summary logging
         summary_slice = df_epoch[["y_t", "y_t+dt", "u_t"]].copy()
         summary_slice["epoch"] = epoch + 1
         all_training_pairs.append(summary_slice)
@@ -186,103 +94,158 @@ def train_controller(model, plant, epochs, seq_len=1000, dt=0.1, device='cuda', 
         if (epoch + 1) % 100 == 0:
             print(f"Epoch {epoch+1}/{epochs} | Loss: {loss.item():.6f}")
 
-    # --- FINAL SAVING AND PLOTTING ---
+    # --- Final Post-Training Steps ---
     df_loss = pd.DataFrame({"epoch": range(1, epochs + 1), "loss": loss_history})
     df_train_full = pd.concat(all_training_pairs, ignore_index=True)
-    df_train_describe = df_train_full[["y_t", "u_t"]].describe().reset_index()
+    
+    save_df_to_csv(df_loss, dirname=dirname, filename="training_loss_history")
+    save_df_to_csv(df_train_full, dirname=dirname, filename="training_data_full")
+    save_df_to_csv(df_train_full.describe().reset_index(), dirname=dirname, filename="training_data_stats")
 
-    # Save summary files
-    save_df_to_csv(df_loss, dirname=dirname, filename="mamba_training_loss_history")
-    save_df_to_csv(df_train_full, dirname=dirname, filename="mamba_training_data_full")
-    save_df_to_csv(df_train_describe, dirname=dirname, filename="mamba_training_data_stats")
-
-    # Plot Convergence
     plot_signals(
         df_loss["epoch"].values, [df_loss["loss"].values],
         labels=["MSE Loss"], xlabel="Epoch", ylabel="Loss",
-        title=f"Mamba Convergence ({plant.__class__.__name__})",
-        dirname=dirname, filename="mamba_training_loss_plot"
+        title=f"Convergence ({plant.__class__.__name__})",
+        dirname=dirname, filename="training_loss_plot"
     )
 
+    # --- Save the Model Weights ---
+    save_model(model, dirname=dirname, model_config=model_config, filename="trained_controller")
+
     return()
-# Import custom modules
 
-# def simulate_stabilization(model, process, mu_star=0.5, duration_h=50, dt=0.01, device='cpu'):
-#     model.eval()
-#     steps = int(duration_h / dt)
 
-#     state = np.array([1.0, 5e-3])
-#     results = {"t": [], "mu": [], "u": [], "u_ff": [], "u_fb": [], "x1": [], "x2": []}
 
-#     Kp = 0.00
 
-#     current_context = []
+import torch
+import torch.nn as nn
+import pandas as pd
+import numpy as np
+import time
 
-#     for i in range(steps):
-#         t = i * dt
+def GPUtrain_controller(model, plant, epochs, seq_len, dt, model_config, batch_size, device='cuda', dirname="name_directory"):
+    """
+    Vectorized training: 128 parallel simulations are performed per epoch.
+    The model learns the inverse mapping: (y_t, y_t+1) -> u_t
+    """
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    criterion = nn.MSELoss()
+    loss_history = []
+    model.to(device)
 
-#         _, mu_meas = process.step(state, 0, t, dt=0)
+    print(f"🚀 Training Mamba on {plant.__class__.__name__}")
+    print(f"   Batch Size: {batch_size} | Device: {device}")
 
-#         y_t_norm = mu_meas / MU_MAX
-#         r_next_norm = mu_star / MU_MAX
+    start_time = time.time()
 
-#         step_input = np.array([[y_t_norm, r_next_norm]])
-#         current_context.append(step_input)
+    for epoch in range(epochs):
+        # 1. Diversity: randomize trajectories if the plant supports it
+        if hasattr(plant, 'reset_trajectory'):
+            plant.reset_trajectory()
+            
+        # 2. Reset starting state for the entire batch [batch_size, state_dim]
+        state = plant.get_initial_state() 
+        
+        all_y_t = []
+        all_y_next = []
+        all_u = []
 
-#         input_tensor = torch.tensor(np.array(current_context), dtype=torch.float32).transpose(0, 1).to(device)
+        # --- SIMULATION PHASE (Data Generation) ---
+        # We use torch.no_grad() because we are just collecting data from the physics engine
+        with torch.no_grad():
+            for t_idx in range(seq_len):
+                t = t_idx * dt
+                
+                # Generate random control inputs (Glucose feed) for exploration
+                u_signal = torch.rand((batch_size, 1), device=device) * plant.U_MAX
+                
+                # Current output (Growth rate)
+                y_t = plant.get_y(state, t) 
+                
+                # Physics Step
+                state_next, y_next = plant.step(state, u_signal, t, dt)
+                
+                # Store
+                all_y_t.append(y_t)
+                all_y_next.append(y_next)
+                all_u.append(u_signal)
+                
+                # Transition - DETACH to stop gradient flow through simulation time
+                state = state_next.detach()
 
-#         with torch.no_grad():
-#             u_pred_seq = model(input_tensor)
-#             u_ff = float(u_pred_seq[0, -1, 0]) * U_MAX
+        # --- TRAINING PHASE (Gradient Descent) ---
+        # Stack lists into [Batch, Seq, Dim]
+        y_t_seq = torch.stack(all_y_t, dim=1)      
+        y_next_seq = torch.stack(all_y_next, dim=1) 
+        y_target = torch.stack(all_u, dim=1) 
+        
+        # Input to model: pair of current and resulting growth rate
+        x_tensor = torch.cat([y_t_seq, y_next_seq], dim=-1) 
 
-#         u_fb = Kp * (mu_star - mu_meas)
-#         u_total = np.clip(u_ff + u_fb, 0, U_MAX)
+        model.train()
+        optimizer.zero_grad()
+        
+        # Mamba predicts the 'u' that caused the change from y_t to y_next
+        u_pred = model(x_tensor) 
+        
+        loss = criterion(u_pred, y_target)
+        loss.backward()
+        optimizer.step()
 
-#         results["t"].append(t)
-#         results["mu"].append(mu_meas)
-#         results["u"].append(u_total)
-#         results["u_ff"].append(u_ff)
-#         results["u_fb"].append(u_fb)
-#         results["x1"].append(state[0])
-#         results["x2"].append(state[1])
+        loss_history.append(loss.item())
 
-#         state, _ = process.step(state, u_total, t, dt)
+        if (epoch + 1) % 100 == 0 or epoch == 0:
+            elapsed = time.time() - start_time
+            print(f"Epoch {epoch+1:04d}/{epochs} | Loss: {loss.item():.6f} | Time: {elapsed:.2f}s")
+
+    # --- SAVE & PLOT ---
+    df_loss = pd.DataFrame({"epoch": range(1, epochs + 1), "loss": loss_history})
     
-#     df_sim = pd.DataFrame(results)
-#     save_df_to_csv(df_sim, dirname="ex06", filename="mamba_simulation_data")
-#     t_data = df_sim["t"].values
-#     target_mu = mu_star
-
-#     plot_signals(t_data, [df_sim["mu"].values, np.full_like(t_data, target_mu)],
-#                 labels=["Actual Growth Rate (mu)", "Target (mu*)"],
-#                 xlabel="Time (h)", ylabel="Growth rate (1/h)",
-#                 title="Growth Rate Stabilization",
-#                 dirname="ex06", filename="mamba_stabilization_mu")
-
-#     plot_signals(t_data, [df_sim["u"].values], labels=["Control Signal (u)"],
-#                 xlabel="Time (h)", ylabel="Dilution Rate (1/h)",
-#                 title="Control Action", dirname="ex06", filename="mamba_control")
-
-#     plot_signals(t_data, [df_sim["x1"].values], labels=["Biomass (x1)"],
-#                 xlabel="Time (h)", ylabel="g/L", title="Biomass Evolution",
-#                 dirname="ex06", filename="mamba_stabilization_x1")
-
-#     plot_signals(t_data, [df_sim["x2"].values], labels=["Substrate (x2)"],
-#                 xlabel="Time (h)", ylabel="g/L", title="Substrate Evolution",
-#                 dirname="ex06", filename="mamba_stabilization_x2")
+    # Import locally to avoid circular dependencies
+    from src.sample.utils.general_utils import save_model, save_df_to_csv, plot_signals
     
-#     df_metrics = pd.DataFrame({
-#         "time": df_sim["t"],
-#         "error": target_mu - df_sim["mu"],
-#         "abs_error": np.abs(target_mu - df_sim["mu"])
-#     })
+    save_model(model, dirname=dirname, model_config=model_config, filename="trained_controller")
+    save_df_to_csv(df_loss, dirname=dirname, filename="training_loss_history")
 
-#     save_df_to_csv(df_metrics, dirname="ex06", filename="mamba_control_metrics")
+    plot_signals(
+        df_loss["epoch"].values, [df_loss["loss"].values],
+        labels=["MSE Loss"], xlabel="Epoch", ylabel="Loss",
+        title=f"Convergence ({plant.__class__.__name__})",
+        dirname=dirname, filename="training_loss_plot"
+    )
 
-#     return()
+    return loss_history
 
+def load_controller(model_class, filepath, device='cuda'):
+    """
+    Loads a MambaInverseController and its configuration from a saved checkpoint.
+    
+    Args:
+        model_class: The class name (MambaInverseController).
+        filepath: Full path to the .pt file.
+        device: 'cuda' or 'cpu'.
+    """
+    # 1. Load the checkpoint dictionary from disk
+    # map_location ensures it works even if you move from GPU to CPU
+    checkpoint = torch.load(filepath, map_location=torch.device(device))
+    
+    # 2. Extract the saved config
+    model_config = checkpoint['model_config']
+    print(f"Loading model with config: {model_config}")
+    
+    # 3. Reconstruct the architecture using the saved hyperparams
+    model = model_class(**model_config)
+    
+    # 4. Load the learned weights (state_dict) into the model
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # 5. Move to device and set to evaluation mode
+    model.to(device)
+    model.eval() 
+    
+    return model, model_config
 
-def simulate_control(model, plant, reference_signal, duration, dt, device, dirname="ex06"):
+def simulate_control(model, plant, reference_signal, duration, dt, device, dirname):
     model.eval()
     state = plant.get_initial_state()
     history = []
@@ -293,7 +256,7 @@ def simulate_control(model, plant, reference_signal, duration, dt, device, dirna
 
     for i in range(steps):
         t = i * dt
-        y_meas = plant.get_y(state)
+        y_meas = plant.get_y(state, t)
         
         # 1. Reference Logic
         r_t = reference_signal[i] if isinstance(reference_signal, np.ndarray) else reference_signal
@@ -337,7 +300,10 @@ def simulate_control(model, plant, reference_signal, duration, dt, device, dirna
     t_data = df_sim["t"].values
     
     # Use the plant's own config to decide what to plot
-    plot_configs = plant.get_plot_config()
+    if hasattr(plant, 'get_plot_config'):
+        plot_configs = plant.get_plot_config()
+    else:
+        raise NotImplementedError("Plant class must implement get_plot_config() to specify plotting configuration.")
     
     for idx, config in enumerate(plot_configs):
         signals = [df_sim[col].values for col in config["cols"]]
@@ -353,7 +319,70 @@ def simulate_control(model, plant, reference_signal, duration, dt, device, dirna
         )
 
     print(f"Simulation finished. Data and {len(plot_configs)} plots saved to {dirname}.")
+
+    def calculate_metrics(df):
+        error = df["r"] - df["y"]
+        u_diff = df["u"].diff().abs().sum() # Total Variation
+        
+        metrics = {
+            "RMSE": np.sqrt((error**2).mean()),
+            "MAE": error.abs().mean(),
+            "Max_Error": error.abs().max(),
+            "Control_Total_Variation": u_diff,
+            "Mean_Control_Signal": df["u"].mean(),
+            "Standard_Deviation_Error": error.std()
+        }
+        return metrics
+
+    # In your simulate_control function:
+    perf_metrics = calculate_metrics(df_sim)
+    df_perf = pd.DataFrame([perf_metrics])
+    save_df_to_csv(df_perf, dirname=dirname, filename="performance_metrics")
     return()
+
+import torch
+import numpy as np
+import random
+import os
+
+def seed_everything(seed=42):
+    """
+    Seeds all relevant libraries to ensure reproducible results.
+    """
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed) # if you are using multi-GPU
+    
+    # Critical for CUDA reproducibility
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    
+    print(f"Random seed set to: {seed}")
+
+
+def load_model_complete(model_class, filepath, device='cuda'):
+    """
+    Loads a model without needing to manually provide params.
+    """
+    # 1. Load the checkpoint
+    checkpoint = torch.load(filepath, map_location=torch.device(device))
+    
+    # 2. Extract the config and reconstruct the architecture
+    model_config = checkpoint['model_config']
+    model = model_class(**model_config)
+    
+    # 3. Load the weights
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    model.to(device)
+    model.eval()
+    
+    print(f"Model loaded with config: {model_config}")
+    return model, model_config
+
 
 #=== FUNCTION TO CHOOSE NICE TICK STEP ===#
 def get_tick_step(data_min, data_max, n_ticks=6):

@@ -4,30 +4,35 @@ import joblib
 import sys
 import os
 import seaborn as sns
+import torch
 
 from src.sample.config import *
 #=== FUNCTION TO SAVE TRAINED MODEL ===#
-def save_model(model, dirname, filename):
+def save_model(model, model_config, dirname, filename):
     """
-    Save a trained machine learning model to a specified file path, ensuring that
-    the target directory exists.
-
+    Saves weights AND hyperparameters into one file.
+    
     Parameters:
-    - model (object): The trained model to be saved (e.g., a scikit-learn model).
-    - trained_model_path_name (str): Full path, including filename, where the model should be saved.
-    - path_name_mod (str): Directory path where the model file should be stored.
-
-    Returns:
-    - None: The function saves the model file but does not return anything.
-
-    This function first checks whether the target directory exists. If it does not, 
-    it creates the directory before saving the model using joblib.
+    - model: The trained model object.
+    - model_config (dict): Dictionary of hyperparams (e.g., {'d_model': 16, 'n_layers': 2})
     """
-    dirname = f"models/{date}/{date_and_time}/{dirname}"
-    if not os.path.exists(dirname):
-        os.makedirs(dirname)
-    filename = f"{date_and_time}_{filename}"
-    joblib.dump(model, dirname+filename)
+    full_dir_path = os.path.join("models", date, date_and_time, dirname)
+    if not os.path.exists(full_dir_path):
+        os.makedirs(full_dir_path)
+    
+    full_file_path = os.path.join(full_dir_path, f"{date_and_time}_{filename}.pt")
+
+    # Combine everything into one dictionary
+    checkpoint = {
+        'model_state_dict': model.state_dict(),
+        'model_config': model_config,
+        # You can even save training state:
+        'date': date,
+        'date_and_time': date_and_time
+    }
+    
+    torch.save(checkpoint, full_file_path)
+    print(f"Complete model package saved to: {full_file_path}")
 
 
 #=== FUNCTION FOR SAVING DATAFRAME AS CSV IN SPECIFIED DIRECTORY ===#

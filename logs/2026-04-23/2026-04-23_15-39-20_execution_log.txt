@@ -1,0 +1,5 @@
+2026-04-23 15:39:35 - Image successfully saved as 'training_loss_plot'
+2026-04-23 15:39:45 - Image successfully saved as 'plot_0_growth_rate'
+2026-04-23 15:39:46 - Image successfully saved as 'plot_1_control_action'
+2026-04-23 15:39:48 - Image successfully saved as 'plot_2_biomass'
+2026-04-23 15:39:50 - Image successfully saved as 'plot_3_substrate'

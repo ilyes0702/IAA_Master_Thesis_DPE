@@ -18,6 +18,7 @@ class MambaInverseController(BaseInverseController):
         Args:
             d_model (int): Dimension of the model hidden state (default: 32)
             d_state (int): Dimension of the state-space state (default: 16)
+            seed (str): Seed for reproducible results (default: "none")
         """
         super().__init__(input_dim=2, output_dim=1)
         
@@ -48,5 +49,5 @@ class MambaInverseController(BaseInverseController):
         # Process through Mamba state-space model for sequence understanding
         x = self.mamba(x)
         
-        # Project to output dimension and apply sigmoid activation for bounded output [0, 1]
-        return torch.sigmoid(self.output_proj(x))
+        # Project to output dimension
+        return self.output_proj(x)

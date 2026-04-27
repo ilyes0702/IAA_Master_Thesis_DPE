@@ -1,0 +1,2 @@
+2026-04-27 13:07:08 - Image successfully saved as 'plot_0_growth_rate'
+2026-04-27 13:07:10 - Image successfully saved as 'plot_1_control_action'
