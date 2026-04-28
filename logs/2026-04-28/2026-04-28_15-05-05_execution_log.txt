@@ -1,0 +1,3 @@
+2026-04-28 13:05:19 - RUN DESCRIPTION: now plotting for different inital states individually
+2026-04-28 13:05:20 - RUN DESCRIPTION: 
+2026-04-28 13:05:28 - Image successfully saved as 'batch_simulation_all_curves'

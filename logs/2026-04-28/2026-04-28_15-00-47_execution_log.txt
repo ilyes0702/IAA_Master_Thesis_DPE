@@ -1,0 +1,3 @@
+2026-04-28 13:01:04 - RUN DESCRIPTION: Testing the parallel simulation of 5 different inital states
+2026-04-28 13:01:05 - RUN DESCRIPTION: 
+2026-04-28 13:01:14 - Image successfully saved as 'batch_simulation_stats'

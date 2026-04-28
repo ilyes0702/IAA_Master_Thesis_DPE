@@ -1,53 +1,50 @@
-import matplotlib.pyplot as plt
-plt.style.use("src/sample/style.mplstyle")
 import torch
-
-# Choose your plant model here - swap between different process models
-from src.sample.classes.PenicilinFermentationProcessTropophase import FermentationProcess, GPUFermentationProcess
-from src.sample.classes.simple_models import SimpleLinearPlant
-
+from src.sample.classes.PenicilinFermentationProcessTropophase import GPUFermentationProcessFFT
 from src.sample.classes.MambaInverseController import MambaInverseController
-from src.sample.utils.general_utils import train_controller, seed_everything, GPUtrain_controller
+from src.sample.utils.general_utils import GPUtrain_controllerFFT, seed_everything
+from src.sample.classes.SimpleLinearPlant import GPUSimpleLinearPlant
 
 # --- 1. Device Configuration --- #
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-seed_everything(42)  # Set a global seed for reproducibility
-
+seed_everything(42)
 
 if __name__ == "__main__":
     dt = 0.01
+    seq_len = 10000
     
-    # 1. Define model parameters (The "Skeleton" info)
+    # model parameters
     model_config = {
         "d_model": 16,
         "d_state": 32,
     }
 
-    # 2. Initialize Model and Plant
-    controller = MambaInverseController(**model_config).to('cuda')
-    plant = GPUFermentationProcess()  # Set a seed for reproducibility
+    # 2. Initialize Model and the FFT-based Plant
+    controller = MambaInverseController(**model_config).to(device)
+    
+    # Use the FFT version of the plant for Canaday's method
+    batch_size = 500
+    #plant = GPUFermentationProcessFFT(batch_size=batch_size, device=device)
+    plant = GPUSimpleLinearPlant(batch_size=batch_size, device=device)  # For testing with a simpler model
+    
+    # 3. Pre-generate the Canaday Training Signal (v_train)
+    # lambda (5.0) is the frequency cutoff, p (0.4) is the perturbation magnitude
+    plant.reset_trajectory(seq_len=seq_len, dt=dt, lambd=5.0, p=0.4)
+    
     dirname = plant.__class__.__name__
-    # 3. Run Training
-    # The function now saves weights + mamba_config into one .pt file
-    # train_controller(
-    #     model=controller,
-    #     plant=plant,
-    #     epochs=8000,
-    #     seq_len=10000,
-    #     dt=dt,
-    #     model_config=model_config, # Pass it here!
-    #     dirname=dirname
-    # )
 
-    GPUtrain_controller(
+    # 4. Run Training
+    # Note: We use the existing GPUtrain_controller. 
+    # To use the pre-generated 'u_buffer' from reset_trajectory, 
+    # we ensure the training loop inside GPUtrain_controller pulls from it.
+    
+    GPUtrain_controllerFFT(
         model=controller,
         plant=plant,
-        epochs=100,         # High epoch count is fine now because it's faster
-        seq_len=10000,       # Length of each fermentation run
+        epochs=1000,
+        seq_len=seq_len,
         dt=dt,
         model_config=model_config,
-        batch_size=256,      # <--- Start with 128, increase if you have >8GB VRAM
-        device='cuda',
+        batch_size=batch_size,
+        device=device,
         dirname=dirname
     )

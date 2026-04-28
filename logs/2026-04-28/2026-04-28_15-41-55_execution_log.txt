@@ -1,0 +1,3 @@
+2026-04-28 13:42:06 - RUN DESCRIPTION: testing the saving of hyperparameters
+2026-04-28 13:42:09 - RUN DESCRIPTION: 
+2026-04-28 13:42:17 - Image successfully saved as 'batch_simulation_all_curves'

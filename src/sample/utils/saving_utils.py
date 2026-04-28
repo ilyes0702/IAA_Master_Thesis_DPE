@@ -8,31 +8,30 @@ import torch
 
 from src.sample.config import *
 #=== FUNCTION TO SAVE TRAINED MODEL ===#
-def save_model(model, model_config, dirname, filename):
+def save_model(model, hyperparam_config, dirname, filename):
     """
-    Saves weights AND hyperparameters into one file.
+    Saves weights AND the complete central configuration into one file.
     
     Parameters:
     - model: The trained model object.
-    - model_config (dict): Dictionary of hyperparams (e.g., {'d_model': 16, 'n_layers': 2})
+    - full_config (dict): The entire nested dictionary containing all params.
     """
+    # Use the logic you already have for paths
     full_dir_path = os.path.join("models", date, date_and_time, dirname)
-    if not os.path.exists(full_dir_path):
-        os.makedirs(full_dir_path)
+    os.makedirs(full_dir_path, exist_ok=True)
     
     full_file_path = os.path.join(full_dir_path, f"{date_and_time}_{filename}.pt")
 
     # Combine everything into one dictionary
     checkpoint = {
         'model_state_dict': model.state_dict(),
-        'model_config': model_config,
-        # You can even save training state:
+        'full_config': hyperparam_config,  # <--- Save the whole central config here
         'date': date,
         'date_and_time': date_and_time
     }
     
     torch.save(checkpoint, full_file_path)
-    print(f"Complete model package saved to: {full_file_path}")
+    print(f"📦 Complete run package saved to: {full_file_path}")
 
 
 #=== FUNCTION FOR SAVING DATAFRAME AS CSV IN SPECIFIED DIRECTORY ===#

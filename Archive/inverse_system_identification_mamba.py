@@ -4,7 +4,7 @@ import torch
 
 # Choose your plant model here - swap between different process models
 from src.sample.classes.PenicilinFermentationProcessTropophase import FermentationProcess
-from src.sample.classes.simple_models import SimpleLinearPlant
+from sample.classes.SimpleLinearPlant import SimpleLinearPlant
 
 from src.sample.classes.MambaInverseController import MambaInverseController
 from src.sample.utils.general_utils import simulate_control, train_controller
