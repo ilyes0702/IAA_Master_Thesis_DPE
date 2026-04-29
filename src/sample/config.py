@@ -31,13 +31,12 @@ def log_message(message):
     """
     logging.info(message)
 
-# --- Prompt for run description ---
-print("\n" + "="*30)
-run_description = input("Describe this run: ")
-print("="*30 + "\n")
-
-# Log the description immediately so it's the first thing in the file
-log_message(f"RUN DESCRIPTION: {run_description}")
+def get_run_description():
+    """Prompts for a description only when executed directly."""
+    print("\n" + "="*30)
+    description = input("Describe this run: ")
+    print("="*30 + "\n")
+    return description
 
 
 

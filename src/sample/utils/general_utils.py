@@ -1,5 +1,7 @@
 # Import standard libraries
+from logging import config
 import os
+from networkx import config
 import sys
 import numpy as np
 import pandas as pd
@@ -14,16 +16,31 @@ import torch.nn as nn
 import pandas as pd
 import os
 import torch
+from src.sample.classes.MambaInverseController import MambaInverseController
 
 plt.style.use("src/sample/style.mplstyle")
 
 @track_resources
-def GPUtrain_controllerFFT(model, plant, epochs, seq_len, dt, model_config, batch_size, device='cuda', dirname="name_directory"):
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+def GPUtrain_controllerFFT(model, plant, hyperparam_config, dirname="name_directory"):
+    # --- EXTRACT HYPERPARAMETERS FROM CONFIG ---
+    # Training params
+    train_cfg = hyperparam_config["train"]
+    epochs = train_cfg["epochs"]
+    batch_size = train_cfg["batch_size"]
+    lr = train_cfg["lr"]
+    device = train_cfg["device"]
+    
+    # Signal params
+    sig_cfg =   hyperparam_config["signal"]
+    seq_len = sig_cfg["seq_len"]
+    dt = sig_cfg["dt"]
+    lambd = sig_cfg.get("lambd", 5.0)
+    p = sig_cfg.get("p", 0.4)
+
+    # --- INITIALIZE TRAINING ---
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.MSELoss()
     loss_history = []
-
-    # List to hold all data for the final master CSV
     all_data_frames = []
 
     # Create a directory for individual sequence CSVs
@@ -31,12 +48,13 @@ def GPUtrain_controllerFFT(model, plant, epochs, seq_len, dt, model_config, batc
     os.makedirs(seq_dir, exist_ok=True)
 
     model.to(device)
-    print(f"🚀 Training Mamba {plant.__class__.__name__}")
+    print(f"🚀 Training Mamba {plant.__class__.__name__} on {device}")
 
     for epoch in range(epochs):
+        # Reset trajectory using parameters from config
         if hasattr(plant, 'reset_trajectory'):
             try:
-                plant.reset_trajectory(seq_len=seq_len, dt=dt, lambd=5.0, p=0.4)
+                plant.reset_trajectory(seq_len=seq_len, dt=dt, lambd=lambd, p=p)
             except TypeError:
                 plant.reset_trajectory()
 
@@ -47,8 +65,10 @@ def GPUtrain_controllerFFT(model, plant, epochs, seq_len, dt, model_config, batc
         with torch.no_grad():
             for t_idx in range(seq_len):
                 t = t_idx * dt
-                u_signal = plant.get_u_at_step(t_idx) if hasattr(plant, 'get_u_at_step') else \
-                           torch.rand((batch_size, 1), device=device) * plant.U_MAX
+                if hasattr(plant, 'get_u_at_step'):
+                    u_signal = plant.get_u_at_step(t_idx)
+                else:
+                    u_signal = torch.rand((batch_size, 1), device=device) * plant.U_MAX
 
                 y_t = plant.get_y(state, t)
                 state_next, y_next = plant.step(state, u_signal, t, dt)
@@ -59,25 +79,21 @@ def GPUtrain_controllerFFT(model, plant, epochs, seq_len, dt, model_config, batc
                 state = state_next.detach()
 
         # --- DATA PREPARATION FOR CSV ---
-        # We take the first batch [0] from this epoch to save as an example sequence CSV
-        y_t_stack = torch.stack(all_y_t, dim=1).cpu().numpy()      # [Batch, Seq, Feat]
+        y_t_stack = torch.stack(all_y_t, dim=1).cpu().numpy()
         y_next_stack = torch.stack(all_y_next, dim=1).cpu().numpy()
         u_stack = torch.stack(all_u, dim=1).cpu().numpy()
 
-        # Create a DataFrame for this specific epoch's first batch sequence
         epoch_df = pd.DataFrame({
             "t": [i*dt for i in range(seq_len)],
             "y_t": y_t_stack[0, :, 0],
             "y_next": y_next_stack[0, :, 0],
             "u_control": u_stack[0, :, 0]
         })
-        # Save individual sequence (one per epoch to avoid file bloat)
+        
         save_df_to_csv(epoch_df, 
                        dirname=dirname+"/sequences",
                        filename=f"sample_trajectory_epoch_{epoch}_seq_0.csv")
 
-        # Append to our master list (flattening the batch dimension for describe())
-        # We sample only the first batch item to keep the master CSV size manageable
         all_data_frames.append(epoch_df)
 
         # --- TRAINING PHASE ---
@@ -99,14 +115,13 @@ def GPUtrain_controllerFFT(model, plant, epochs, seq_len, dt, model_config, batc
 
     # --- FINAL AGGREGATION & SAVING ---
     master_df = pd.concat(all_data_frames, ignore_index=True)
-
-    # Save master CSV
     save_df_to_csv(master_df, dirname=dirname, filename="all_training_data_summary")
 
-    # Save Loss
     df_loss = pd.DataFrame({"epoch": range(1, epochs + 1), "loss": loss_history})
     save_df_to_csv(df_loss, dirname=dirname, filename="training_loss_history")
-    save_model(model, dirname=dirname, model_config=model_config, filename="trained_controller")
+    
+    # Passing the whole config for tracking
+    save_model(model, dirname=dirname, hyperparam_config=hyperparam_config, filename="trained_controller")
 
     plot_signals(
         df_loss["epoch"].values, [df_loss["loss"].values],
@@ -115,7 +130,7 @@ def GPUtrain_controllerFFT(model, plant, epochs, seq_len, dt, model_config, batc
         dirname=dirname, filename="training_loss_plot"
     )
 
-    return()
+    return loss_history
 
 ### 00
 def train_controller(model, plant, epochs, seq_len, dt, model_config,device='cuda', dirname="name_directory"):
@@ -323,34 +338,24 @@ def GPUtrain_controller(model, plant, hyperparam_config, dirname="name_directory
 
     return loss_history
 
-def load_controller(model_class, filepath, device='cuda'):
-    """
-    Loads a MambaInverseController and its configuration from a saved checkpoint.
-    
-    Args:
-        model_class: The class name (MambaInverseController).
-        filepath: Full path to the .pt file.
-        device: 'cuda' or 'cpu'.
-    """
-    # 1. Load the checkpoint dictionary from disk
-    # map_location ensures it works even if you move from GPU to CPU
-    checkpoint = torch.load(filepath, map_location=torch.device(device))
-    
-    # 2. Extract the saved config
-    model_config = checkpoint['model_config']
-    print(f"Loading model with config: {model_config}")
-    
-    # 3. Reconstruct the architecture using the saved hyperparams
-    model = model_class(**model_config)
-    
-    # 4. Load the learned weights (state_dict) into the model
+def load_model(checkpoint_path, device=None):
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    hyperparam_config = checkpoint['config']
+    model = MambaInverseController(hyperparam_config)
+
+    if device is None:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
-    
-    # 5. Move to device and set to evaluation mode
-    model.to(device)
-    model.eval() 
-    
-    return model, model_config
+    model.eval()
+    return model
+
+# --- Usage ---
+# path = "models/2026-04-29/2026-04-29_11-22/my_experiment/2026-04-29_11-22_trained_controller.pt"
+# model, config = load_mamba_controller(path)
+
+# --- Usage Example ---
+# my_model, my_config = load_mamba_controller("results/name_directory/trained_controller.pt")
 
 def simulate_control(model, plant, reference_signal, duration, dt, device, dirname):
     model.eval()
@@ -553,88 +558,73 @@ def GPUSimulateControl(model, plant, reference_signal, duration, dt, device, dir
 
 def GPUSimulateControl_new(model, plant, hyperparam_config, dirname):
     """
-    Vectorized simulation using the central config dictionary.
+    GPU-parallel simulation using the plant-defined batch size.
     """
-    # 1. Extract local variables for cleaner code
+
     train_cfg = hyperparam_config["train"]
-    sig_cfg = hyperparam_config["signal"]
-    plant_cfg = hyperparam_config["plant"]
+    sig_cfg   = hyperparam_config["signal"]
+    sim_cfg   = hyperparam_config["simulate"]
 
     device = train_cfg["device"]
     dt = sig_cfg["dt"]
-    # We use duration from signal config, or pass it manually if preferred
-    duration = sig_cfg.get("duration", 50) 
-    
-    model.eval()
-    
-    # 2. Initialize State and Tensors
-    state = plant.get_initial_state() 
-    batch_size = state.shape[0]
-    steps = int(duration / dt)
-    
-    # Pre-allocate on GPU
-    context_tensor = torch.zeros((batch_size, steps, 2), device=device)
-    all_y = torch.zeros((steps, batch_size), device=device)
+    steps = sig_cfg["seq_len"]
 
-    # Use reference from plant or config
-    ref_val_raw = plant_cfg.get("ref_value", 0.5)
-    
-    print(f"🚀 Simulating {batch_size} trajectories for {duration}h...")
+    # ✅ Enforce single source of truth
+    batch_size = hyperparam_config["simulate"]["batch_size"]
+
+    # --- Init state ---
+    state = plant.get_initial_state(batch_size)
+
+    # --- Allocate ---
+    context = torch.zeros((batch_size, steps, 2), device=device)
+    all_y   = torch.zeros((steps, batch_size), device=device)
+
+    ref_val = plant.ref_value
+    r_tensor = ref_val.expand(batch_size, 1)
+
+    print(f"🚀 Simulating {batch_size} trajectories ({steps * dt:.2f} h)")
 
     with torch.no_grad():
         for i in range(steps):
             t = i * dt
-            y_meas = plant.get_y(state, t)
-            
-            # --- Vectorized Inference ---
-            # Create a batch of references
-            r_tensor = torch.full((batch_size, 1), ref_val_raw, device=device)
-            
-            # Normalize using values from config/plant attributes
-            y_norm = y_meas / plant.Y_MAX
+
+            y = plant.get_y(state, t)
+
+            y_norm = y / plant.Y_MAX
             r_norm = r_tensor / plant.Y_MAX
-            
-            context_tensor[:, i, 0] = y_norm.squeeze()
-            context_tensor[:, i, 1] = r_norm.squeeze()
-            
-            # Mamba Inference
-            u_out = model(context_tensor[:, :i+1, :]) 
-            u_phys = u_out[:, -1, 0:1] * plant.U_MAX
 
-            # Physics Step
-            state, _ = plant.step(state, u_phys, t, dt)
-            
-            # Record result
-            all_y[i] = y_meas.squeeze()
+            context[:, i, 0] = y_norm.squeeze()
+            context[:, i, 1] = r_norm.squeeze()
 
-    # --- Prepare Data for individual curve plotting ---
+            u_out = model(context[:, : i + 1])
+            u = u_out[:, -1, 0:1] * plant.U_MAX
+
+            state, _ = plant.step(state, u, t, dt)
+            all_y[i] = y.squeeze()
+
+    # --- Plotting ---
     time_axis = np.arange(steps) * dt
-    y_np = all_y.cpu().numpy() 
+    y_np = all_y.cpu().numpy()
 
-    # Unpack batch into list for plot_signals
-    signals_to_plot = [y_np[:, j] for j in range(batch_size)]
+    signals = [y_np[:, j] for j in range(batch_size)]
+    signals.append(np.full(steps, ref_val.item()))
 
-    # Add Target Line
-    signals_to_plot.append(np.full(steps, ref_val_raw))
-
-    # Handle Labels (avoiding 512 legend entries)
     labels = [None] * batch_size
-    labels[0] = "Individual Runs" 
-    labels.append("Target") 
+    labels[0] = "Individual Runs"
+    labels.append("Target")
 
-    # 4. Call your custom function
-    final_image = plot_signals(
+    plot_signals(
         t=time_axis,
-        signals=signals_to_plot,
+        signals=signals,
         labels=labels,
-        title=f"Parallel Simulation: {batch_size} Individual Trajectories",
+        title=f"Parallel Simulation ({batch_size} Trajectories)",
         xlabel="Time (h)",
         ylabel="Plant Output",
         dirname=dirname,
         filename="batch_simulation_all_curves"
     )
 
-    return final_image
+    return()
 
 import torch
 import numpy as np

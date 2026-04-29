@@ -11,7 +11,7 @@ class MambaInverseController(BaseInverseController):
     This controller processes sequential input data and produces control signals.
     """
     
-    def __init__(self, d_model=32, d_state=16):
+    def __init__(self, hyperparam_config):
         """
         Initialize the Mamba controller with specified model and state dimensions.
         
@@ -21,17 +21,19 @@ class MambaInverseController(BaseInverseController):
             seed (str): Seed for reproducible results (default: "none")
         """
         super().__init__(input_dim=2, output_dim=1)
+        self.d_model = hyperparam_config["mamba"]["d_model"]
+        self.d_state = hyperparam_config["mamba"]["d_state"]
         
         # Project input from 2 dimensions to d_model dimensions
         # Input is expected to be 2-dimensional (e.g., reference and current values)
-        self.input_proj = nn.Linear(2, d_model)
+        self.input_proj = nn.Linear(2, self.d_model)
         
         # Mamba SSM block: efficient state-space model for sequence processing
         # d_conv=4: convolution dimension, expand=2: expansion factor for hidden layers
-        self.mamba = Mamba(d_model=d_model, d_state=d_state, d_conv=4, expand=2)
+        self.mamba = Mamba(d_model=self.d_model, d_state=self.d_state, d_conv=4, expand=2)
         
         # Project output from d_model dimensions back to 1 dimension (scalar control output)
-        self.output_proj = nn.Linear(d_model, 1)
+        self.output_proj = nn.Linear(self.d_model, 1)
 
     def forward(self, y_seq):
         """

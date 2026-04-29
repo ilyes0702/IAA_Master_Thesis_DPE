@@ -25,7 +25,65 @@ from sklearn.metrics import PredictionErrorDisplay
 # IMPORT CUSTOM MODULES
 from src.sample.decorators.general_decorators import *
 
+import numpy as np
+import matplotlib.pyplot as plt
+from io import BytesIO
+from PIL import Image
 
+
+@save_image_decorator
+def plot_signals_flexible(
+    t,                # Can be a single array OR a list of arrays
+    signals,          # List of arrays
+    labels=None,
+    title=None,
+    xlabel="Time",
+    ylabel="Value",
+    figsize=(10, 5),
+    save_path=None,
+    show=False,
+    filename=None,
+    dirname=None
+):
+    fig, ax = plt.subplots(figsize=figsize, layout="constrained")
+
+    for i, sig in enumerate(signals):
+        # Determine which x-axis to use for this specific signal
+        # If t is a list, take the i-th element; otherwise, use t for all.
+        current_t = t[i] if isinstance(t, list) else t
+        
+        if labels is not None:
+            ax.plot(current_t, sig, label=labels[i])
+        else:
+            ax.plot(current_t, sig)
+
+    # === FIXED ASPECT RATIO === #
+    # Note: If x and y scales are vastly different, this can make the plot very thin.
+    x_min, x_max = ax.get_xlim()
+    y_min, y_max = ax.get_ylim()
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+    if y_range != 0:
+        ax.set_aspect(x_range / y_range)
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+
+    if title:
+        ax.set_title(title)
+    if labels:
+        ax.legend()
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+    if show:
+        plt.show()
+
+    # Save to buffer and return as PIL Image
+    buf = BytesIO()
+    plt.savefig(buf, format="PNG", dpi=600)
+    buf.seek(0)
+    plt.close()
+    return Image.open(buf)
 
 #=== FUNCTION TO PLOT SIGNALS ===#
 @save_image_decorator

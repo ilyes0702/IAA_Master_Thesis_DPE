@@ -9,7 +9,7 @@ hyperparam_config = {
     "signal": {
         "lambd": 5.0,
         "p": 0.4,
-        "seq_len": 500,
+        "seq_len": 5000,
         "dt": 0.01
     },
     "train": {
@@ -22,5 +22,8 @@ hyperparam_config = {
         "d_model": 64,
         "n_layers": 4,
         "d_state": 16
+    },
+    "simulate": {
+        "batch_size": 5
     }
 }
