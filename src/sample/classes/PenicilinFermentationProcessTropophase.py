@@ -2,100 +2,145 @@ import numpy as np
 from src.sample.classes.BasePlant import BasePlant
 import torch.fft
 
+import torch
+
 class GPUFermentationProcessFFT:
-    def __init__(self, batch_size, device="cuda"):
-        self.device = device
-        self.batch_size = batch_size
+    def __init__(self, hyperparam_config):
+        self.device = hyperparam_config["train"]["device"]
+
+        self.seq_len = hyperparam_config["signal"]["seq_len"]
+        self.lambd = hyperparam_config["signal"]["lambd"]
+        self.p = hyperparam_config["signal"]["p"]
+        self.dt = hyperparam_config["signal"]["dt"]
         
-        # Physical constants (Fixed/No noise)
-        self.mu_max = torch.tensor(0.12, device=device)
-        self.Ks = torch.tensor(0.05, device=device)
-        self.p1 = torch.tensor(0.47, device=device)
-        self.p2 = torch.tensor(200.0, device=device)
-        self.ms = torch.tensor(0.023, device=device)
+        # Physical constants (fixed, no noise)
+        self.mu_max = torch.tensor(0.12, device=self.device)
+        self.Ks = torch.tensor(0.05, device=self.device)
+        self.p1 = torch.tensor(0.47, device=self.device)
+        self.p2 = torch.tensor(200.0, device=self.device)
+        self.ms = torch.tensor(0.023, device=self.device)
+        self.ref_value = torch.tensor(0.015, device=self.device)  # Target growth rate for simulation tests
         
         # Normalization and constraints
-        self.U_MAX = 1.0
-        self.Y_MAX = 0.12
+        self.U_MAX = hyperparam_config["plant"]["u_max"]
+        self.Y_MAX = hyperparam_config["plant"]["y_max"]
+        self.batch_size = hyperparam_config["train"]["batch_size"]
+        # Control buffer
+        self.u_buffer = None
 
-        # Trajectory parameters for data diversity during training
-        self.curr_amp = torch.tensor(0.3, device=device)
-        self.curr_freq = torch.tensor(0.05, device=device)
-        self.curr_phase = torch.tensor(0.0, device=device)
+    # ------------------------------------------------------------------
+    # State initialization
+    # ------------------------------------------------------------------
 
-    def get_initial_state(self):
-        """Returns a [batch_size, 2] tensor of [Biomass, Substrate]"""
-        base_state = torch.tensor([1.0, 5e-3], device=self.device, dtype=torch.float32)
-        return base_state.repeat(self.batch_size, 1)
+    def get_initial_state(self, batch_size):
+        """
+        Returns [batch_size, 2] tensor:
+        [Biomass, Substrate]
+        """
+        base_state = torch.tensor(
+            [1.0, 5e-3],
+            device=self.device,
+            dtype=torch.float32
+        )
+        return base_state.unsqueeze(0).repeat(batch_size, 1)
+
+    # ------------------------------------------------------------------
+    # Plant outputs
+    # ------------------------------------------------------------------
 
     def get_V(self, t):
-        """Vectorized Volume dynamics: handles scalars or tensors of t"""
+        """Vectorized reactor volume"""
         if not torch.is_tensor(t):
             t = torch.tensor(t, device=self.device, dtype=torch.float32)
-            
-        # Efficient GPU switching logic
-        v = torch.where(t < 5.0, 
-                        torch.tensor(150.0, device=self.device), 
-                        torch.where(t < 15.0, 150.0 + 2.0 * (t - 5.0), torch.tensor(170.0, device=self.device)))
-        return v
+
+        return torch.where(
+            t < 5.0,
+            torch.tensor(150.0, device=self.device),
+            torch.where(
+                t < 15.0,
+                150.0 + 2.0 * (t - 5.0),
+                torch.tensor(170.0, device=self.device),
+            )
+        )
 
     def get_y(self, state, t):
-        """Calculates growth rate (mu) based on Monod kinetics"""
-        x2 = state[:, 1:2] 
+        """
+        Growth rate μ (this is the plant output)
+        """
+        x2 = state[:, 1:2]
         V = self.get_V(t)
         mu = (self.mu_max * x2) / (self.Ks * V + x2)
         return mu
 
-    def step(self, state, u, t, dt=0.01):
-        """Vectorized physics step for the entire batch"""
-        x1 = state[:, 0:1] # Biomass
-        
+    # ------------------------------------------------------------------
+    # Physics update
+    # ------------------------------------------------------------------
+
+    def step(self, state, u, t, dt=None):
+        """
+        Vectorized plant dynamics
+        """
+        if dt is None:
+            dt = self.dt
+
+        x1 = state[:, 0:1]  # Biomass
+
         mu = self.get_y(state, t)
 
-        # ODE Equations
         dx1 = mu * x1
-        dx2 = -(1.0/self.p1) * mu * x1 - self.ms * x1 + self.p2 * u
+        dx2 = -(1.0 / self.p1) * mu * x1 - self.ms * x1 + self.p2 * u
 
-        # Euler Integration
-        # Concatenating dx along the state dimension
         derivative = torch.cat([dx1, dx2], dim=1)
         state_next = state + derivative * dt
-        
-        # Physical boundary: Concentrations must be positive
+
+        # Physical constraint
         state_next = torch.clamp(state_next, min=1e-6)
 
         return state_next, mu
 
-    def reset_trajectory(self, seq_len, dt, lambd=5.0, p=0.4):
+    # ------------------------------------------------------------------
+    # Control trajectory generation (FFT)
+    # ------------------------------------------------------------------
+
+    def reset_trajectory(self):
         """
-        Generates v_train (the smooth noise signal) as described in the paper.
-        λ (lambd) determines the smoothness.
-        p determines the perturbation range.
+        Generates smooth control trajectories using FFT.
         """
+        seq_len = self.seq_len
+        dt = self.dt
+        lambd = self.lambd
+        p = self.p
+
         # 1. Sample uniform noise
         raw = torch.rand((self.batch_size, seq_len), device=self.device) * 2 - 1
-        
+
         # 2. FFT
         fft_sig = torch.fft.rfft(raw, dim=1)
         freqs = torch.fft.rfftfreq(seq_len, d=dt)
-        
-        # 3. Filter (cutoff = 1/lambda)
+
+        # 3. Low-pass filter
         fft_sig[:, freqs > (1.0 / lambd)] = 0
-        
+
         # 4. Inverse FFT
         v_train = torch.fft.irfft(fft_sig, n=seq_len, dim=1)
-        
-        # 5. Rescale to [-1, 1] then to [0.5 - p, 0.5 + p]
+
+        # 5. Normalize to control range
         v_min = v_train.min(dim=1, keepdim=True)[0]
         v_max = v_train.max(dim=1, keepdim=True)[0]
         v_norm = 2 * (v_train - v_min) / (v_max - v_min + 1e-8) - 1
-        
-        # Final control signal shifted to be positive (for pump)
-        self.u_buffer = torch.clamp(0.5 + (v_norm * p), 0.0, self.U_MAX)
+
+        self.u_buffer = torch.clamp(
+            0.5 + (v_norm * p),
+            0.0,
+            self.U_MAX
+        )
 
     def get_u_at_step(self, t_idx):
-        """Returns [batch_size, 1] for the current time step"""
+        """
+        Returns [batch_size, 1] control input
+        """
         return self.u_buffer[:, t_idx].unsqueeze(1)
+
     
 
 class FermentationProcess(BasePlant):

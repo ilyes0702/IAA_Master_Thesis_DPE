@@ -20,7 +20,8 @@ if __name__ == "__main__":
     controller = MambaInverseController(hyperparam_config=hyperparam_config).to(device)
     
     # Initialize plant    
-    plant = GPUSimpleLinearPlant(hyperparam_config=hyperparam_config)    
+    plant = GPUSimpleLinearPlant(hyperparam_config=hyperparam_config)   
+    #plant = GPUFermentationProcessFFT(hyperparam_config=hyperparam_config) 
     
     # 3. Pre-generate the training trajectory for the plant
     plant.reset_trajectory()

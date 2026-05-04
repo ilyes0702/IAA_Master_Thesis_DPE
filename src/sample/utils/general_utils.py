@@ -58,7 +58,7 @@ def GPUtrain_controllerFFT(model, plant, hyperparam_config, dirname="name_direct
             except TypeError:
                 plant.reset_trajectory()
 
-        state = plant.get_initial_state()
+        state = plant.get_initial_state(batch_size)
         all_y_t, all_y_next, all_u = [], [], []
 
         # --- SIMULATION PHASE ---
@@ -554,7 +554,109 @@ def GPUSimulateControl(model, plant, reference_signal, duration, dt, device, dir
     print(f"✅ Simulation complete. Metrics: RMSE={perf_metrics['RMSE']:.5f}")
     return df_sim
 
+import numpy as np
+import pandas as pd
 
+def compute_and_save_stabilization_metrics(
+    y_np,
+    ref_val,
+    dt,
+    dirname,
+    settle_tol=0.05,
+    steady_frac=0.2,
+):
+    """
+    Compute stabilization metrics and save them to CSV.
+    """
+
+    steps, batch_size = y_np.shape
+    ref = ref_val.item()
+
+    error = y_np - ref
+    abs_error = np.abs(error)
+
+    # --- Error-based metrics ---
+    mae = abs_error.mean(axis=0)
+    mse = (error ** 2).mean(axis=0)
+    iae = abs_error.sum(axis=0) * dt
+    ise = (error ** 2).sum(axis=0) * dt
+
+    # --- Overshoot ---
+    overshoot = np.max(y_np, axis=0) - ref
+
+    # --- Settling time ---
+    settle_band = settle_tol * abs(ref)
+    settling_time = np.full(batch_size, np.nan)
+
+    for b in range(batch_size):
+        for t in range(steps):
+            if np.all(abs_error[t:, b] <= settle_band):
+                settling_time[b] = t * dt
+                break
+
+    # --- Steady-state error ---
+    n_ss = int(steps * steady_frac)
+    steady_state_error = abs_error[-n_ss:, :].mean(axis=0)
+
+    # --- Assemble DataFrame ---
+    df = pd.DataFrame({
+        "trajectory": np.arange(batch_size),
+        "MAE": mae,
+        "MSE": mse,
+        "IAE": iae,
+        "ISE": ise,
+        "Overshoot": overshoot,
+        "SettlingTime": settling_time,
+        "SteadyStateError": steady_state_error,
+    })
+
+    # --- Also save aggregate statistics ---
+    summary_df = pd.DataFrame({
+        "metric": [
+            "MAE", "MSE", "IAE", "ISE",
+            "Overshoot", "SettlingTime", "SteadyStateError"
+        ],
+        "mean": [
+            np.nanmean(mae),
+            np.nanmean(mse),
+            np.nanmean(iae),
+            np.nanmean(ise),
+            np.nanmean(overshoot),
+            np.nanmean(settling_time),
+            np.nanmean(steady_state_error),
+        ],
+        "std": [
+            np.nanstd(mae),
+            np.nanstd(mse),
+            np.nanstd(iae),
+            np.nanstd(ise),
+            np.nanstd(overshoot),
+            np.nanstd(settling_time),
+            np.nanstd(steady_state_error),
+        ],
+        "worst": [
+            np.nanmax(mae),
+            np.nanmax(mse),
+            np.nanmax(iae),
+            np.nanmax(ise),
+            np.nanmax(overshoot),
+            np.nanmax(settling_time),
+            np.nanmax(steady_state_error),
+        ],
+    })
+
+    # --- Save using your existing utility ---
+    save_df_to_csv(
+        df=df,
+        dirname=dirname,
+        filename="stabilization_metrics_per_trajectory",
+    )
+
+    save_df_to_csv(
+        df=summary_df,
+        dirname=dirname,
+        filename="stabilization_metrics_summary",
+    )
 
 def GPUSimulateControl_new(model, plant, hyperparam_config, dirname):
     """
@@ -567,7 +669,7 @@ def GPUSimulateControl_new(model, plant, hyperparam_config, dirname):
 
     device = train_cfg["device"]
     dt = sig_cfg["dt"]
-    steps = sig_cfg["seq_len"]
+    steps = sim_cfg["seq_len"]
 
     # ✅ Enforce single source of truth
     batch_size = hyperparam_config["simulate"]["batch_size"]
@@ -605,6 +707,13 @@ def GPUSimulateControl_new(model, plant, hyperparam_config, dirname):
     # --- Plotting ---
     time_axis = np.arange(steps) * dt
     y_np = all_y.cpu().numpy()
+
+    compute_and_save_stabilization_metrics(
+        y_np=y_np,
+        ref_val=ref_val,
+        dt=dt,
+        dirname=dirname,
+    )
 
     signals = [y_np[:, j] for j in range(batch_size)]
     signals.append(np.full(steps, ref_val.item()))

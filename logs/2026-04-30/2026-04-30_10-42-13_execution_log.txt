@@ -1,0 +1,2 @@
+2026-04-30 08:42:17 - RUN DESCRIPTION: 
+2026-04-30 08:42:31 - Image successfully saved as 'batch_simulation_all_curves'

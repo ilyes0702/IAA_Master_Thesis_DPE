@@ -1,10 +1,9 @@
-import torch
-hyperparam_config = {
+{
     "plant": {
         "tau": 2.0,
         "gain": 0.8,
-        "y_max": 1.0,  # Scaling constant
-        "u_max": 1.0   # Scaling constant
+        "y_max": 1.0,
+        "u_max": 1.0
     },
     "signal": {
         "lambd": 5.0,
@@ -13,10 +12,10 @@ hyperparam_config = {
         "dt": 0.01
     },
     "train": {
-        "epochs": 1000,
+        "epochs": 400,
         "batch_size": 256,
-        "lr": 1e-3,
-        "device": "cuda" if torch.cuda.is_available() else "cpu"
+        "lr": 0.001,
+        "device": "cuda"
     },
     "mamba": {
         "d_model": 64,
@@ -24,7 +23,7 @@ hyperparam_config = {
         "d_state": 16
     },
     "simulate": {
-        "batch_size": 50,
-        "seq_len": 3000,
+        "batch_size": 5,
+        "seq_len": 3000
     }
 }

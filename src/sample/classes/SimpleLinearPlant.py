@@ -16,7 +16,7 @@ class GPUSimpleLinearPlant:
         
         # Buffer for Canaday signal
         self.u_buffer = None
-        self.ref_value = torch.tensor(0.5, device=self.device)
+        self.ref_value = torch.tensor(0.2, device=self.device)
         self.dt = hyperparam_config["signal"]["dt"]
 
     def get_initial_state(self, batch_size):
@@ -71,8 +71,29 @@ class GPUSimpleLinearPlant:
     
     def get_plot_config(self):
         return [
-            {"cols": ["y", "r"], "labels": ["Output (y)", "Target (r)"], "title": "System Tracking", "ylabel": "Value"},
-            {"cols": ["u"], "labels": ["Control Action (u)"], "title": "Pump Input", "ylabel": "Signal"}
+            # --- State evolution ---
+            {
+                "cols": ["x1", "x2"],
+                "labels": ["Biomass (X)", "Substrate (S)"],
+                "title": "Fermentation State Evolution",
+                "ylabel": "Concentration"
+            },
+
+            # --- System tracking ---
+            {
+                "cols": ["y", "r"],
+                "labels": ["Growth Rate (μ)", "Target (μ_ref)"],
+                "title": "Growth Rate Tracking",
+                "ylabel": "1 / h"
+            },
+
+            # --- Control input ---
+            {
+                "cols": ["u"],
+                "labels": ["Feed Rate (u)"],
+                "title": "Feed Input Signal",
+                "ylabel": "Input"
+            }
         ]
 
     def parse_state(self, state):

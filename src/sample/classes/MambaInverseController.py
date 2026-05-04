@@ -23,6 +23,8 @@ class MambaInverseController(BaseInverseController):
         super().__init__(input_dim=2, output_dim=1)
         self.d_model = hyperparam_config["mamba"]["d_model"]
         self.d_state = hyperparam_config["mamba"]["d_state"]
+
+        self.u_max = hyperparam_config["plant"]["u_max"]  # Maximum control signal for scaling output
         
         # Project input from 2 dimensions to d_model dimensions
         # Input is expected to be 2-dimensional (e.g., reference and current values)
@@ -52,4 +54,4 @@ class MambaInverseController(BaseInverseController):
         x = self.mamba(x)
         
         # Project to output dimension
-        return self.output_proj(x)
+        return torch.sigmoid(self.output_proj(x)) * self.u_max # Scale output to [0, U_max] range
