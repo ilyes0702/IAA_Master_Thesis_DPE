@@ -17,3 +17,12 @@ venv/
 *.png
 *.csv
 .pt
+
+
+# Ignore DWSIM binaries
+dwsim_bin/
+*.dll
+*.exe
+*.so
+
+Archive/
