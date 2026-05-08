@@ -48,14 +48,3 @@ plot_signals(D_values,
              ylabel='Steady State Concentration', 
              filename='bifurcation_diagram.png', 
              dirname='results')
-
-# plt.figure(figsize=(10, 6))
-# plt.plot(D_values, biomass_results, label='Biomass (x)', lw=2, color='forestgreen')
-# plt.axvline(x=mu(sR), color='red', linestyle='--', label='Washout Point ($D_{crit}$)')
-
-# plt.title('Bifurcation Diagram: Chemostat Model', fontsize=14)
-# plt.xlabel('Dilution Rate (D) [1/h]', fontsize=12)
-# plt.ylabel('Steady State Concentration', fontsize=12)
-# plt.grid(True, alpha=0.3)
-# plt.legend()
-# plt.show()

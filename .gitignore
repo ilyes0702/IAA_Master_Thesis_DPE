@@ -26,3 +26,4 @@ dwsim_bin/
 *.so
 
 Archive/
+results/

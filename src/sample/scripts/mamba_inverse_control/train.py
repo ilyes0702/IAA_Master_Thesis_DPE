@@ -1,4 +1,6 @@
 import torch
+from Archive.GPUChemostatPlant_with_delay import GPUChemostatPlant_with_delay
+from src.sample.classes.GPUChemostatPlant import GPUChemostatPlant
 from src.hyperparam_config import hyperparam_config
 from src.sample.classes.PenicilinFermentationProcessTropophase import GPUFermentationProcessFFT
 from src.sample.classes.MambaInverseController import MambaInverseController
@@ -15,14 +17,16 @@ if __name__ == "__main__":
     # 0. Log Run Description
     run_description = get_run_description()
     log_message(f"RUN DESCRIPTION: {run_description}")
+    
 
     # 1. Initialize controller
     controller = MambaInverseController(hyperparam_config=hyperparam_config).to(device)
     
     # Initialize plant    
-    plant = GPUSimpleLinearPlant(hyperparam_config=hyperparam_config)   
+    #plant = GPUSimpleLinearPlant(hyperparam_config=hyperparam_config)  
+    plant = GPUChemostatPlant(hyperparam_config=hyperparam_config) 
     #plant = GPUFermentationProcessFFT(hyperparam_config=hyperparam_config) 
-    
+    save_to_json(hyperparam_config, dirname=plant.__class__.__name__ + "_training", filename="hyperparameters")
     # 3. Pre-generate the training trajectory for the plant
     plant.reset_trajectory()
     
@@ -34,4 +38,4 @@ if __name__ == "__main__":
         dirname=plant.__class__.__name__ + "_training"
     )
 
-    save_to_json(hyperparam_config, dirname=plant.__class__.__name__ + "_training", filename="hyperparameters")
+    

@@ -62,29 +62,43 @@ def GPUtrain_controllerFFT(model, plant, hyperparam_config, dirname="name_direct
         all_y_t, all_y_next, all_u = [], [], []
 
         # --- SIMULATION PHASE ---
-        with torch.no_grad():
-            for t_idx in range(seq_len):
-                t = t_idx * dt
-                if hasattr(plant, 'get_u_at_step'):
-                    u_signal = plant.get_u_at_step(t_idx)
-                else:
-                    u_signal = torch.rand((batch_size, 1), device=device) * plant.U_MAX
+        # Inside GPUtrain_controllerFFT
+        delta_steps = 5  # For example, look 5 steps ahead (delta = 5 * dt)
 
-                y_t = plant.get_y(state, t)
-                state_next, y_next = plant.step(state, u_signal, t, dt)
-
-                all_y_t.append(y_t)
-                all_y_next.append(y_next)
-                all_u.append(u_signal)
-                state = state_next.detach()
+        for t_idx in range(seq_len - delta_steps):
+            t = t_idx * dt
+            u_signal = plant.get_u_at_step(t_idx)
+            
+            # Current state
+            y_t = plant.get_y(state)
+            
+            # Forward simulate k steps using the SAME u_signal
+            # (Canaday logic: the input v_train is held constant over the interval delta)
+            temp_state = state
+            for _ in range(delta_steps):
+                temp_state, _ = plant.step(temp_state, u_signal, t, dt)
+            
+            # The state after delta
+            y_delta = plant.get_y(temp_state)
+            
+            all_y_t.append(y_t)
+            all_y_next.append(y_delta) # This is now y(t + delta)
+            all_u.append(u_signal)
+            
+            # IMPORTANT: Move the actual simulation forward only 1 step 
+            # to keep the trajectory continuous, or skip delta_steps.
+            state_next, _ = plant.step(state, u_signal, t, dt)
+            state = state_next.detach()
 
         # --- DATA PREPARATION FOR CSV ---
         y_t_stack = torch.stack(all_y_t, dim=1).cpu().numpy()
         y_next_stack = torch.stack(all_y_next, dim=1).cpu().numpy()
         u_stack = torch.stack(all_u, dim=1).cpu().numpy()
 
+        num_samples = y_t_stack.shape[1] 
+
         epoch_df = pd.DataFrame({
-            "t": [i*dt for i in range(seq_len)],
+            "t": [i * dt for i in range(num_samples)],
             "y_t": y_t_stack[0, :, 0],
             "y_next": y_next_stack[0, :, 0],
             "u_control": u_stack[0, :, 0]
@@ -132,430 +146,8 @@ def GPUtrain_controllerFFT(model, plant, hyperparam_config, dirname="name_direct
 
     return loss_history
 
-### 00
-def train_controller(model, plant, epochs, seq_len, dt, model_config,device='cuda', dirname="name_directory"):
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    criterion = nn.MSELoss()
-    
-    loss_history = []
-    all_training_pairs = []
-
-    print(f"Training Mamba on {plant.__class__.__name__}...")
-
-    for epoch in range(epochs):
-        # 1. Randomize parameters if the plant supports it
-        if hasattr(plant, 'reset_trajectory'):
-            plant.reset_trajectory()
-            
-        state = plant.get_initial_state()
-        epoch_raw_history = []
-        
-        # --- Data Collection Phase ---
-        for t_idx in range(seq_len):
-            t = t_idx * dt
-            u_signal = plant.generate_random_u(t)
-            
-            # Pass 't' to get_y to account for time-dependent Volume (V)
-            y_t = plant.get_y(state, t) 
-            
-            # Step plant (ensure plant.step also uses/returns correct y_next)
-            state_next, y_next = plant.step(state, u_signal, t, dt)
-            
-            record = {
-                "t": t,
-                "y_t": y_t,
-                "y_t+dt": y_next,
-                "u_t": u_signal,
-                **plant.parse_state(state)
-            }
-            epoch_raw_history.append(record)
-            state = state_next
-
-        # Create DataFrame for this epoch
-        df_epoch = pd.DataFrame(epoch_raw_history)
-        
-        # Optional: Save every X epochs to save disk space if training is long
-        if (epoch + 1) % 10 == 0 or epoch == 0:
-            save_df_to_csv(
-                df_epoch, 
-                dirname=f"{dirname}/training_episodes", 
-                filename=f"train_series_epoch_{epoch+1:04d}"
-            )
-
-        # --- Training Phase ---
-        # 2. Prepare Inverse Mapping [y_t, y_t+dt] -> u_t
-        inputs = df_epoch[["y_t", "y_t+dt"]].values
-        targets = df_epoch["u_t"].values
-        
-        # Use torch.from_numpy and np.array to avoid the "slow tensor creation" warning
-        x_tensor = torch.from_numpy(np.array([inputs])).float().to(device)
-        y_target = torch.from_numpy(np.array([targets])).float().unsqueeze(-1).to(device)
-
-        model.train()
-        optimizer.zero_grad()
-        
-        # Forward pass through Mamba
-        u_pred = model(x_tensor)
-        
-        loss = criterion(u_pred, y_target)
-        loss.backward()
-        optimizer.step()
-
-        loss_history.append(loss.item())
-        
-     
-
-        # Summary logging
-        summary_slice = df_epoch[["y_t", "y_t+dt", "u_t"]].copy()
-        summary_slice["epoch"] = epoch + 1
-        all_training_pairs.append(summary_slice)
-
-        if (epoch + 1) % 100 == 0:
-            print(f"Epoch {epoch+1}/{epochs} | Loss: {loss.item():.6f}")
-
-    # --- Final Post-Training Steps ---
-    df_loss = pd.DataFrame({"epoch": range(1, epochs + 1), "loss": loss_history})
-    df_train_full = pd.concat(all_training_pairs, ignore_index=True)
-    
-    save_df_to_csv(df_loss, dirname=dirname, filename="training_loss_history")
-    save_df_to_csv(df_train_full, dirname=dirname, filename="training_data_full")
-    save_df_to_csv(df_train_full.describe().reset_index(), dirname=dirname, filename="training_data_stats")
-
-    plot_signals(
-        df_loss["epoch"].values, [df_loss["loss"].values],
-        labels=["MSE Loss"], xlabel="Epoch", ylabel="Loss",
-        title=f"Convergence ({plant.__class__.__name__})",
-        dirname=dirname, filename="training_loss_plot"
-    )
-
-    # --- Save the Model Weights ---
-    save_model(model, dirname=dirname, model_config=model_config, filename="trained_controller")
-
-    return()
 
 
-
-
-import torch
-import torch.nn as nn
-import pandas as pd
-import numpy as np
-import time
-
-def GPUtrain_controller(model, plant, hyperparam_config, dirname="name_directory"):
-    """
-    Vectorized training: 128 parallel simulations are performed per epoch.
-    The model learns the inverse mapping: (y_t, y_t+1) -> u_t
-    """
-    t_cfg = hyperparam_config["train"]
-    s_cfg = hyperparam_config["signal"]
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=t_cfg["lr"])
-    criterion = nn.MSELoss()
-    loss_history = []
-    model.to(hyperparam_config["train"]["device"])
-
-    print(f"🚀 Training Mamba on {plant.__class__.__name__}")
-    print(f"   Batch Size: {t_cfg['batch_size']} | Device: {t_cfg['device']}")
-
-    start_time = time.time()
-
-    for epoch in range(t_cfg["epochs"]):
-        # 1. Diversity: randomize trajectories if the plant supports it
-        if hasattr(plant, 'reset_trajectory'):
-            plant.reset_trajectory()
-            
-        # 2. Reset starting state for the entire batch [batch_size, state_dim]
-        state = plant.get_initial_state() 
-        
-        all_y_t = []
-        all_y_next = []
-        all_u = []
-
-        # --- SIMULATION PHASE (Data Generation) ---
-        # We use torch.no_grad() because we are just collecting data from the physics engine
-        with torch.no_grad():
-            for t_idx in range(s_cfg["seq_len"]):
-                t = t_idx * s_cfg["dt"]
-                
-                # Generate random control inputs (Glucose feed) for exploration
-                u_signal = torch.rand((t_cfg["batch_size"], 1), device=t_cfg["device"]) * plant.U_MAX
-                
-                # Current output (Growth rate)
-                y_t = plant.get_y(state, t) 
-                
-                # Physics Step
-                state_next, y_next = plant.step(state, u_signal, t, s_cfg["dt"])
-                
-                # Store
-                all_y_t.append(y_t)
-                all_y_next.append(y_next)
-                all_u.append(u_signal)
-                
-                # Transition - DETACH to stop gradient flow through simulation time
-                state = state_next.detach()
-
-        # --- TRAINING PHASE (Gradient Descent) ---
-        # Stack lists into [Batch, Seq, Dim]
-        y_t_seq = torch.stack(all_y_t, dim=1)      
-        y_next_seq = torch.stack(all_y_next, dim=1) 
-        y_target = torch.stack(all_u, dim=1) 
-        
-        # Input to model: pair of current and resulting growth rate
-        x_tensor = torch.cat([y_t_seq, y_next_seq], dim=-1) 
-
-        model.train()
-        optimizer.zero_grad()
-        
-        # Mamba predicts the 'u' that caused the change from y_t to y_next
-        u_pred = model(x_tensor) 
-        
-        loss = criterion(u_pred, y_target)
-        loss.backward()
-        optimizer.step()
-
-        loss_history.append(loss.item())
-
-        if (epoch + 1) % 100 == 0 or epoch == 0:
-            elapsed = time.time() - start_time
-            print(f"Epoch {epoch+1:04d}/{t_cfg['epochs']} | Loss: {loss.item():.6f} | Time: {elapsed:.2f}s")
-
-    # --- SAVE & PLOT ---
-    df_loss = pd.DataFrame({"epoch": range(1, t_cfg["epochs"] + 1), "loss": loss_history})
-    
-    # Import locally to avoid circular dependencies
-    from src.sample.utils.general_utils import save_model, save_df_to_csv, plot_signals
-    
-    save_model(model, dirname=dirname, model_config=hyperparam_config, filename="trained_controller")
-    save_df_to_csv(df_loss, dirname=dirname, filename="training_loss_history")
-
-    plot_signals(
-        df_loss["epoch"].values, [df_loss["loss"].values],
-        labels=["MSE Loss"], xlabel="Epoch", ylabel="Loss",
-        title=f"Convergence ({plant.__class__.__name__})",
-        dirname=dirname, filename="training_loss_plot"
-    )
-
-    return loss_history
-
-def load_model(checkpoint_path, device=None):
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    hyperparam_config = checkpoint['config']
-    model = MambaInverseController(hyperparam_config)
-
-    if device is None:
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    return model
-
-# --- Usage ---
-# path = "models/2026-04-29/2026-04-29_11-22/my_experiment/2026-04-29_11-22_trained_controller.pt"
-# model, config = load_mamba_controller(path)
-
-# --- Usage Example ---
-# my_model, my_config = load_mamba_controller("results/name_directory/trained_controller.pt")
-
-def simulate_control(model, plant, reference_signal, duration, dt, device, dirname):
-    model.eval()
-    state = plant.get_initial_state()
-    history = []
-    current_context = []
-    steps = int(duration / dt)
-
-    print(f"Starting generic simulation for {duration}h...")
-
-    for i in range(steps):
-        t = i * dt
-        y_meas = plant.get_y(state, t)
-        
-        # 1. Reference Logic
-        r_t = reference_signal[i] if isinstance(reference_signal, np.ndarray) else reference_signal
-
-        # 2. Normalization & Inference
-        y_norm = y_meas / plant.Y_MAX
-        r_norm = r_t / plant.Y_MAX
-
-        step_input = np.array([[y_norm, r_norm]])
-        current_context.append(step_input)
-        
-        # Maintain a sliding window or full history for Mamba context
-        input_tensor = torch.tensor(np.array(current_context), dtype=torch.float32).transpose(0, 1).to(device)
-
-        with torch.no_grad():
-            u_norm = float(model(input_tensor)[0, -1, 0])
-        
-        u_phys = np.clip(u_norm * plant.U_MAX, 0, plant.U_MAX)
-
-        # 3. Physics Step
-        next_state, _ = plant.step(state, u_phys, t, dt)
-        
-        # 4. Data Collection
-        # Combines general control signals with plant-specific internal states
-        record = {
-            "t": t, 
-            "y": y_meas, 
-            "r": r_t, 
-            "u": u_phys, 
-            "error": r_t - y_meas,
-            **plant.parse_state(state) 
-        }
-        history.append(record)
-        state = next_state
-
-    # --- Data Processing & Saving ---
-    df_sim = pd.DataFrame(history)
-    save_df_to_csv(df_sim, dirname=dirname, filename=f"{plant.__class__.__name__}_sim_data")
-
-    # --- Automated Plotting ---
-    t_data = df_sim["t"].values
-    
-    # Use the plant's own config to decide what to plot
-    if hasattr(plant, 'get_plot_config'):
-        plot_configs = plant.get_plot_config()
-    else:
-        raise NotImplementedError("Plant class must implement get_plot_config() to specify plotting configuration.")
-    
-    for idx, config in enumerate(plot_configs):
-        signals = [df_sim[col].values for col in config["cols"]]
-        
-        plot_signals(
-            t_data, 
-            signals,
-            labels=config["labels"],
-            xlabel="Time (h)",
-            ylabel=config["ylabel"],
-            dirname=dirname,
-            filename=f"plot_{idx}_{config['title'].lower().replace(' ', '_')}"
-        )
-
-    print(f"Simulation finished. Data and {len(plot_configs)} plots saved to {dirname}.")
-
-    def calculate_metrics(df):
-        error = df["r"] - df["y"]
-        u_diff = df["u"].diff().abs().sum() # Total Variation
-        
-        metrics = {
-            "RMSE": np.sqrt((error**2).mean()),
-            "MAE": error.abs().mean(),
-            "Max_Error": error.abs().max(),
-            "Control_Total_Variation": u_diff,
-            "Mean_Control_Signal": df["u"].mean(),
-            "Standard_Deviation_Error": error.std()
-        }
-        return metrics
-
-    # In your simulate_control function:
-    perf_metrics = calculate_metrics(df_sim)
-    df_perf = pd.DataFrame([perf_metrics])
-    save_df_to_csv(df_perf, dirname=dirname, filename="performance_metrics")
-    return()
-
-import torch
-import numpy as np
-import pandas as pd
-from src.sample.utils.general_utils import save_df_to_csv, plot_signals
-
-def GPUSimulateControl(model, plant, reference_signal, duration, dt, device, dirname):
-    model.eval()
-    # Ensure plant is on the correct device and get initial state [1, 2]
-    state = plant.get_initial_state() 
-    if state.shape[0] != 1:
-        # If the plant was initialized with a large batch, we force it to 1 for simulation
-        state = state[0:1] 
-        
-    steps = int(duration / dt)
-    history = []
-    
-    # Pre-allocate a tensor for context: [Batch=1, Steps, Features=2]
-    # This avoids the slow process of appending lists and converting to tensors in the loop
-    context_tensor = torch.zeros((1, steps, 2), device=device)
-
-    print(f"🚀 Starting GPU simulation for {duration}h...")
-
-    with torch.no_grad():
-        for i in range(steps):
-            t = i * dt
-            y_meas = plant.get_y(state, t) # Returns [1, 1]
-            
-            # 1. Reference Logic
-            # --- Replace the old Reference Logic ---
-            # Check if reference_signal is indexable (array/tensor) or just a single value
-            if isinstance(reference_signal, (np.ndarray, torch.Tensor)) and reference_signal.ndim > 0:
-                r_t = reference_signal[i]
-            else:
-                # If it's a scalar tensor, float, or int, just take the value
-                r_t = reference_signal
-
-            # Ensure r_t is a float for calculations later
-            if torch.is_tensor(r_t):
-                r_t = r_t.item()
-            
-            # 2. Normalization
-            y_norm = y_meas / plant.Y_MAX
-            r_norm = r_t / plant.Y_MAX
-
-            # 3. Update Context & Inference
-            context_tensor[0, i, 0] = y_norm
-            context_tensor[0, i, 1] = r_norm
-            
-            # Mamba processes the sequence up to current step 'i'
-            # slice is [Batch, current_history, Features]
-            u_out = model(context_tensor[:, :i+1, :]) 
-            u_norm = u_out[0, -1, 0] # Get latest prediction
-            
-            # Scale and Clamp to physical pump limits
-            u_phys = torch.clamp(u_norm * plant.U_MAX, 0, plant.U_MAX)
-
-            # 4. Physics Step (returns Tensors)
-            state_next, _ = plant.step(state, u_phys.unsqueeze(0), t, dt)
-            
-            # 5. Data Collection (Move to CPU only for history/logging)
-            record = {
-                "t": t, 
-                "y": y_meas.item(), 
-                "r": float(r_t), 
-                "u": u_phys.item(), 
-                "error": float(r_t) - y_meas.item()
-            }
-            
-            # Add plant specific states (e.g. Biomass, Substrate) if available
-            if hasattr(plant, 'parse_state'):
-                record.update(plant.parse_state(state.cpu().numpy()[0]))
-            
-            history.append(record)
-            state = state_next
-
-    # --- Data Processing ---
-    df_sim = pd.DataFrame(history)
-    save_df_to_csv(df_sim, dirname=dirname, filename=f"{plant.__class__.__name__}_sim_data")
-
-    # --- Metrics & Plotting (Logic remains similar to your original) ---
-    def calculate_metrics(df):
-        error = df["r"] - df["y"]
-        return {
-            "RMSE": np.sqrt((error**2).mean()),
-            "MAE": error.abs().mean(),
-            "Control_TV": df["u"].diff().abs().sum()
-        }
-
-    perf_metrics = calculate_metrics(df_sim)
-    save_df_to_csv(pd.DataFrame([perf_metrics]), dirname=dirname, filename="performance_metrics")
-
-    # Plot using plant config
-    if hasattr(plant, 'get_plot_config'):
-        for idx, config in enumerate(plant.get_plot_config()):
-            signals = [df_sim[col].values for col in config["cols"]]
-            plot_signals(df_sim["t"].values, signals, labels=config["labels"], 
-                         xlabel="Time (h)", ylabel=config["ylabel"], dirname=dirname,
-                         filename=f"plot_{idx}_{config['title'].lower().replace(' ', '_')}")
-
-    print(f"✅ Simulation complete. Metrics: RMSE={perf_metrics['RMSE']:.5f}")
-    return df_sim
-
-import numpy as np
-import pandas as pd
 
 def compute_and_save_stabilization_metrics(
     y_np,
@@ -657,12 +249,8 @@ def compute_and_save_stabilization_metrics(
         dirname=dirname,
         filename="stabilization_metrics_summary",
     )
-
-def GPUSimulateControl_new(model, plant, hyperparam_config, dirname):
-    """
-    GPU-parallel simulation using the plant-defined batch size.
-    """
-
+#=== FUNCTION FOR THE SIMULATION OF CONTROLLED PLANT ===#
+def GPUSimulateControl_new_ma(model, plant, hyperparam_config, dirname):
     train_cfg = hyperparam_config["train"]
     sig_cfg   = hyperparam_config["signal"]
     sim_cfg   = hyperparam_config["simulate"]
@@ -670,76 +258,196 @@ def GPUSimulateControl_new(model, plant, hyperparam_config, dirname):
     device = train_cfg["device"]
     dt = sig_cfg["dt"]
     steps = sim_cfg["seq_len"]
+    batch_size = sim_cfg["batch_size"]
 
-    # ✅ Enforce single source of truth
-    batch_size = hyperparam_config["simulate"]["batch_size"]
+    # --- Buffers for logging ---
+    # history stores the full state details for the first trajectory only
+    history = {
+        "x1": np.zeros(steps), "x2": np.zeros(steps),
+        "y":  np.zeros(steps), "r":  np.zeros(steps),
+        "u":  np.zeros(steps)
+    }
+    # all_y captures the plant output (y) for EVERY trajectory in the batch
+    all_y = torch.zeros((steps, batch_size), device=device)
 
-    # --- Init state ---
+    # Initial state (randomized by the plant internally for the batch)
     state = plant.get_initial_state(batch_size)
+    r_tensor = plant.ref_value.expand(batch_size, 1)
 
-    # --- Allocate ---
-    context = torch.zeros((batch_size, steps, 2), device=device)
-    all_y   = torch.zeros((steps, batch_size), device=device)
-
-    ref_val = plant.ref_value
-    r_tensor = ref_val.expand(batch_size, 1)
-
-    print(f"🚀 Simulating {batch_size} trajectories ({steps * dt:.2f} h)")
+    model.eval()
+    print(f"🚀 Running Raw Inference: {batch_size} random initial states...")
 
     with torch.no_grad():
         for i in range(steps):
             t = i * dt
-
             y = plant.get_y(state, t)
 
-            y_norm = y / plant.Y_MAX
-            r_norm = r_tensor / plant.Y_MAX
+            # --- MATCH TRAINING INPUT CONSTRUCTION ---
+            current_input = torch.cat([y, r_tensor], dim=-1).unsqueeze(1) # [Batch, 1, 2]
 
-            context[:, i, 0] = y_norm.squeeze()
-            context[:, i, 1] = r_norm.squeeze()
+            # --- INFERENCE ---
+            u_out = model(current_input) 
+            u = u_out[:, -1, 0:1] 
+            
+            # Physical safety clamp
+            u = torch.clamp(u, 0.0, plant.U_MAX)
 
-            u_out = model(context[:, : i + 1])
-            u = u_out[:, -1, 0:1] * plant.U_MAX
-
-            state, _ = plant.step(state, u, t, dt)
+            # --- LOGGING ---
+            # Detail log for Trajectory 0
+            history["x1"][i] = state[0, 0].item()
+            history["x2"][i] = state[0, 1].item()
+            history["y"][i]  = y[0].item()
+            history["r"][i]  = plant.ref_value.item()
+            history["u"][i]  = u[0].item()
+            
+            # Summary log for all batch members
             all_y[i] = y.squeeze()
 
-    # --- Plotting ---
+            # --- STEP ---
+            state, _ = plant.step(state, u, t, dt)
+
+    # --- PLOTTING ---
     time_axis = np.arange(steps) * dt
+    
+    # 1. Detailed plots (Biomass, Substrate, etc.) for the first trajectory
+    plot_config = plant.get_plot_config()
+    for idx, cfg in enumerate(plot_config):
+        signals = [history[col] for col in cfg["cols"]]
+        plot_signals(
+            t=time_axis, signals=signals, labels=cfg["labels"],
+            title=cfg["title"], xlabel="Time (h)", ylabel=cfg["ylabel"],
+            dirname=dirname, filename=f"detailed_plot_{idx}"
+        )
+
+    # 2. NEW: Batch Summary Plot (All curves with random initial states)
     y_np = all_y.cpu().numpy()
-
-    compute_and_save_stabilization_metrics(
-        y_np=y_np,
-        ref_val=ref_val,
-        dt=dt,
-        dirname=dirname,
-    )
-
-    signals = [y_np[:, j] for j in range(batch_size)]
-    signals.append(np.full(steps, ref_val.item()))
-
-    labels = [None] * batch_size
-    labels[0] = "Individual Runs"
-    labels.append("Target")
-
+    summary_signals = [y_np[:, j] for j in range(batch_size)]
+    summary_signals.append(np.full(steps, plant.ref_value.item())) # Add target line
+    
     plot_signals(
         t=time_axis,
-        signals=signals,
-        labels=labels,
-        title=f"Parallel Simulation ({batch_size} Trajectories)",
+        signals=summary_signals,
+        labels=[None]*(batch_size) + ["Target"],
+        title=f"Batch Convergence ({batch_size} Trajectories)",
         xlabel="Time (h)",
-        ylabel="Plant Output",
+        ylabel="Growth Rate (mu)",
         dirname=dirname,
-        filename="batch_simulation_all_curves"
+        filename="batch_summary"
     )
+    compute_and_save_stabilization_metrics(y_np, plant.ref_value, dt, dirname)
 
-    return()
+    return
+
+
+#=== FUNCTION FOR THE SIMULATION OF CONTROLLED PLANT WITH TRACKING ===#
+def GPUSimulateTracking_ma(model, plant, hyperparam_config, dirname):
+    train_cfg = hyperparam_config["train"]
+    sig_cfg   = hyperparam_config["signal"]
+    sim_cfg   = hyperparam_config["simulate"]
+
+    steps = sim_cfg["seq_len"]
+    dt = sig_cfg["dt"]
+    batch_size = sim_cfg["batch_size"]
+    device = train_cfg["device"]
+
+    # 1. GENERATE A TIME-VARYING REFERENCE TRAJECTORY
+#     # A sine wave base
+#     time_axis = np.arange(steps) * dt
+#     period = 200 # Total hours for one full cycle
+#     sine_base = np.sin(2 * np.pi * time_axis / period)
+
+#     # Use tanh to sharpen the curve into a "soft" rectangle
+#     # Higher gain = more rectangular; Lower gain = more like a pure sine
+#     gain = 1.0 
+#     r_trajectory_np = 0.375 + 0.025 * np.tanh(gain * sine_base) 
+
+#     # (Note: 0.375 is the midpoint between 0.3 and 0.45)
+#     r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
+
+#     history = {"x1": np.zeros(steps), "x2": np.zeros(steps), "y": np.zeros(steps), "r": np.zeros(steps), "u": np.zeros(steps)}
+#     all_y = torch.zeros((steps, batch_size), device=device)
+#     state = plant.get_initial_state(batch_size)
+
+    # 1. GENERATE A CONSTANT REFERENCE
+    constant_val = 0.2
+    # Create a tensor of shape [steps, 1] filled with 0.2
+    r_trajectory = torch.full((steps, 1), constant_val, device=device, dtype=torch.float32)
+
+    # Initialize history and state as before
+    history = {"x1": np.zeros(steps), "x2": np.zeros(steps), "y": np.zeros(steps), "r": np.zeros(steps), "u": np.zeros(steps)}
+    all_y = torch.zeros((steps, batch_size), device=device)
+    state = plant.get_initial_state(batch_size)
+
+    model.eval()
+
+    model.eval()
+    print(f"📈 Testing Trajectory Tracking: {batch_size} trajectories...")
+
+    with torch.no_grad():
+        for i in range(steps):
+            t = i * dt
+            y = plant.get_y(state, t) # This is y(t)
+            
+            # 2. Grab the specific target for "Next" time step y(t+dt)
+            current_r = r_trajectory[i].expand(batch_size, 1)
+
+            # 3. CONSTRUCT INPUT: [y(t), y_target]
+            # This is exactly the (y_t, y_next) triplet the model was trained on
+            current_input = torch.cat([y, current_r], dim=-1).unsqueeze(1) 
+
+            # 4. INFERENCE
+            u_out = model(current_input) 
+            
+            # Note: If using Mamba, u_out usually returns [batch, 1, output_dim]
+            u = torch.clamp(u_out[:, -1, :], 0.0, plant.U_MAX)
+
+            # 5. STEP PLANT
+            # This uses the predicted U to move the REAL plant state
+            state, _ = plant.step(state, u, t, dt)
+
+            # --- LOGGING ---
+            history["y"][i] = y[0].item()
+            history["r"][i] = current_r[0].item() 
+            history["u"][i] = u[0].item()
+            all_y[i] = y.squeeze()
+
+
+    # --- PLOTTING ---
+    time_axis = np.arange(steps) * dt
+    
+    # 1. Detailed plots (Biomass, Substrate, etc.) for the first trajectory
+    plot_config = plant.get_plot_config()
+    for idx, cfg in enumerate(plot_config):
+        signals = [history[col] for col in cfg["cols"]]
+        plot_signals(
+            t=time_axis, signals=signals, labels=cfg["labels"],
+            title=cfg["title"], xlabel="Time (h)", ylabel=cfg["ylabel"],
+            dirname=dirname, filename=f"detailed_plot_{idx}"
+        )
+
+    # 2. NEW: Batch Summary Plot (All curves with random initial states)
+    y_np = all_y.cpu().numpy()
+    summary_signals = [y_np[:, j] for j in range(batch_size)]
+    summary_signals.append(np.full(steps, plant.ref_value.item())) # Add target line
+    
+    plot_signals(
+        t=time_axis,
+        signals=summary_signals,
+        labels=[None]*(batch_size) + ["Target"],
+        title=f"Batch Convergence ({batch_size} Trajectories)",
+        xlabel="Time (h)",
+        ylabel="Growth Rate (mu)",
+        dirname=dirname,
+        filename="batch_summary"
+    )
+    compute_and_save_stabilization_metrics(y_np, plant.ref_value, dt, dirname)
 
 import torch
 import numpy as np
 import random
 import os
 
+#=== FUNCTION TO SEED EVERYTHING FOR REPRODUCIBILITY ===#
 def seed_everything(seed=42):
     """
     Seeds all relevant libraries to ensure reproducible results.
@@ -779,3 +487,14 @@ def load_model_complete(model_class, filepath, device='cuda'):
     return model, model_config
 
 
+def load_model(checkpoint_path, device=None):
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    hyperparam_config = checkpoint['config']
+    model = MambaInverseController(hyperparam_config)
+
+    if device is None:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    return model

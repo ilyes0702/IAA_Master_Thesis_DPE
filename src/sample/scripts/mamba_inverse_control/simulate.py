@@ -8,9 +8,10 @@ import torch
 from src.sample.classes.PenicilinFermentationProcessTropophase import GPUFermentationProcessFFT
 from src.sample.classes.SimpleLinearPlant import GPUSimpleLinearPlant
 from src.sample.classes.MambaInverseController import MambaInverseController
-from src.sample.utils.general_utils import GPUSimulateControl, GPUSimulateControl_new
+from src.sample.utils.general_utils import GPUSimulateTracking_ma
 from src.sample.utils.general_utils import load_model
 from src.hyperparam_config import hyperparam_config
+from src.sample.classes.GPUChemostatPlant import GPUChemostatPlant
 
 # --- 1. Device Configuration --- #
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -23,16 +24,25 @@ if __name__ == "__main__":
     
     # 1. Initialize plant
     plant = GPUSimpleLinearPlant(hyperparam_config=hyperparam_config)  
+    plant = GPUChemostatPlant(hyperparam_config=hyperparam_config)
     #plant = GPUFermentationProcessFFT(hyperparam_config=hyperparam_config)  
 
     # 2. Load trained controller
-    controller_path = f"models/2026-04-30/2026-04-30_10-16-47/GPUSimpleLinearPlant_training/2026-04-30_10-16-47_trained_controller.pt"
+    #controller_path = f"models/2026-05-08/2026-05-08_15-56-51/GPUChemostatPlant_training/2026-05-08_15-56-51_trained_controller.pt"
+    controller_path = "models/2026-05-08/2026-05-08_16-36-56/GPUChemostatPlant_training/2026-05-08_16-36-56_trained_controller.pt"
     loaded_controller = load_model(controller_path)
 
     # 3. Simulation
-    GPUSimulateControl_new(
-        model=loaded_controller, 
-        plant=plant, 
-        hyperparam_config=hyperparam_config,          
+    # GPUSimulateControl_new_ma(
+    #     model=loaded_controller, 
+    #     plant=plant, 
+    #     hyperparam_config=hyperparam_config,          
+    #     dirname=plant.__class__.__name__
+    # )
+
+    GPUSimulateTracking_ma(
+        model=loaded_controller,
+        plant=plant,
+        hyperparam_config=hyperparam_config,
         dirname=plant.__class__.__name__
     )

@@ -7,13 +7,13 @@ hyperparam_config = {
         "u_max": 1.0   # Scaling constant
     },
     "signal": {
-        "lambd": 5.0,
-        "p": 0.4,
+        "lambd": 10,
+        "p": 0.2,
         "seq_len": 10000,
-        "dt": 0.01
+        "dt": 0.5
     },
     "train": {
-        "epochs": 1000,
+        "epochs": 50,
         "batch_size": 256,
         "lr": 1e-3,
         "device": "cuda" if torch.cuda.is_available() else "cpu"
@@ -24,7 +24,7 @@ hyperparam_config = {
         "d_state": 16
     },
     "simulate": {
-        "batch_size": 50,
-        "seq_len": 3000,
+        "batch_size": 10,
+        "seq_len": 1000,
     }
 }

@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 
 # import machine learning modules
+from sample.classes.MambaInverseController import MambaInverseController
 from src.sample.decorators.general_decorators import *
 from src.sample.utils.saving_utils import *
 from src.sample.config import *
@@ -590,3 +591,14 @@ def load_model_complete(model_class, filepath, device='cuda'):
     return model, model_config
 
 
+def load_model(checkpoint_path, device=None):
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    hyperparam_config = checkpoint['config']
+    model = MambaInverseController(hyperparam_config)
+
+    if device is None:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    return model
