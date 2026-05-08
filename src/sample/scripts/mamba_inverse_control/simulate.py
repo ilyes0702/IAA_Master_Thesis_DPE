@@ -1,5 +1,5 @@
 import matplotlib.pyplot as plt
-
+from src.sample.config import date, date_and_time
 from src.sample.config import get_run_description, log_message
 plt.style.use("src/sample/style.mplstyle")
 import torch

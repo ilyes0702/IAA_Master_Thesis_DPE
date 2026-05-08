@@ -2,6 +2,8 @@
 import sys
 import os
 import seaborn as sns
+
+from src.sample.utils.saving_utils import save_plot_image
 # ADD PROJECT DIRECTORY TO SYSTEM PATH
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -86,7 +88,7 @@ def plot_signals_flexible(
     return Image.open(buf)
 
 #=== FUNCTION TO PLOT SIGNALS ===#
-@save_image_decorator
+#@save_image_decorator
 def plot_signals(
     t,
     signals,
@@ -143,7 +145,7 @@ def plot_signals(
 
     # Convert the buffer to a PIL Image
     image = Image.open(buf)
-
+    save_plot_image(image=image, filename=filename, dirname=dirname)
     return image
 
 

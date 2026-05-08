@@ -110,7 +110,7 @@ def save_image_decorator(func):
 
         # Save the image
         if isinstance(image, Image.Image):
-            path = f"plots/{date}/{date_and_time}/{dirname}"
+            path = f"results/{date}/{date_and_time}/{dirname}/plots"
             os.makedirs(path, exist_ok=True)
             image.save(f"{path}/{date_and_time}_{filename}.png")
             log_message(f"Image successfully saved as '{filename}'")
@@ -160,53 +160,3 @@ def log_execution_time(func):
         
         return result  # Return the original function's result
     return wrapper
-
-#=== DECORATOR TO SAVE DATAFRAME TO CSV (NOT IN USE CURRENTLY)===#
-def save_dataframe_to_csv():
-    """
-    Decorator to save a DataFrame returned by a function as a CSV file.
-
-    Args:
-        filename (str): The name of the CSV file to save the DataFrame to.
-
-    Returns:
-        Wrapper function.
-    """
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            # Execute the original function to generate the image
-            result = func(*args, **kwargs)
-
-            # Check if 'filename' argument is provided
-            if 'filename' in kwargs:
-                filename = kwargs['filename']
-            else:
-                raise ValueError("The function must be called with a 'filename' argument specifying the csv save name.")
-            
-            if "dirname" in kwargs:
-                    dirname = kwargs['dirname']
-            else:
-                raise ValueError("The function must be called with a 'dirname' argument specifying the image save directory name.")
-
-
-            # Check if the result is a pandas DataFrame
-            if isinstance(result, pd.DataFrame):
-                date = datetime.now().strftime("%Y-%m-%d")
-                date_and_time = datetime.now().strftime("%Y-%m-%d_%H-%M")
-                path_name = "./reports/"+date+"/"+dirname+"/"+filename+"_"+date_and_time+".csv"
-                
-                if os.path.exists("./reports/"+date+"/"+dirname):
-                    result.to_csv(path_name)
-                else:
-                    os.makedirs("./reports/"+date+"/"+dirname)
-                    result.to_csv(path_name)
-            
-                log_message(f"Datarame successfully saved as '{filename}'")
-
-            else:
-                raise TypeError("The function must return a pandas DataFrame object.")
-            
-            return result  # Return the original result
-        return wrapper
-    return decorator

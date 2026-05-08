@@ -8,8 +8,11 @@ import torch
 import pandas as pd
 import json
 
+import os
+from PIL import Image
 
-from src.sample.config import *
+from src.sample.config import date as default_date
+from src.sample.config import date_and_time as default_date_and_time
 #=== FUNCTION TO SAVE TRAINED MODEL ===#
 import torch
 import os
@@ -26,8 +29,8 @@ def save_model(model, dirname, hyperparam_config, filename="trained_controller")
     """
     # Assuming 'date' and 'date_and_time' are defined globally 
     # or extracted from your training session context
-    global_date = date # e.g., "2026-04-29"
-    timestamp = date_and_time # e.g., "2026-04-29_11-22"
+    global_date = default_date # e.g., "2026-04-29"
+    timestamp = default_date_and_time # e.g., "2026-04-29_11-22"
 
     # Construct the directory and filename logic
     model_dir = f"models/{global_date}/{timestamp}/{dirname}/"
@@ -74,8 +77,8 @@ def save_df_to_csv(df, dirname, filename, max_path_length=255):
     df = df.round(2)
     
      # Check full path length
-    dirname = f"reports/{date}/{date_and_time}/{dirname}/"
-    filename = f"{date_and_time}_{filename}.csv"
+    dirname = f"results/{default_date}/{default_date_and_time}/{dirname}/reports/"
+    filename = f"{default_date_and_time}_{filename}.csv"
     os.makedirs(dirname, exist_ok=True)
     full_path = os.path.join(dirname, filename)
     if len(full_path) > max_path_length:
@@ -104,8 +107,8 @@ def save_to_json(data, dirname, filename, max_path_length=255):
 
     # 2. Construct paths (using your specific global date variables)
     # Ensure these variables (date, date_and_time) are defined in your script
-    dirname = f"reports/{date}/{date_and_time}/{dirname}/"
-    filename = f"{date_and_time}_{filename}.json"
+    dirname = f"results/{default_date}/{default_date_and_time}/{dirname}/reports/"
+    filename = f"{default_date_and_time}_{filename}.json"
     
     os.makedirs(dirname, exist_ok=True)
     full_path = os.path.join(dirname, filename)
@@ -126,3 +129,34 @@ def save_to_json(data, dirname, filename, max_path_length=255):
         json.dump(data_to_save, f, indent=4, ensure_ascii=False)
     
     print(f"✅ JSON saved: {final_path}")
+
+
+
+
+def save_plot_image(image, filename, dirname):
+    """
+    Saves a PIL Image object to a structured directory path.
+    
+    Path format: results/<date>/<time>/<dirname>/plots/<time>_<filename>.png
+    """
+    # 1. Validation
+    if not isinstance(image, Image.Image):
+        raise TypeError("The 'image' argument must be a PIL Image object.")
+    
+    # 2. Construct the directory path
+    # Using your specific format: results/{date}/{date_and_time}/{dirname}/plots
+    path = f"results/{default_date}/{default_date_and_time}/{dirname}/plots"
+    
+    # 3. Create directory if it doesn't exist
+    os.makedirs(path, exist_ok=True)
+    
+    # 4. Define full file path
+    full_path = f"{path}/{default_date_and_time}_{filename}"
+    if not full_path.endswith(".png"):
+        full_path += ".png"
+    
+    # 5. Save and Log
+    image.save(full_path)
+    print(f"Image successfully saved to: {full_path}")
+    
+    return()
