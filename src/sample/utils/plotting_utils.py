@@ -88,7 +88,6 @@ def plot_signals_flexible(
     return Image.open(buf)
 
 #=== FUNCTION TO PLOT SIGNALS ===#
-#@save_image_decorator
 def plot_signals(
     t,
     signals,
@@ -110,9 +109,9 @@ def plot_signals(
 
     for i, sig in enumerate(signals):
         if labels is not None:
-            ax.scatter(t, sig, label=labels[i])
+            ax.plot(t, sig, label=labels[i])
         else:
-            ax.scatter(t, sig)
+            ax.plot(t, sig)
 
     # === FIXED ASPECT RATIO === #
     x_range = np.diff(ax.get_xlim())[0]
@@ -129,7 +128,7 @@ def plot_signals(
         ax.legend()
 
     if save_path:
-        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", pad_inches=0.05)
 
     if show:
         plt.show()
@@ -147,6 +146,7 @@ def plot_signals(
     image = Image.open(buf)
     save_plot_image(image=image, filename=filename, dirname=dirname)
     return image
+
 
 
 

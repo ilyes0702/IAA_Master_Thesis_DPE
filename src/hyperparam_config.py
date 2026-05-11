@@ -7,16 +7,17 @@ hyperparam_config = {
         "u_max": 1.0   # Scaling constant
     },
     "signal": {
-        "lambd": 10,
-        "p": 0.3,
-        "seq_len": 10000,
+        "lambd": 200,
+        "p": 0.2,
+        "seq_len": 1000,
         "dt": 0.5
     },
     "train": {
-        "epochs": 50,
+        "epochs": 30,
         "batch_size": 256,
         "lr": 1e-3,
-        "device": "cuda" if torch.cuda.is_available() else "cpu"
+        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "delay_steps": 20
     },
     "mamba": {
         "d_model": 64,
@@ -25,6 +26,6 @@ hyperparam_config = {
     },
     "simulate": {
         "batch_size": 10,
-        "seq_len": 500,
+        "seq_len": 200,
     }
 }

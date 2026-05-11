@@ -27,9 +27,7 @@ if __name__ == "__main__":
     plant = GPUChemostatPlant(hyperparam_config=hyperparam_config) 
     #plant = GPUFermentationProcessFFT(hyperparam_config=hyperparam_config) 
     save_to_json(hyperparam_config, dirname=plant.__class__.__name__ + "_training", filename="hyperparameters")
-    # 3. Pre-generate the training trajectory for the plant
-    plant.reset_trajectory()
-    
+    # 3. Pre-generate the training trajectory for the plant    
     # 4. Run Training    
     GPUtrain_controllerFFT(
         model=controller, 

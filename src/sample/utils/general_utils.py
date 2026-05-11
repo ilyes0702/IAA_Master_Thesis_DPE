@@ -42,28 +42,34 @@ def GPUtrain_controllerFFT(model, plant, hyperparam_config, dirname="name_direct
     criterion = nn.MSELoss()
     loss_history = []
     all_data_frames = []
-
-    # Create a directory for individual sequence CSVs
-    seq_dir = os.path.join("results", dirname, "sequences")
-    os.makedirs(seq_dir, exist_ok=True)
+    all_D_centers = []
 
     model.to(device)
     print(f"🚀 Training Mamba {plant.__class__.__name__} on {device}")
 
     for epoch in range(epochs):
         # Reset trajectory using parameters from config
+        # if hasattr(plant, 'reset_trajectory'):
+        #     try:
+        #         plant.reset_trajectory(seq_len=seq_len, dt=dt, lambd=lambd, p=p)
+        #     except TypeError:
+        #         plant.reset_trajectory()
+
         if hasattr(plant, 'reset_trajectory'):
             try:
-                plant.reset_trajectory(seq_len=seq_len, dt=dt, lambd=lambd, p=p)
+                D_center = plant.reset_trajectory(seq_len=seq_len, dt=dt, lambd=lambd, p=p)
             except TypeError:
-                plant.reset_trajectory()
+                D_center = plant.reset_trajectory()
+            all_D_centers.append(D_center) 
+
 
         state = plant.get_initial_state(batch_size)
         all_y_t, all_y_next, all_u = [], [], []
+        sequence_D_centers = []
 
         # --- SIMULATION PHASE ---
         # Inside GPUtrain_controllerFFT
-        delta_steps = 5  # For example, look 5 steps ahead (delta = 5 * dt)
+        delta_steps = hyperparam_config["train"]["delay_steps"]  # For example, look 5 steps ahead (delta = 5 * dt)
 
         for t_idx in range(seq_len - delta_steps):
             t = t_idx * dt
@@ -89,6 +95,9 @@ def GPUtrain_controllerFFT(model, plant, hyperparam_config, dirname="name_direct
             # to keep the trajectory continuous, or skip delta_steps.
             state_next, _ = plant.step(state, u_signal, t, dt)
             state = state_next.detach()
+            # If D_center is updated per sequence, store it here
+            if hasattr(plant, 'current_D_center'):
+                sequence_D_centers.append(plant.current_D_center)
 
         # --- DATA PREPARATION FOR CSV ---
         y_t_stack = torch.stack(all_y_t, dim=1).cpu().numpy()
@@ -101,12 +110,31 @@ def GPUtrain_controllerFFT(model, plant, hyperparam_config, dirname="name_direct
             "t": [i * dt for i in range(num_samples)],
             "y_t": y_t_stack[0, :, 0],
             "y_next": y_next_stack[0, :, 0],
-            "u_control": u_stack[0, :, 0]
+            "u_control": u_stack[0, :, 0],
+            "D_center": D_center  # Add D_center for this epoch
         })
         
         save_df_to_csv(epoch_df, 
                        dirname=dirname+"/sequences",
                        filename=f"sample_trajectory_epoch_{epoch}_seq_0.csv")
+
+        # Save a signal plot for this sample sequence, including D_center as a horizontal line
+        time_axis = epoch_df["t"].values
+        u_signal_plot = epoch_df["u_control"].values
+        y_t_plot = epoch_df["y_t"].values
+        y_next_plot = epoch_df["y_next"].values
+        d_center_plot = np.full_like(time_axis, D_center, dtype=float)
+
+        plot_signals(
+            time_axis,
+            [u_signal_plot, y_t_plot, y_next_plot, d_center_plot],
+            labels=["u_control", "y_t", "y_next", "D_center"],
+            xlabel="Time",
+            ylabel="Signal",
+            title=f"Sample Sequence Signals Epoch {epoch}",
+            dirname=dirname+"/sequences",
+            filename=f"sample_trajectory_epoch_{epoch}_seq_0_plot"
+        )
 
         all_data_frames.append(epoch_df)
 
@@ -142,6 +170,18 @@ def GPUtrain_controllerFFT(model, plant, hyperparam_config, dirname="name_direct
         labels=["MSE Loss"], xlabel="Epoch", ylabel="Loss",
         title=f"Convergence ({plant.__class__.__name__})",
         dirname=dirname, filename="training_loss_plot"
+    )
+
+    # --- SAVE D_CENTER HISTORY ---
+    # Create a DataFrame for D_center history (per epoch)
+    d_center_df = pd.DataFrame({
+        "epoch": range(1, epochs + 1),
+        "D_center": all_D_centers
+    })
+    save_df_to_csv(
+        d_center_df,
+        dirname=dirname,
+        filename="D_center_history.csv"
     )
 
     return loss_history
@@ -351,25 +391,25 @@ def GPUSimulateTracking(model, plant, hyperparam_config, dirname):
     device = train_cfg["device"]
 
     # 1. GENERATE A TIME-VARYING REFERENCE TRAJECTORY
-    # # A sine wave base
-    # time_axis = np.arange(steps) * dt
-    # period = 50 # Total hours for one full cycle
-    # sine_base = np.sin(2 * np.pi * time_axis / period)
+    # A sine wave base
+    time_axis = np.arange(steps) * dt
+    period = 20 # Total hours for one full cycle
+    sine_base = np.sin(2 * np.pi * time_axis / period)
 
-    # # Use tanh to sharpen the curve into a "soft" rectangle
-    # # Higher gain = more rectangular; Lower gain = more like a pure sine
-    # gain = 1.0 
-    # r_trajectory_np = 0.25 + 0.025 * np.tanh(gain * sine_base) 
+    # Use tanh to sharpen the curve into a "soft" rectangle
+    # Higher gain = more rectangular; Lower gain = more like a pure sine
+    gain = 1.0 
+    r_trajectory_np = 0.25 + 0.025 * np.tanh(gain * sine_base) 
 
-    # # (Note: 0.375 is the midpoint between 0.3 and 0.45)
-    # r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
+    # (Note: 0.375 is the midpoint between 0.3 and 0.45)
+    r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
 
     
     
-    # # 1. GENERATE A CONSTANT REFERENCE
-    constant_val = 0.24
-    # Create a tensor of shape [steps, 1] filled with the constant value
-    r_trajectory = torch.full((steps, 1), constant_val, device=device, dtype=torch.float32)
+    # # # 1. GENERATE A CONSTANT REFERENCE
+    # constant_val = 0.2
+    # # Create a tensor of shape [steps, 1] filled with the constant value
+    # r_trajectory = torch.full((steps, 1), constant_val, device=device, dtype=torch.float32)
 
     r_np = r_trajectory.cpu().numpy().flatten()
     # Initialize history and state as before

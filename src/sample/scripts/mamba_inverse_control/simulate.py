@@ -28,10 +28,17 @@ if __name__ == "__main__":
     #plant = GPUFermentationProcessFFT(hyperparam_config=hyperparam_config)  
 
     # 2. Load trained controller
-    #controller_path = f"models/2026-05-08/2026-05-08_17-43-14/GPUChemostatPlant_training/2026-05-08_17-43-14_trained_controller.pt" # best one so far
+    #controller_path = f"models/2026-05-08/2026-05-08_17-43-14/GPUChemostatPlant_training/2026-05-08_17-43-14_trained_controller.pt" # best one so far, D_center = 0.25
 
 
-    controller_path = "models/2026-05-11/2026-05-11_09-20-24/GPUChemostatPlant_training/2026-05-11_09-20-24_trained_controller.pt"
+    #controller_path = "models/2026-05-11/2026-05-11_10-49-41/GPUChemostatPlant_training/2026-05-11_10-49-41_trained_controller.pt" # D_center = 0.4
+
+    #controller_path = "models/2026-05-11/2026-05-11_14-12-30/GPUChemostatPlant_training/2026-05-11_14-12-30_trained_controller.pt"
+    # D_center randomized, trained on 300 epochs
+
+    controller_path = "models/2026-05-11/2026-05-11_15-44-54/GPUChemostatPlant_training/2026-05-11_15-44-54_trained_controller.pt"
+    # D_center randomzed, trained on 30 epochs
+
     loaded_controller = load_model(controller_path)
 
     # 3. Simulation

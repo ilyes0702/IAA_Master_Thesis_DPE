@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import random
 
 class GPUChemostatPlant:
     def __init__(self, hyperparam_config):
@@ -21,7 +22,6 @@ class GPUChemostatPlant:
         # Buffer for control signals
         self.u_buffer = None
       
-
     def get_initial_state(self, batch_size):
         """
         Returns [batch_size, 2] tensor of [Biomass (x), Substrate (s)].
@@ -97,11 +97,14 @@ class GPUChemostatPlant:
         
         # Apply scaling p and shift to a safe operating point for the Chemostat
         # D_center should be roughly 0.5 * mu_max to keep the plant 'alive'
-        D_center = 0.4
+        # Randomize the center point for each batch member
+        D_center = random.uniform(0.2, 0.4)
+        self.current_D_center = D_center
         self.u_buffer = D_center + (v_norm * self.p)
         
         # Clamp to ensure we don't hit negative dilution or extreme washout
-        #self.u_buffer = torch.clamp(self.u_buffer, 0.01, self.U_MAX)
+        #self.u_buffer = torch.clamp(self.u_buffer, 0.01, self.U_MAX)^
+        return D_center
 
     def get_u_at_step(self, t_idx):
         return self.u_buffer[:, t_idx].unsqueeze(1)
