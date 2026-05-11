@@ -162,7 +162,7 @@ def compute_and_save_stabilization_metrics(
     """
 
     steps, batch_size = y_np.shape
-    ref = ref_val.item()
+    ref = ref_val
 
     error = y_np - ref
     abs_error = np.abs(error)
@@ -340,7 +340,7 @@ def GPUSimulateControl_new_ma(model, plant, hyperparam_config, dirname):
 
 
 #=== FUNCTION FOR THE SIMULATION OF CONTROLLED PLANT WITH TRACKING ===#
-def GPUSimulateTracking_ma(model, plant, hyperparam_config, dirname):
+def GPUSimulateTracking(model, plant, hyperparam_config, dirname):
     train_cfg = hyperparam_config["train"]
     sig_cfg   = hyperparam_config["signal"]
     sim_cfg   = hyperparam_config["simulate"]
@@ -351,36 +351,37 @@ def GPUSimulateTracking_ma(model, plant, hyperparam_config, dirname):
     device = train_cfg["device"]
 
     # 1. GENERATE A TIME-VARYING REFERENCE TRAJECTORY
-#     # A sine wave base
-#     time_axis = np.arange(steps) * dt
-#     period = 200 # Total hours for one full cycle
-#     sine_base = np.sin(2 * np.pi * time_axis / period)
+    # # A sine wave base
+    # time_axis = np.arange(steps) * dt
+    # period = 50 # Total hours for one full cycle
+    # sine_base = np.sin(2 * np.pi * time_axis / period)
 
-#     # Use tanh to sharpen the curve into a "soft" rectangle
-#     # Higher gain = more rectangular; Lower gain = more like a pure sine
-#     gain = 1.0 
-#     r_trajectory_np = 0.375 + 0.025 * np.tanh(gain * sine_base) 
+    # # Use tanh to sharpen the curve into a "soft" rectangle
+    # # Higher gain = more rectangular; Lower gain = more like a pure sine
+    # gain = 1.0 
+    # r_trajectory_np = 0.25 + 0.025 * np.tanh(gain * sine_base) 
 
-#     # (Note: 0.375 is the midpoint between 0.3 and 0.45)
-#     r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
+    # # (Note: 0.375 is the midpoint between 0.3 and 0.45)
+    # r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
 
-#     history = {"x1": np.zeros(steps), "x2": np.zeros(steps), "y": np.zeros(steps), "r": np.zeros(steps), "u": np.zeros(steps)}
-#     all_y = torch.zeros((steps, batch_size), device=device)
-#     state = plant.get_initial_state(batch_size)
-
-    # 1. GENERATE A CONSTANT REFERENCE
-    constant_val = 0.2
-    # Create a tensor of shape [steps, 1] filled with 0.2
+    
+    
+    # # 1. GENERATE A CONSTANT REFERENCE
+    constant_val = 0.24
+    # Create a tensor of shape [steps, 1] filled with the constant value
     r_trajectory = torch.full((steps, 1), constant_val, device=device, dtype=torch.float32)
 
+    r_np = r_trajectory.cpu().numpy().flatten()
     # Initialize history and state as before
     history = {"x1": np.zeros(steps), "x2": np.zeros(steps), "y": np.zeros(steps), "r": np.zeros(steps), "u": np.zeros(steps)}
     all_y = torch.zeros((steps, batch_size), device=device)
+    all_u = torch.zeros((steps, batch_size), device=device)
+    all_x1 = torch.zeros((steps, batch_size), device=device)
+    all_x2 = torch.zeros((steps, batch_size), device=device)
     state = plant.get_initial_state(batch_size)
 
     model.eval()
 
-    model.eval()
     print(f"📈 Testing Trajectory Tracking: {batch_size} trajectories...")
 
     with torch.no_grad():
@@ -399,7 +400,8 @@ def GPUSimulateTracking_ma(model, plant, hyperparam_config, dirname):
             u_out = model(current_input) 
             
             # Note: If using Mamba, u_out usually returns [batch, 1, output_dim]
-            u = torch.clamp(u_out[:, -1, :], 0.0, plant.U_MAX)
+            u = u_out[:, -1, :]
+            #u = torch.clamp(u_out[:, -1, :], 0.0, plant.U_MAX)
 
             # 5. STEP PLANT
             # This uses the predicted U to move the REAL plant state
@@ -409,26 +411,76 @@ def GPUSimulateTracking_ma(model, plant, hyperparam_config, dirname):
             history["y"][i] = y[0].item()
             history["r"][i] = current_r[0].item() 
             history["u"][i] = u[0].item()
+            history["x1"][i] = state[0, 0].item() # Assuming index 0 is biomass
+            history["x2"][i] = state[0, 1].item() # Assuming index 1 is substrate
             all_y[i] = y.squeeze()
-
+            all_u[i] = u.squeeze()
+            all_x1[i] = state[:, 0] # Assuming index 0 is biomass
+            all_x2[i] = state[:, 1] # Assuming index 1 is substrate
 
     # --- PLOTTING ---
     time_axis = np.arange(steps) * dt
-    
-    # 1. Detailed plots (Biomass, Substrate, etc.) for the first trajectory
-    plot_config = plant.get_plot_config()
-    for idx, cfg in enumerate(plot_config):
-        signals = [history[col] for col in cfg["cols"]]
+
+    for b in range(batch_size):
+        # Create subfolder path for this specific initial state
+        # 1. Define a unique sub-directory for this specific batch member
+        state_dirname = os.path.join(dirname, f"initial_state_{b}")
+        
+        # 2. Extract specific data for this trajectory (b)
+        y_traj = all_y[:, b].cpu().numpy()
+        u_traj = all_u[:, b].cpu().numpy()
+        x1_traj = all_x1[:, b].cpu().numpy()
+        x2_traj = all_x2[:, b].cpu().numpy()
+        r_traj = np.full(steps, r_np)
+
+        # 3. SAVE THE CSV (using your custom method)
+        df_traj = pd.DataFrame({
+            "time": time_axis,
+            "biomass_x1": x1_traj,
+            "substrate_x2": x2_traj,
+            "growth_rate_y": y_traj,
+            "control_u": u_traj,
+            "target_r": r_traj
+        })
+        save_df_to_csv(df_traj, dirname=state_dirname, filename="state_report")
+
+        # 4. GENERATE THE 3 PLOTS PER BATCH
+
+        # Plot 1: Control Signal (u)
         plot_signals(
-            t=time_axis, signals=signals, labels=cfg["labels"],
-            title=cfg["title"], xlabel="Time (h)", ylabel=cfg["ylabel"],
-            dirname=dirname, filename=f"detailed_plot_{idx}"
+            t=time_axis, 
+            signals=[u_traj],
+            labels=["Control Signal (u)"],
+            title=f"Trajectory {b}: Control Action",
+            xlabel="Time (h)", ylabel="Action Value",
+            dirname=state_dirname, filename="plot_control_signal"
         )
 
-    # 2. NEW: Batch Summary Plot (All curves with random initial states)
+        # Plot 2: Output (y) along with Reference (r)
+        plot_signals(
+            t=time_axis, 
+            signals=[y_traj, r_traj],
+            labels=["Growth Rate (y)", "Target (r)"],
+            title=f"Trajectory {b}: Tracking Performance",
+            xlabel="Time (h)", ylabel="Growth Rate",
+            dirname=state_dirname, filename="plot_output_tracking"
+        )
+
+        # Plot 3: State Variables (x1, x2)
+        plot_signals(
+            t=time_axis, 
+            signals=[x1_traj, x2_traj],
+            labels=["Biomass (x1)", "Substrate (x2)"],
+            title=f"Trajectory {b}: Plant States",
+            xlabel="Time (h)", ylabel="Concentration",
+            dirname=state_dirname, filename="plot_plant_states"
+        )
+
+
+    # 2. Batch Summary Plot (All curves with random initial states)
     y_np = all_y.cpu().numpy()
     summary_signals = [y_np[:, j] for j in range(batch_size)]
-    summary_signals.append(np.full(steps, plant.ref_value.item())) # Add target line
+    summary_signals.append(r_np)
     
     plot_signals(
         t=time_axis,
@@ -440,7 +492,24 @@ def GPUSimulateTracking_ma(model, plant, hyperparam_config, dirname):
         dirname=dirname,
         filename="batch_summary"
     )
-    compute_and_save_stabilization_metrics(y_np, plant.ref_value, dt, dirname)
+    compute_and_save_stabilization_metrics(y_np, r_trajectory, dt, dirname)
+
+    # # Create a dictionary of the logged history
+    # data_dict = {
+    #     "time": time_axis,
+    #     "y_growth_rate": history["y"],
+    #     "r_reference": history["r"],
+    #     "u_control": history["u"],
+    #     # If your plant records internal states x1, x2 in history:
+    #     "x1_biomass": history["x1"],
+    #     "x2_substrate": history["x2"]
+    # }
+
+    # # Convert to DataFrame and save
+    # df = pd.DataFrame(data_dict)
+    # save_df_to_csv(df, dirname=dirname, filename="tracking_results")
+
+    return()
 
 import torch
 import numpy as np

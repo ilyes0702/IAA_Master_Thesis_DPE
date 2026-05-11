@@ -20,6 +20,7 @@ class GPUChemostatPlant:
         self.U_MAX = p_cfg.get("u_max", 0.6) # Max Dilution Rate
         # Buffer for control signals
         self.u_buffer = None
+      
 
     def get_initial_state(self, batch_size):
         """
@@ -96,11 +97,11 @@ class GPUChemostatPlant:
         
         # Apply scaling p and shift to a safe operating point for the Chemostat
         # D_center should be roughly 0.5 * mu_max to keep the plant 'alive'
-        D_center = 0.25
+        D_center = 0.4
         self.u_buffer = D_center + (v_norm * self.p)
         
         # Clamp to ensure we don't hit negative dilution or extreme washout
-        self.u_buffer = torch.clamp(self.u_buffer, 0.01, self.U_MAX)
+        #self.u_buffer = torch.clamp(self.u_buffer, 0.01, self.U_MAX)
 
     def get_u_at_step(self, t_idx):
         return self.u_buffer[:, t_idx].unsqueeze(1)

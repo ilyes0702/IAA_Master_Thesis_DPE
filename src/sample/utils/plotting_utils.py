@@ -110,9 +110,9 @@ def plot_signals(
 
     for i, sig in enumerate(signals):
         if labels is not None:
-            ax.plot(t, sig, label=labels[i])
+            ax.scatter(t, sig, label=labels[i])
         else:
-            ax.plot(t, sig)
+            ax.scatter(t, sig)
 
     # === FIXED ASPECT RATIO === #
     x_range = np.diff(ax.get_xlim())[0]

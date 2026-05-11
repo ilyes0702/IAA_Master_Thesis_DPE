@@ -5,7 +5,7 @@ axes.formatter.use_mathtext : True
 
 ### Lines
 lines.linewidth : 1.0
-lines.markersize : 10
+lines.markersize : 1
 hatch.linewidth: 0.25
 
 patch.antialiased   : True

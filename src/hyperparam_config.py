@@ -8,7 +8,7 @@ hyperparam_config = {
     },
     "signal": {
         "lambd": 10,
-        "p": 0.2,
+        "p": 0.3,
         "seq_len": 10000,
         "dt": 0.5
     },
@@ -25,6 +25,6 @@ hyperparam_config = {
     },
     "simulate": {
         "batch_size": 10,
-        "seq_len": 1000,
+        "seq_len": 500,
     }
 }
