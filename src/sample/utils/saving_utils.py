@@ -160,3 +160,27 @@ def save_plot_image(image, filename, dirname):
     print(f"Image successfully saved to: {full_path}")
     
     return()
+
+
+def save_training_dataset(data_dict, dirname, filename="training_data"):
+    """
+    Saves the training tensors (x and y) to a .pt file using structured directory logic.
+    """
+    # Construct directory logic consistent with your other functions
+    target_dir = f"results/{default_date}/{default_date_and_time}/{dirname}/dataset/"
+    save_filename = f"{default_date_and_time}_{filename}.pt"
+    
+    os.makedirs(target_dir, exist_ok=True)
+    full_path = os.path.join(target_dir, save_filename)
+    
+    # Path length safety check (255 chars)
+    max_path_length = 255
+    if len(full_path) > max_path_length:
+        basename, ext = os.path.splitext(save_filename)
+        allowed_len = max_path_length - len(os.path.join(target_dir, ext))
+        save_filename = basename[:allowed_len] + ext
+        full_path = os.path.join(target_dir, save_filename)
+
+    # Save the dictionary containing the tensors
+    torch.save(data_dict, full_path)
+    print(f"📦 Dataset Tensors saved to: {full_path}")

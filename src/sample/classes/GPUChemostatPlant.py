@@ -18,7 +18,6 @@ class GPUChemostatPlant:
         self.Y = torch.tensor(p_cfg.get("Y", 0.6), device=self.device)
         self.sR = torch.tensor(p_cfg.get("sR", 1.0), device=self.device)
         
-        self.U_MAX = p_cfg.get("u_max", 0.6) # Max Dilution Rate
         # Buffer for control signals
         self.u_buffer = None
       
@@ -98,9 +97,9 @@ class GPUChemostatPlant:
         # Apply scaling p and shift to a safe operating point for the Chemostat
         # D_center should be roughly 0.5 * mu_max to keep the plant 'alive'
         # Randomize the center point for each batch member
-        D_center = random.uniform(0.2, 0.4)
+        D_center = torch.rand((self.batch_size, 1), device=self.device) * 0.3 + 0.2 # 0.2 to 0.5
         self.current_D_center = D_center
-        self.u_buffer = D_center + (v_norm * self.p)
+        self.u_buffer = D_center + (v_train * self.p)
         
         # Clamp to ensure we don't hit negative dilution or extreme washout
         #self.u_buffer = torch.clamp(self.u_buffer, 0.01, self.U_MAX)^

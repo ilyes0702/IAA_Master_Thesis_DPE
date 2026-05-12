@@ -39,7 +39,7 @@ def GPUtrain_controllerFFT(model, plant, hyperparam_config, dirname="name_direct
 
     # --- INITIALIZE TRAINING ---
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    criterion = nn.MSELoss()
+    criterion = nn.HuberLoss(delta = 0.1)
     loss_history = []
     all_data_frames = []
     all_D_centers = []
@@ -48,13 +48,7 @@ def GPUtrain_controllerFFT(model, plant, hyperparam_config, dirname="name_direct
     print(f"🚀 Training Mamba {plant.__class__.__name__} on {device}")
 
     for epoch in range(epochs):
-        # Reset trajectory using parameters from config
-        # if hasattr(plant, 'reset_trajectory'):
-        #     try:
-        #         plant.reset_trajectory(seq_len=seq_len, dt=dt, lambd=lambd, p=p)
-        #     except TypeError:
-        #         plant.reset_trajectory()
-
+        
         if hasattr(plant, 'reset_trajectory'):
             try:
                 D_center = plant.reset_trajectory(seq_len=seq_len, dt=dt, lambd=lambd, p=p)
@@ -70,7 +64,7 @@ def GPUtrain_controllerFFT(model, plant, hyperparam_config, dirname="name_direct
         # --- SIMULATION PHASE ---
         # Inside GPUtrain_controllerFFT
         delta_steps = hyperparam_config["train"]["delay_steps"]  # For example, look 5 steps ahead (delta = 5 * dt)
-
+        delta_steps = 20
         for t_idx in range(seq_len - delta_steps):
             t = t_idx * dt
             u_signal = plant.get_u_at_step(t_idx)
@@ -154,6 +148,19 @@ def GPUtrain_controllerFFT(model, plant, hyperparam_config, dirname="name_direct
         loss_history.append(loss.item())
         if (epoch + 1) % 10 == 0:
             print(f"Epoch {epoch+1:04d} | Loss: {loss.item():.6f}")
+            # We take index 0 of the batch
+            u_truth_sample = y_target[0].detach().cpu().numpy().flatten()
+            u_pred_sample = u_pred[0].detach().cpu().numpy().flatten()
+            
+            plot_signals(
+                time_axis[:len(u_truth_sample)], 
+                [u_truth_sample, u_pred_sample],
+                labels=["Ground Truth (u)", "Mamba Prediction (u_hat)"],
+                xlabel="Time", ylabel="Control Signal",
+                title=f"Mamba Prediction Accuracy - Epoch {epoch}",
+                dirname=dirname+"/sequences",
+                filename=f"prediction_accuracy_epoch_{epoch}"
+            )
 
     # --- FINAL AGGREGATION & SAVING ---
     master_df = pd.concat(all_data_frames, ignore_index=True)
@@ -175,8 +182,8 @@ def GPUtrain_controllerFFT(model, plant, hyperparam_config, dirname="name_direct
     # --- SAVE D_CENTER HISTORY ---
     # Create a DataFrame for D_center history (per epoch)
     d_center_df = pd.DataFrame({
-        "epoch": range(1, epochs + 1),
-        "D_center": all_D_centers
+        "Sequence": range(1, epochs*batch_size + 1),
+        "D_center": sequence_D_centers
     })
     save_df_to_csv(
         d_center_df,
@@ -392,24 +399,24 @@ def GPUSimulateTracking(model, plant, hyperparam_config, dirname):
 
     # 1. GENERATE A TIME-VARYING REFERENCE TRAJECTORY
     # A sine wave base
-    time_axis = np.arange(steps) * dt
-    period = 20 # Total hours for one full cycle
-    sine_base = np.sin(2 * np.pi * time_axis / period)
+    # time_axis = np.arange(steps) * dt
+    # period = 20 # Total hours for one full cycle
+    # sine_base = np.sin(2 * np.pi * time_axis / period)
 
-    # Use tanh to sharpen the curve into a "soft" rectangle
-    # Higher gain = more rectangular; Lower gain = more like a pure sine
-    gain = 1.0 
-    r_trajectory_np = 0.25 + 0.025 * np.tanh(gain * sine_base) 
+    # # Use tanh to sharpen the curve into a "soft" rectangle
+    # # Higher gain = more rectangular; Lower gain = more like a pure sine
+    # gain = 1.0 
+    # r_trajectory_np = 0.26 + 0.03 * np.tanh(gain * sine_base) + 0.001*time_axis
 
-    # (Note: 0.375 is the midpoint between 0.3 and 0.45)
-    r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
+    # # (Note: 0.375 is the midpoint between 0.3 and 0.45)
+    # r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
 
     
     
     # # # 1. GENERATE A CONSTANT REFERENCE
-    # constant_val = 0.2
-    # # Create a tensor of shape [steps, 1] filled with the constant value
-    # r_trajectory = torch.full((steps, 1), constant_val, device=device, dtype=torch.float32)
+    constant_val = 0.3
+    # Create a tensor of shape [steps, 1] filled with the constant value
+    r_trajectory = torch.full((steps, 1), constant_val, device=device, dtype=torch.float32)
 
     r_np = r_trajectory.cpu().numpy().flatten()
     # Initialize history and state as before
@@ -421,23 +428,31 @@ def GPUSimulateTracking(model, plant, hyperparam_config, dirname):
     state = plant.get_initial_state(batch_size)
 
     model.eval()
+    model.reset_memory(batch_size=batch_size, device=device)
 
     print(f"📈 Testing Trajectory Tracking: {batch_size} trajectories...")
-
+    delta_steps =hyperparam_config["train"]["delay_steps"]  # For example, look 5 steps ahead (delta = 5 * dt)
+    
     with torch.no_grad():
-        for i in range(steps):
+        for i in range(steps-delta_steps):
             t = i * dt
-            y = plant.get_y(state, t) # This is y(t)
+            y_current = plant.get_y(state, t) # This is y(t)
             
             # 2. Grab the specific target for "Next" time step y(t+dt)
             current_r = r_trajectory[i].expand(batch_size, 1)
 
+            # Grab the target 20 steps into the future
+            target_r = r_trajectory[i + delta_steps].expand(batch_size, 1)
+
+            # Now the triplet [y_t, r_{t+20}] matches the training data exactly
+            current_input = torch.cat([y_current, target_r], dim=-1).unsqueeze(1)
+
             # 3. CONSTRUCT INPUT: [y(t), y_target]
             # This is exactly the (y_t, y_next) triplet the model was trained on
-            current_input = torch.cat([y, current_r], dim=-1).unsqueeze(1) 
+            # current_input = torch.cat([y, current_r], dim=-1).unsqueeze(1) 
 
             # 4. INFERENCE
-            u_out = model(current_input) 
+            u_out = model(current_input, use_memory=True) 
             
             # Note: If using Mamba, u_out usually returns [batch, 1, output_dim]
             u = u_out[:, -1, :]
@@ -448,12 +463,12 @@ def GPUSimulateTracking(model, plant, hyperparam_config, dirname):
             state, _ = plant.step(state, u, t, dt)
 
             # --- LOGGING ---
-            history["y"][i] = y[0].item()
+            history["y"][i] = y_current[0].item()
             history["r"][i] = current_r[0].item() 
             history["u"][i] = u[0].item()
             history["x1"][i] = state[0, 0].item() # Assuming index 0 is biomass
             history["x2"][i] = state[0, 1].item() # Assuming index 1 is substrate
-            all_y[i] = y.squeeze()
+            all_y[i] = y_current.squeeze()
             all_u[i] = u.squeeze()
             all_x1[i] = state[:, 0] # Assuming index 0 is biomass
             all_x2[i] = state[:, 1] # Assuming index 1 is substrate
@@ -532,7 +547,7 @@ def GPUSimulateTracking(model, plant, hyperparam_config, dirname):
         dirname=dirname,
         filename="batch_summary"
     )
-    compute_and_save_stabilization_metrics(y_np, r_trajectory, dt, dirname)
+    compute_and_save_stabilization_metrics(y_np, r_np, dt, dirname)
 
     # # Create a dictionary of the logged history
     # data_dict = {

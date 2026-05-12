@@ -36,8 +36,14 @@ if __name__ == "__main__":
     #controller_path = "models/2026-05-11/2026-05-11_14-12-30/GPUChemostatPlant_training/2026-05-11_14-12-30_trained_controller.pt"
     # D_center randomized, trained on 300 epochs
 
-    controller_path = "models/2026-05-11/2026-05-11_15-44-54/GPUChemostatPlant_training/2026-05-11_15-44-54_trained_controller.pt"
+    #controller_path = "models/2026-05-11/2026-05-11_15-44-54/GPUChemostatPlant_training/2026-05-11_15-44-54_trained_controller.pt"
     # D_center randomzed, trained on 30 epochs
+
+    controller_path= "models/2026-05-12/2026-05-12_14-46-16/GPUChemostatPlant_training/2026-05-12_14-46-16_trained_controller_disk.pt"
+    # Huber loss function
+
+    controller_path = "models/2026-05-12/2026-05-12_16-49-43/GPUChemostatPlant_training/2026-05-12_16-49-43_trained_controller_disk.pt"
+    # trained with randomized D_cnter and larger p
 
     loaded_controller = load_model(controller_path)
 
