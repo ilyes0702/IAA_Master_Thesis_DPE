@@ -5,7 +5,6 @@ plt.style.use("src/sample/style.mplstyle")
 import torch
 
 # Choose your plant model here - swap between different process models
-from src.sample.classes.PenicilinFermentationProcessTropophase import GPUFermentationProcessFFT
 from src.sample.classes.SimpleLinearPlant import GPUSimpleLinearPlant
 from src.sample.classes.MambaInverseController import MambaInverseController
 from src.sample.utils.general_utils import GPUSimulateTracking
@@ -39,21 +38,18 @@ if __name__ == "__main__":
     #controller_path = "models/2026-05-11/2026-05-11_15-44-54/GPUChemostatPlant_training/2026-05-11_15-44-54_trained_controller.pt"
     # D_center randomzed, trained on 30 epochs
 
-    controller_path= "models/2026-05-12/2026-05-12_14-46-16/GPUChemostatPlant_training/2026-05-12_14-46-16_trained_controller_disk.pt"
+    #controller_path= "models/2026-05-12/2026-05-12_14-46-16/GPUChemostatPlant_training/2026-05-12_14-46-16_trained_controller_disk.pt"
     # Huber loss function
 
-    controller_path = "models/2026-05-12/2026-05-12_16-49-43/GPUChemostatPlant_training/2026-05-12_16-49-43_trained_controller_disk.pt"
-    # trained with randomized D_cnter and larger p
+    #controller_path = "models/2026-05-12/2026-05-12_16-49-43/GPUChemostatPlant_training/2026-05-12_16-49-43_trained_controller_disk.pt"
+    # trained with randomized D_cnter and larger p, good results, trained on 5000 sequences
 
+
+    controller_path = "models/2026-05-13/2026-05-13_12-18-55/GPUChemostatPlant_training_None/2026-05-13_12-18-55_trained_controller_disk.pt"
+    # trained on 500 sequences
+    
     loaded_controller = load_model(controller_path)
 
-    # 3. Simulation
-    # GPUSimulateControl_new_ma(
-    #     model=loaded_controller, 
-    #     plant=plant, 
-    #     hyperparam_config=hyperparam_config,          
-    #     dirname=plant.__class__.__name__
-    # )
 
     GPUSimulateTracking(
         model=loaded_controller,

@@ -196,106 +196,69 @@ def GPUtrain_controllerFFT(model, plant, hyperparam_config, dirname="name_direct
 
 
 
-def compute_and_save_stabilization_metrics(
-    y_np,
-    ref_val,
+import numpy as np
+import pandas as pd
+
+def compute_and_save_tracking_metrics(
+    y_np,        # Actual output [steps, batch_size]
+    ref_np,      # Reference trajectory [steps, batch_size]
     dt,
     dirname,
-    settle_tol=0.05,
-    steady_frac=0.2,
+    settle_tol=0.05, # Band for "tracking error"
 ):
     """
-    Compute stabilization metrics and save them to CSV.
+    Pure tracking metrics for curve comparison.
+    Calculates how well the plant output follows a dynamic reference.
     """
-
     steps, batch_size = y_np.shape
-    ref = ref_val
+    
+    # Ensure ref_np is the same shape as y_np
+    if np.isscalar(ref_np):
+        ref_np = np.full_like(y_np, ref_np)
+    elif ref_np.ndim == 1:
+        ref_np = np.tile(ref_np[:, np.newaxis], (1, batch_size))
 
-    error = y_np - ref
+    error = y_np - ref_np
     abs_error = np.abs(error)
 
-    # --- Error-based metrics ---
+    # --- Integral Metrics (Total Tracking Performance) ---
     mae = abs_error.mean(axis=0)
     mse = (error ** 2).mean(axis=0)
+    rmse = np.sqrt(mse)
     iae = abs_error.sum(axis=0) * dt
     ise = (error ** 2).sum(axis=0) * dt
 
-    # --- Overshoot ---
-    overshoot = np.max(y_np, axis=0) - ref
-
-    # --- Settling time ---
-    settle_band = settle_tol * abs(ref)
-    settling_time = np.full(batch_size, np.nan)
-
-    for b in range(batch_size):
-        for t in range(steps):
-            if np.all(abs_error[t:, b] <= settle_band):
-                settling_time[b] = t * dt
-                break
-
-    # --- Steady-state error ---
-    n_ss = int(steps * steady_frac)
-    steady_state_error = abs_error[-n_ss:, :].mean(axis=0)
+    # --- Dynamic Tracking Metrics ---
+    # Max Tracking Error: The single biggest deviation during the run
+    max_error = np.max(abs_error, axis=0)
+    
+    # Time spent within tolerance band (%)
+    # How much of the sequence was the error < 5% of the reference?
+    denom = np.abs(ref_np) + 1e-8
+    within_band = abs_error <= (settle_tol * denom)
+    time_in_band_pct = (np.sum(within_band, axis=0) / steps) * 100
 
     # --- Assemble DataFrame ---
     df = pd.DataFrame({
         "trajectory": np.arange(batch_size),
         "MAE": mae,
         "MSE": mse,
+        "RMSE": rmse,
         "IAE": iae,
         "ISE": ise,
-        "Overshoot": overshoot,
-        "SettlingTime": settling_time,
-        "SteadyStateError": steady_state_error,
+        "Max_Error": max_error,
+        "TimeInBand_%": time_in_band_pct
     })
 
-    # --- Also save aggregate statistics ---
-    summary_df = pd.DataFrame({
-        "metric": [
-            "MAE", "MSE", "IAE", "ISE",
-            "Overshoot", "SettlingTime", "SteadyStateError"
-        ],
-        "mean": [
-            np.nanmean(mae),
-            np.nanmean(mse),
-            np.nanmean(iae),
-            np.nanmean(ise),
-            np.nanmean(overshoot),
-            np.nanmean(settling_time),
-            np.nanmean(steady_state_error),
-        ],
-        "std": [
-            np.nanstd(mae),
-            np.nanstd(mse),
-            np.nanstd(iae),
-            np.nanstd(ise),
-            np.nanstd(overshoot),
-            np.nanstd(settling_time),
-            np.nanstd(steady_state_error),
-        ],
-        "worst": [
-            np.nanmax(mae),
-            np.nanmax(mse),
-            np.nanmax(iae),
-            np.nanmax(ise),
-            np.nanmax(overshoot),
-            np.nanmax(settling_time),
-            np.nanmax(steady_state_error),
-        ],
-    })
+    # Summary Statistics
+    summary_df = df.describe().loc[['mean', 'std', 'min', 'max']].T.reset_index()
+    summary_df.columns = ['metric', 'mean', 'std', 'min', 'max']
 
-    # --- Save using your existing utility ---
-    save_df_to_csv(
-        df=df,
-        dirname=dirname,
-        filename="stabilization_metrics_per_trajectory",
-    )
+    # --- Save ---
+    save_df_to_csv(df, dirname, "tracking_metrics_per_trajectory")
+    save_df_to_csv(summary_df, dirname, "tracking_metrics_summary")
 
-    save_df_to_csv(
-        df=summary_df,
-        dirname=dirname,
-        filename="stabilization_metrics_summary",
-    )
+    return df
 #=== FUNCTION FOR THE SIMULATION OF CONTROLLED PLANT ===#
 def GPUSimulateControl_new_ma(model, plant, hyperparam_config, dirname):
     train_cfg = hyperparam_config["train"]
@@ -381,7 +344,7 @@ def GPUSimulateControl_new_ma(model, plant, hyperparam_config, dirname):
         dirname=dirname,
         filename="batch_summary"
     )
-    compute_and_save_stabilization_metrics(y_np, plant.ref_value, dt, dirname)
+    compute_and_save_tracking_metrics(y_np, r_np, dt, dirname)
 
     return
 
@@ -399,24 +362,24 @@ def GPUSimulateTracking(model, plant, hyperparam_config, dirname):
 
     # 1. GENERATE A TIME-VARYING REFERENCE TRAJECTORY
     # A sine wave base
-    # time_axis = np.arange(steps) * dt
-    # period = 20 # Total hours for one full cycle
-    # sine_base = np.sin(2 * np.pi * time_axis / period)
+    time_axis = np.arange(steps) * dt
+    period = 20 # Total hours for one full cycle
+    sine_base = np.sin(2 * np.pi * time_axis / period)
 
-    # # Use tanh to sharpen the curve into a "soft" rectangle
-    # # Higher gain = more rectangular; Lower gain = more like a pure sine
-    # gain = 1.0 
-    # r_trajectory_np = 0.26 + 0.03 * np.tanh(gain * sine_base) + 0.001*time_axis
+    # Use tanh to sharpen the curve into a "soft" rectangle
+    # Higher gain = more rectangular; Lower gain = more like a pure sine
+    gain = 1.0 
+    r_trajectory_np = 0.26 + 0.03 * np.tanh(gain * sine_base) + 0.001*time_axis
 
-    # # (Note: 0.375 is the midpoint between 0.3 and 0.45)
-    # r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
+    # (Note: 0.375 is the midpoint between 0.3 and 0.45)
+    r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
 
     
     
     # # # 1. GENERATE A CONSTANT REFERENCE
-    constant_val = 0.3
-    # Create a tensor of shape [steps, 1] filled with the constant value
-    r_trajectory = torch.full((steps, 1), constant_val, device=device, dtype=torch.float32)
+    # constant_val = 0.3
+    # # Create a tensor of shape [steps, 1] filled with the constant value
+    # r_trajectory = torch.full((steps, 1), constant_val, device=device, dtype=torch.float32)
 
     r_np = r_trajectory.cpu().numpy().flatten()
     # Initialize history and state as before
@@ -547,7 +510,7 @@ def GPUSimulateTracking(model, plant, hyperparam_config, dirname):
         dirname=dirname,
         filename="batch_summary"
     )
-    compute_and_save_stabilization_metrics(y_np, r_np, dt, dirname)
+    compute_and_save_tracking_metrics(y_np, r_np, dt, dirname)
 
     # # Create a dictionary of the logged history
     # data_dict = {

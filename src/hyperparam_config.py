@@ -12,7 +12,37 @@ hyperparam_config = {
     },
     "train": {
         "epochs": 1,
-        "batch_size": 5000,
+        "batch_size": 10000,
+        "lr": 1e-3,
+        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "delay_steps": 10
+    },
+    "mamba": {
+        "d_model": 64,
+        "n_layers": 4,
+        "d_state": 16
+    },
+    "simulate": {
+        "batch_size": 1,
+        "seq_len": 500,
+    }
+}
+
+
+hyperparam_config_ex6_tropophase = {
+    "plant": {
+        "tau": 2.0,
+        "gain": 0.8,
+    },
+    "signal": {
+        "lambd": 5,
+        "p": 0.2,
+        "seq_len": 200,
+        "dt": 0.2
+    },
+    "train": {
+        "epochs": 1,
+        "batch_size": 500,
         "lr": 1e-3,
         "device": "cuda" if torch.cuda.is_available() else "cpu",
         "delay_steps": 10
@@ -24,6 +54,6 @@ hyperparam_config = {
     },
     "simulate": {
         "batch_size": 10,
-        "seq_len": 300,
+        "seq_len": 500,
     }
 }

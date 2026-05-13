@@ -101,8 +101,7 @@ class GPUChemostatPlant:
         self.current_D_center = D_center
         self.u_buffer = D_center + (v_train * self.p)
         
-        # Clamp to ensure we don't hit negative dilution or extreme washout
-        #self.u_buffer = torch.clamp(self.u_buffer, 0.01, self.U_MAX)^
+        
         return D_center
 
     def get_u_at_step(self, t_idx):

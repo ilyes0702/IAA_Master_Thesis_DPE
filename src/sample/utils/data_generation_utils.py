@@ -27,14 +27,14 @@ def generate_training_batch(plant, hyperparam_config):
     for t_idx in range(seq_len - delta_steps):
         t = t_idx * dt
         u_signal = plant.get_u_at_step(t_idx)
-        y_t = plant.get_y(state)
+        y_t = plant.get_y(state, t)
         
         # Forward simulate to find the target state
         temp_state = state
         for _ in range(delta_steps):
             temp_state, _ = plant.step(temp_state, u_signal, t, dt)
         
-        y_delta = plant.get_y(temp_state)
+        y_delta = plant.get_y(temp_state, t + delta_steps * dt)
         
         all_y_t.append(y_t)
         all_y_next.append(y_delta)
@@ -116,7 +116,7 @@ def generate_and_save_dataset(plant, hyperparam_config, num_batches, dirname):
                            dirname=dirname + "/dataset_logs", 
                            filename=f"{filename_base}.csv")
 
-            #--- SAVE INDIVIDUAL PLOT ---
+            # --- SAVE INDIVIDUAL PLOT ---
             # plot_signals(
             #     time_axis,
             #     [u_signal_plot, y_t_plot, y_next_plot, d_center_line],
