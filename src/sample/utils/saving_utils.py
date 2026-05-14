@@ -1,9 +1,4 @@
 import os
-import joblib
-# IMPORT SYSTEM MODULES
-import sys
-import os
-import seaborn as sns
 import torch
 import pandas as pd
 import json
@@ -13,16 +8,9 @@ from PIL import Image
 
 from src.sample.config import date as default_date
 from src.sample.config import date_and_time as default_date_and_time
+
+
 #=== FUNCTION TO SAVE TRAINED MODEL ===#
-import torch
-import os
-
-import torch
-import os
-
-import os
-import torch
-
 def save_model(model, dirname, hyperparam_config, filename="trained_controller"):
     """
     Saves the model weights and config using the models/date/date_and_time/ structure.

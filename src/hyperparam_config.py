@@ -23,7 +23,7 @@ hyperparam_config = {
         "d_state": 16
     },
     "simulate": {
-        "batch_size": 1,
+        "batch_size": 10,
         "seq_len": 500,
     }
 }

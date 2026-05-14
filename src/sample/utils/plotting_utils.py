@@ -95,7 +95,7 @@ def plot_signals(
     title=None,
     xlabel="Time",
     ylabel="Value",
-    figsize=(10, 5),
+    figsize=(5, 5),
     save_path=None,
     show=False,
     filename=None,

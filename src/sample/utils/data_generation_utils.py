@@ -2,7 +2,6 @@ import torch
 import numpy as np  
 import pandas as pd
 
-from src.sample.utils.plotting_utils import plot_signals
 from src.sample.utils.saving_utils import save_df_to_csv, save_training_dataset
 
 def generate_training_batch(plant, hyperparam_config):
