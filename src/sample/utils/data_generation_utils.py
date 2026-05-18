@@ -4,8 +4,24 @@ import pandas as pd
 
 from src.sample.utils.saving_utils import save_df_to_csv, save_training_dataset
 
+#=== FUNCTION TO GENERATE TRAINING DATA ===#
 def generate_training_batch(plant, hyperparam_config):
-    """Simulates parallel trajectories and returns training tensors."""
+    """
+    Simulates parallel trajectories and returns training tensors.
+
+    Parameters:
+    - plant: The simulation environment or physical plant object used to generate states.
+    - hyperparam_config (dict): Configuration dictionary containing nested parameters for 'signal' and 'train'.
+
+    Returns:
+    - x_tensor (torch.Tensor): Combined tensor of current and future states, shaped [Batch, Seq, Dim].
+    - y_target (torch.Tensor): Target control inputs applied during the sequence, shaped [Batch, Seq, Dim].
+
+    The function unpacks configuration details to handle sequence length, time increments, 
+    batch sizing, and look-ahead delay steps. It resets the plant, iteratively runs a forward 
+    simulation to gather state-action pairs, projects future trajectories based on `delay_steps`, 
+    and packages the resulting history into PyTorch tensors mapped to the target execution device.
+    """
     sig_cfg = hyperparam_config["signal"]
     train_cfg = hyperparam_config["train"]
     
@@ -55,6 +71,20 @@ def generate_and_save_dataset(plant, hyperparam_config, num_batches, dirname):
     """
     Simulates physics, saves CSVs/Plots for EVERY individual trajectory, 
     and returns the final tensors for training.
+
+    Parameters:
+    - plant: The simulation environment or physical plant object used to generate states.
+    - hyperparam_config (dict): Configuration dictionary containing nested parameters for 'signal' and 'train'.
+    - num_batches (int): Total number of simulation batches to generate.
+    - dirname (str): Base directory pathway where dataset logs, plots, and raw tensors will be saved.
+
+    Returns:
+    - None: The function aggregates, formats, and saves generated data straight to disk.
+
+    The function acts as a wrapper around the physical simulation engine to compile training historical
+    data. It loops through a specified number of batches, unpacks parallel trajectory states, isolates 
+    individual sequence components to write isolated tracking logs (.csv) and visual analysis records, 
+    and packages the aggregated dataset collections into final raw tensor storage files.
     """
     sig_cfg = hyperparam_config["signal"]
     train_cfg = hyperparam_config["train"]

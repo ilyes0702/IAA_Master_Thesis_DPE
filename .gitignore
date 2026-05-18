@@ -16,7 +16,7 @@ venv/
 
 *.png
 *.csv
-.pt
+*.pt
 
 
 # Ignore DWSIM binaries

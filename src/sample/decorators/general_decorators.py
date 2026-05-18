@@ -1,24 +1,9 @@
-from functools import wraps
-from PIL import Image
 import time
 import pandas as pd
-from datetime import datetime
-import os
-import sys
-# ADD PROJECT DIRECTORY TO SYSTEM PATH
-if '__file__' in globals():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-else:
-    # fallback to current working directory
-    base_dir = os.getcwd()
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from config import *
-import matplotlib.pyplot as plt
+from src.sample.config import *
 #from dictionaries.variable_names import axis_label_mapping
 
-from src.sample.utils.saving_utils import save_model, save_df_to_csv
-import time
+from src.sample.utils.saving_utils import save_df_to_csv
 import functools
 import torch
 
@@ -68,58 +53,6 @@ def track_resources(func):
         return result, metrics
         
     return wrapper
-
-#=== DECORATOR TO SAVE IMAGE ===#
-def save_image_decorator(func):
-    """
-    A decorator that saves the image returned by a function to a specified filename.
-
-    The decorated function must return a PIL Image object and must be called with 
-    'filename' and 'dirname' as keyword arguments to specify the storage location.
-
-    Parameters:
-        func (callable): The function being decorated. It must return a PIL Image object.
-
-    Returns:
-        callable: The wrapped function that saves the image before returning it.
-
-    Raises:
-        ValueError: If the decorated function is not called with 'filename' or 'dirname'.
-        TypeError: If the decorated function does not return a PIL Image object.
-
-    Additional Details:
-        - Creates the specified directory if it does not exist.
-        - Saves the image in the format `<dirname>/<date>/<date_and_time>/<filename>.png`.
-        - Logs a success message upon saving the image.
-    """
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        # Call the original function
-        image = func(*args, **kwargs)
-        
-        # Check if 'filename' argument is provided
-        if 'filename' in kwargs:
-            filename = kwargs['filename']
-        else:
-            raise ValueError("The function must be called with a 'filename' argument specifying the image save name.")
-        
-        if "dirname" in kwargs:
-                    dirname = kwargs['dirname']
-        else:
-            raise ValueError("The function must be called with a 'dirname' argument specifying the image save directory name.")
-
-        # Save the image
-        if isinstance(image, Image.Image):
-            path = f"results/{date}/{date_and_time}/{dirname}/plots"
-            os.makedirs(path, exist_ok=True)
-            image.save(f"{path}/{date_and_time}_{filename}.png")
-            log_message(f"Image successfully saved as '{filename}'")
-        else:
-            raise TypeError("The function must return a PIL Image object.")
-        
-        return image
-    return wrapper
-
 
 #=== DECORATOR TO LOG EXECUTION TIME ===#
 def log_execution_time(func):

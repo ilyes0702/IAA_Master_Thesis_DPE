@@ -1,8 +1,5 @@
 # Import standard libraries
-from logging import config
 import os
-from networkx import config
-import sys
 import numpy as np
 import pandas as pd
 
@@ -12,17 +9,13 @@ from src.sample.utils.saving_utils import *
 from src.sample.config import *
 from src.sample.utils.plotting_utils import plot_signals
 import torch
-import torch.nn as nn
-import pandas as pd
-import os
-import torch
 from src.sample.classes.MambaInverseController import MambaInverseController
+import matplotlib.pyplot as plt
+import random
 
 plt.style.use("src/sample/style.mplstyle")
 
-import numpy as np
-import pandas as pd
-
+#=== FUNCTION TO COMPUTE AND SAVE TRACKING METRICS ===#
 def compute_and_save_tracking_metrics(
     y_np,        # Actual output [steps, batch_size]
     ref_np,      # Reference trajectory [steps, batch_size]
@@ -33,6 +26,23 @@ def compute_and_save_tracking_metrics(
     """
     Pure tracking metrics for curve comparison.
     Calculates how well the plant output follows a dynamic reference.
+
+    Parameters:
+    - y_np (numpy.ndarray): Actual plant output values, shaped [steps, batch_size].
+    - ref_np (numpy.ndarray or float): Reference trajectory targets to match.
+    - dt (float): Sampling time increment between steps.
+    - dirname (str): Directory pathway where metrics reports will be saved.
+    - settle_tol (float): Tolerance threshold scale defining acceptable error bands (default: 0.05).
+
+    Returns:
+    - df (pandas.DataFrame): Evaluated performance data broken down for every individual trajectory sequence.
+
+    The function standardizes dimensions between the plant output configurations and the reference target 
+    signals. It executes transient step error calculations to extract statistical benchmarks including 
+    Mean Absolute Error (MAE), Mean Squared Error (MSE), Root Mean Squared Error (RMSE), Integral Absolute 
+    Error (IAE), and Integral Square Error (ISE). Additionally, it isolates transient maximum errors and 
+    determines the overall percentage of processing duration spent within the defined settling tolerance band, 
+    writing raw and summary analytical files to disk.
     """
     steps, batch_size = y_np.shape
     
@@ -86,40 +96,88 @@ def compute_and_save_tracking_metrics(
 
 
 
+#=== FUNCTION TO GENERATE REFERENCE TRAJECTORY ===#
+def generate_reference_trajectory(steps, dt, device, mode="constant", constant_val=0.3, gain=1.0, period=20.0):
+    """
+    Generates reference target trajectories for physical control system tracking simulations.
+
+    Parameters:
+    - steps (int): Total sequence length of the reference trajectory.
+    - dt (float): Sampling time increment between sequential steps.
+    - device (str/torch.device): Target execution hardware device mapping for the output tensor.
+    - mode (str): Style of reference generated; choices are "constant" or "dynamic" (default: "constant").
+    - constant_val (float): Fixed tracking setpoint used if mode is "constant" (default: 0.3).
+    - gain (float): Tuning scaling modifier to sharpen tracking switches if mode is "dynamic" (default: 1.0).
+    - period (float): Cyclical hour sequence timeframe for oscillations if mode is "dynamic" (default: 20.0).
+
+    Returns:
+    - r_trajectory (torch.Tensor): Reference target values mapped to the execution device, shaped [steps, 1].
+
+    The function acts as an isolated generator for processing setpoints. Depending on the requested 
+    mode, it outputs either a uniform static tensor filled with a base setpoint value or computes 
+    a dynamic, bounded time-varying profile utilizing transcendental mathematical operators to yield 
+    smooth rectangular transitions.
+    """
+    if mode == "constant":
+        # Create a tensor of shape [steps, 1] filled with a static target value
+        r_trajectory = torch.full((steps, 1), constant_val, device=device, dtype=torch.float32)
+    
+    elif mode == "dynamic":
+        # Generate time steps array
+        time_axis = np.arange(steps) * dt
+        
+        # Calculate a smooth time-varying waveform base
+        sine_base = np.sin(2 * np.pi * time_axis / period)
+        
+        # Use tanh to sharpen the curve into a "soft" rectangle with an upward linear drift
+        r_trajectory_np = 0.23 + 0.05 * np.tanh(gain * sine_base) - 0.001 * time_axis
+        
+        # Convert the structural numpy baseline into a target PyTorch tensor array
+        r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
+    
+    else:
+        raise ValueError(f"Unknown reference mode selection: '{mode}'. Choose 'constant' or 'dynamic'.")
+
+    return r_trajectory
+
+
 #=== FUNCTION FOR THE SIMULATION OF CONTROLLED PLANT WITH TRACKING ===#
-def GPUSimulateTracking(model, plant, hyperparam_config, dirname):
+def simulate_tracking(model, plant, r_trajectory, hyperparam_config, dirname):
+    """
+    Simulates a controlled plant over a specified time horizon while tracking a reference trajectory.
+
+    Parameters:
+    - model: The neural network controller model used to generate control inputs.
+    - plant: The simulation environment or physical plant object representing the controlled system.
+    - r_trajectory (torch.Tensor): Target reference trajectory to follow, shaped [steps, 1].
+    - hyperparam_config (dict): Configuration dictionary containing nested parameters for 'train', 'signal', and 'simulate'.
+    - dirname (str): Base directory pathway where tracking reports, logs, and plots will be saved.
+
+    Returns:
+    - tuple: Returns an empty tuple upon successful execution and disk storage operations.
+
+    The function configures a tracking simulation run across parallel trajectories. It processes an 
+    externally supplied reference target trajectory, instantiates physical history trackers, and runs a forward 
+    closed-loop control loop utilizing look-ahead prediction windows. At each time step, the 
+    controller performs inference to update the plant state. The resulting historical metrics, 
+    state variables, and control efforts are isolated per trajectory and written to disk as CSV 
+    reports and comprehensive visual summaries.
+    """
+    # Extract configuration sub-dictionaries
     train_cfg = hyperparam_config["train"]
     sig_cfg   = hyperparam_config["signal"]
     sim_cfg   = hyperparam_config["simulate"]
 
+    # Unpack specific parameters
     steps = sim_cfg["seq_len"]
     dt = sig_cfg["dt"]
     batch_size = sim_cfg["batch_size"]
     device = train_cfg["device"]
 
-    # 1. GENERATE A TIME-VARYING REFERENCE TRAJECTORY
-    # A sine wave base
-    # time_axis = np.arange(steps) * dt
-    # period = 20 # Total hours for one full cycle
-    # sine_base = np.sin(2 * np.pi * time_axis / period)
-
-    # # Use tanh to sharpen the curve into a "soft" rectangle
-    # # Higher gain = more rectangular; Lower gain = more like a pure sine
-    # gain = 1.0 
-    # r_trajectory_np = 0.26 + 0.03 * np.tanh(gain * sine_base) + 0.001*time_axis
-
-    # # (Note: 0.375 is the midpoint between 0.3 and 0.45)
-    # r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
-
-    
-    
-    # # # 1. GENERATE A CONSTANT REFERENCE
-    constant_val = 0.3
-    # Create a tensor of shape [steps, 1] filled with the constant value
-    r_trajectory = torch.full((steps, 1), constant_val, device=device, dtype=torch.float32)
-
+    # Flatten reference tensor for CPU metrics calculations
     r_np = r_trajectory.cpu().numpy().flatten()
-    # Initialize history and state as before
+    
+    # Initialize history trackers and GPU tensor buffers
     history = {"x1": np.zeros(steps), "x2": np.zeros(steps), "y": np.zeros(steps), "r": np.zeros(steps), "u": np.zeros(steps)}
     all_y = torch.zeros((steps, batch_size), device=device)
     all_u = torch.zeros((steps, batch_size), device=device)
@@ -127,39 +185,36 @@ def GPUSimulateTracking(model, plant, hyperparam_config, dirname):
     all_x2 = torch.zeros((steps, batch_size), device=device)
     state = plant.get_initial_state(batch_size)
 
+    # Prepare model for evaluation mode and reset hidden state memory
     model.eval()
     model.reset_memory(batch_size=batch_size, device=device)
 
     print(f"📈 Testing Trajectory Tracking: {batch_size} trajectories...")
-    delta_steps =hyperparam_config["train"]["delay_steps"]  # For example, look 5 steps ahead (delta = 5 * dt)
-    
+    delta_steps = hyperparam_config["train"]["delay_steps"]  # For example, look 5 steps ahead (delta = 5 * dt)
+    # Execute forward tracking simulation without tracking gradients
     with torch.no_grad():
-        for i in range(steps-delta_steps):
+        for i in range(steps - delta_steps):
             t = i * dt
             y_current = plant.get_y(state, t) # This is y(t)
             
             # 2. Grab the specific target for "Next" time step y(t+dt)
             current_r = r_trajectory[i].expand(batch_size, 1)
 
-            # Grab the target 20 steps into the future
+            # Grab the target steps into the future matching delta steps
             target_r = r_trajectory[i + delta_steps].expand(batch_size, 1)
 
-            # Now the triplet [y_t, r_{t+20}] matches the training data exactly
+            # Now the triplet [y_t, r_{t+delta_steps}] matches the training data configuration exactly
             current_input = torch.cat([y_current, target_r], dim=-1).unsqueeze(1)
-
-            # 3. CONSTRUCT INPUT: [y(t), y_target]
-            # This is exactly the (y_t, y_next) triplet the model was trained on
-            # current_input = torch.cat([y, current_r], dim=-1).unsqueeze(1) 
 
             # 4. INFERENCE
             u_out = model(current_input, use_memory=True) 
             
             # Note: If using Mamba, u_out usually returns [batch, 1, output_dim]
             u = u_out[:, -1, :]
-            #u = torch.clamp(u_out[:, -1, :], 0.0, plant.U_MAX)
+            # u = torch.clamp(u_out[:, -1, :], 0.0, plant.U_MAX)
 
             # 5. STEP PLANT
-            # This uses the predicted U to move the REAL plant state
+            # This uses the predicted U to move the REAL plant state forward
             state, _ = plant.step(state, u, t, dt)
 
             # --- LOGGING ---
@@ -168,27 +223,28 @@ def GPUSimulateTracking(model, plant, hyperparam_config, dirname):
             history["u"][i] = u[0].item()
             history["x1"][i] = state[0, 0].item() # Assuming index 0 is biomass
             history["x2"][i] = state[0, 1].item() # Assuming index 1 is substrate
+            
             all_y[i] = y_current.squeeze()
             all_u[i] = u.squeeze()
-            all_x1[i] = state[:, 0] # Assuming index 0 is biomass
-            all_x2[i] = state[:, 1] # Assuming index 1 is substrate
+            all_x1[i] = state[:, 0]               # Assuming index 0 is biomass
+            all_x2[i] = state[:, 1]               # Assuming index 1 is substrate
 
-    # --- PLOTTING ---
+    # --- PLOTTING & EXPORT ---
     time_axis = np.arange(steps) * dt
 
+    # Parse and save individual trajectory records
     for b in range(batch_size):
-        # Create subfolder path for this specific initial state
-        # 1. Define a unique sub-directory for this specific batch member
+        # Define a unique sub-directory for this specific batch member
         state_dirname = os.path.join(dirname, f"initial_state_{b}")
         
-        # 2. Extract specific data for this trajectory (b)
+        # Extract specific data for this trajectory (b)
         y_traj = all_y[:, b].cpu().numpy()
         u_traj = all_u[:, b].cpu().numpy()
         x1_traj = all_x1[:, b].cpu().numpy()
         x2_traj = all_x2[:, b].cpu().numpy()
         r_traj = np.full(steps, r_np)
 
-        # 3. SAVE THE CSV (using your custom method)
+        # SAVE THE CSV (using custom method)
         df_traj = pd.DataFrame({
             "time": time_axis,
             "biomass_x1": x1_traj,
@@ -199,8 +255,7 @@ def GPUSimulateTracking(model, plant, hyperparam_config, dirname):
         })
         save_df_to_csv(df_traj, dirname=state_dirname, filename="state_report")
 
-        # 4. GENERATE THE 3 PLOTS PER BATCH
-
+        # GENERATE THE 3 PLOTS PER BATCH
         # Plot 1: Control Signal (u)
         plot_signals(
             t=time_axis, 
@@ -231,8 +286,7 @@ def GPUSimulateTracking(model, plant, hyperparam_config, dirname):
             dirname=state_dirname, filename="plot_plant_states"
         )
 
-
-    # 2. Batch Summary Plot (All curves with random initial states)
+    # Batch Summary Plot (All curves with random initial states aggregated)
     y_np = all_y.cpu().numpy()
     summary_signals = [y_np[:, j] for j in range(batch_size)]
     summary_signals.append(r_np)
@@ -247,57 +301,90 @@ def GPUSimulateTracking(model, plant, hyperparam_config, dirname):
         dirname=dirname,
         filename="batch_summary"
     )
+    
+    # Calculate overarching summary tracking stats
     compute_and_save_tracking_metrics(y_np, r_np, dt, dirname)
 
-    # # Create a dictionary of the logged history
-    # data_dict = {
-    #     "time": time_axis,
-    #     "y_growth_rate": history["y"],
-    #     "r_reference": history["r"],
-    #     "u_control": history["u"],
-    #     # If your plant records internal states x1, x2 in history:
-    #     "x1_biomass": history["x1"],
-    #     "x2_substrate": history["x2"]
-    # }
+    return ()
 
-    # # Convert to DataFrame and save
-    # df = pd.DataFrame(data_dict)
-    # save_df_to_csv(df, dirname=dirname, filename="tracking_results")
 
-    return()
 
-import torch
-import numpy as np
-import random
-import os
 
 #=== FUNCTION TO SEED EVERYTHING FOR REPRODUCIBILITY ===#
 def seed_everything(seed=42):
     """
     Seeds all relevant libraries to ensure reproducible results.
+
+    Parameters:
+    - seed (int): The numerical seed value used to initialize all random number generators (default: 42).
+
+    Returns:
+    - None: The function configures global runtime states and does not return a value.
+
+    The function enforces absolute determinism across various execution contexts. It explicitly binds 
+    the seed to Python's core `random` module, environment variables, NumPy's matrix operations, and 
+    both CPU and GPU tensor variants in PyTorch. Finally, it overrides standard CUDA Deep Neural Network 
+    (cuDNN) configurations to deactivate dynamic kernel auto-tuning algorithm selection, completely 
+    eliminating stochastic variance across identical processing runs.
     """
+    # Seed native Python behaviors and system environments
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
+    
+    # Seed third-party matrix execution engines
     np.random.seed(seed)
+    
+    # Seed deep learning core frameworks across standard processing hardware
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed) # if you are using multi-GPU
+    torch.cuda.manual_seed_all(seed) # Force synchronization across multi-GPU environments
     
-    # Critical for CUDA reproducibility
+    # Critical for CUDA reproducibility: override cuDNN runtime optimizations
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     
     print(f"Random seed set to: {seed}")
 
 
+#=== FUNCTION TO LOAD TRAINED MODEL ===#
 def load_model(checkpoint_path, device=None):
+    """
+    Loads a trained PyTorch model state dictionary and configuration from a checkpoint file.
+
+    Parameters:
+    - checkpoint_path (str): The system file path pointing to the saved checkpoint file (.pt).
+    - device (str or torch.device, optional): The target computing device (e.g., 'cpu', 'cuda') 
+      where the model parameters will be mapped. If None, it automatically falls back to 
+      GPU if available, otherwise CPU.
+
+    Returns:
+    - model (MambaInverseController): The instantiated model restored to its trained weights 
+      and set to evaluation mode.
+
+    The function unpacks a saved PyTorch checkpoint dictionary, extracts the embedded 
+    hyperparameter configuration dictionary, and uses it to dynamically instantiate the 
+    `MambaInverseController` architecture. It handles safe tensor device reassignment, 
+    maps the recovered parameters to the model structure, and locks the model layer states 
+    into evaluation mode (`.eval()`) for reliable forward-pass inference.
+    """
+    # Load the serialized checkpoint dictionary from disk
     checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    # Extract structural configurations and instantiate the network
     hyperparam_config = checkpoint['config']
     model = MambaInverseController(hyperparam_config)
 
+    # Determine default execution hardware if none was provided
     if device is None:
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    
+    # Transfer the model parameters to the target processing device
     model = model.to(device)
+    
+    # Restore the historical weight state configurations
     model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Freeze layers into evaluation mode for tracking inference
     model.eval()
+    
     return model

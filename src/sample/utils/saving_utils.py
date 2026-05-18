@@ -13,7 +13,20 @@ from src.sample.config import date_and_time as default_date_and_time
 #=== FUNCTION TO SAVE TRAINED MODEL ===#
 def save_model(model, dirname, hyperparam_config, filename="trained_controller"):
     """
-    Saves the model weights and config using the models/date/date_and_time/ structure.
+    Saves the model weights and configuration using the models/date/date_and_time/ directory structure.
+
+    Parameters:
+    - model: The neural network model whose weights will be saved.
+    - dirname (str): The subdirectory path where the model will be stored.
+    - hyperparam_config: The hyperparameter configuration dictionary to be saved with the model.
+    - filename (str): The name of the model file (default: "trained_controller").
+
+    Returns:
+    - None: The function saves the model but does not return anything.
+
+    The model weights and configuration are saved as a PyTorch checkpoint file (.pt) in the
+    models/<date>/<date_and_time>/<dirname>/ directory. If the file path exceeds the maximum
+    allowed length (255 characters), the filename is automatically truncated.
     """
     # Assuming 'date' and 'date_and_time' are defined globally 
     # or extracted from your training session context
@@ -44,7 +57,7 @@ def save_model(model, dirname, hyperparam_config, filename="trained_controller")
     print(f"💾 Model saved to: {full_path}")
 
 
-#=== FUNCTION FOR SAVING DATAFRAME AS CSV IN SPECIFIED DIRECTORY ===#
+#=== FUNCTION TO SAVE DATAFRAME AS CSV IN SPECIFIED DIRECTORY ===#
 def save_df_to_csv(df, dirname, filename, max_path_length=255):
     """
     Save a pandas DataFrame as a CSV file in a specified directory, ensuring 
@@ -62,7 +75,7 @@ def save_df_to_csv(df, dirname, filename, max_path_length=255):
     If the specified directory does not exist, it is created automatically.
     """
     # Round all float columns to 2 decimal places
-    df = df.round(2)
+    df = df.round(4)
     
      # Check full path length
     dirname = f"results/{default_date}/{default_date_and_time}/{dirname}/reports/"
@@ -80,15 +93,30 @@ def save_df_to_csv(df, dirname, filename, max_path_length=255):
 
 
 
-
+#=== FUNCTION TO SAVE JSON FILE IN SPECIFIED DIRECTORY ===#
 def save_to_json(data, dirname, filename, max_path_length=255):
     """
     Saves a dictionary or pandas DataFrame as a JSON file with pretty formatting.
+
+    Parameters:
+    - data (dict or pandas.DataFrame): The data to be saved as JSON. If a DataFrame is provided,
+      it will be converted to a list of dictionaries (records format).
+    - dirname (str): The directory path where the JSON file will be stored.
+    - filename (str): The name of the JSON file (without the .json extension).
+    - max_path_length (int): The maximum allowed path length in characters (default: 255).
+
+    Returns:
+    - None: The function saves the data but does not return anything.
+
+    The file is saved in the results/<date>/<date_and_time>/<dirname>/reports/ directory with
+    pretty formatting (indent=4). If the specified directory does not exist, it is created
+    automatically. Float columns in DataFrames are rounded to two decimal places before saving.
+    If the full path exceeds max_path_length, the filename is automatically truncated.
     """
     # 1. Handle the input type
     # If it's a DataFrame, convert to a list of dicts (records)
     if isinstance(data, pd.DataFrame):
-        data = data.round(2)
+        data = data.round(4)
         data_to_save = data.to_dict(orient="records")
     else:
         data_to_save = data
@@ -120,12 +148,23 @@ def save_to_json(data, dirname, filename, max_path_length=255):
 
 
 
-
+#=== FUNCTION TO SAVE PLOT IMAGE IN SPECIFIED DIRECTORY ===#
 def save_plot_image(image, filename, dirname):
     """
     Saves a PIL Image object to a structured directory path.
-    
-    Path format: results/<date>/<time>/<dirname>/plots/<time>_<filename>.png
+
+    Parameters:
+    - image (PIL.Image.Image): The PIL Image object to be saved.
+    - filename (str): The name of the image file (without the .png extension).
+    - dirname (str): The subdirectory path where the image will be stored.
+
+    Returns:
+    - None: The function saves the image but does not return anything.
+
+    The image is saved in the results/<date>/<date_and_time>/<dirname>/plots/ directory as
+    <date_and_time>_<filename>.png. If the specified directory does not exist, it is created
+    automatically. The image parameter must be a valid PIL Image object; a TypeError is raised
+    if it is not.
     """
     # 1. Validation
     if not isinstance(image, Image.Image):
@@ -149,10 +188,23 @@ def save_plot_image(image, filename, dirname):
     
     return()
 
-
+#=== FUNCTION TO SAVE TRAINING DATASET TENSORS ===#
 def save_training_dataset(data_dict, dirname, filename="training_data"):
     """
-    Saves the training tensors (x and y) to a .pt file using structured directory logic.
+    Saves the training tensors to a PyTorch .pt file using structured directory logic.
+
+    Parameters:
+    - data_dict (dict): A dictionary containing the training tensors (e.g., 'x' and 'y' keys).
+    - dirname (str): The subdirectory path where the dataset file will be stored.
+    - filename (str): The name of the dataset file (default: "training_data").
+
+    Returns:
+    - None: The function saves the data but does not return anything.
+
+    The dataset tensors are saved in the results/<date>/<date_and_time>/<dirname>/dataset/
+    directory as <date_and_time>_<filename>.pt. If the specified directory does not exist,
+    it is created automatically. If the full path exceeds 255 characters, the filename is
+    automatically truncated to ensure compatibility with the filesystem.
     """
     # Construct directory logic consistent with your other functions
     target_dir = f"results/{default_date}/{default_date_and_time}/{dirname}/dataset/"
