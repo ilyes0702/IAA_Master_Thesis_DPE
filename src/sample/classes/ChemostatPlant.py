@@ -97,9 +97,9 @@ class ChemostatPlant:
         # Apply scaling p and shift to a safe operating point for the Chemostat
         # D_center should be roughly 0.5 * mu_max to keep the plant 'alive'
         # Randomize the center point for each batch member
-        D_center = torch.rand((self.batch_size, 1), device=self.device) * 0.3 + 0.2 # 0.2 to 0.5
+        D_center = torch.rand((self.batch_size, 1), device=self.device) * 0.1 + 0.2 # 0.2 to 0.5
         self.current_D_center = D_center
-        self.u_buffer = D_center + (v_train * self.p)
+        self.u_buffer = D_center + (v_norm * self.p)
         
         
         return D_center

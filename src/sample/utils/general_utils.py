@@ -130,7 +130,7 @@ def generate_reference_trajectory(steps, dt, device, mode="constant", constant_v
         sine_base = np.sin(2 * np.pi * time_axis / period)
         
         # Use tanh to sharpen the curve into a "soft" rectangle with an upward linear drift
-        r_trajectory_np = 0.23 + 0.05 * np.tanh(gain * sine_base) - 0.001 * time_axis
+        r_trajectory_np = 0.28 + 0.04 * np.tanh(gain * sine_base) - 0.00 * time_axis
         
         # Convert the structural numpy baseline into a target PyTorch tensor array
         r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
@@ -142,7 +142,7 @@ def generate_reference_trajectory(steps, dt, device, mode="constant", constant_v
 
 
 #=== FUNCTION FOR THE SIMULATION OF CONTROLLED PLANT WITH TRACKING ===#
-def simulate_tracking(model, plant, r_trajectory, hyperparam_config, dirname):
+def simulate_tracking_old(model, plant, r_trajectory, hyperparam_config, dirname):
     """
     Simulates a controlled plant over a specified time horizon while tracking a reference trajectory.
 
@@ -309,6 +309,152 @@ def simulate_tracking(model, plant, r_trajectory, hyperparam_config, dirname):
 
 
 
+import os
+import numpy as np
+import pandas as pd
+import torch
+
+def simulate_tracking(model, plant, r_trajectory, hyperparam_config, dirname):
+    """
+    Simulates a controlled plant over a specified time horizon while tracking a reference trajectory.
+    Handles look-ahead clamping gracefully at bounds limits.
+    """
+    # Extract configuration sub-dictionaries
+    train_cfg = hyperparam_config["train"]
+    sig_cfg   = hyperparam_config["signal"]
+    sim_cfg   = hyperparam_config["simulate"]
+
+    # Unpack specific parameters
+    steps = sim_cfg["seq_len"]
+    dt = sig_cfg["dt"]
+    batch_size = sim_cfg["batch_size"]
+    device = train_cfg["device"]
+
+    # Flatten reference tensor for CPU metrics calculations
+    r_np = r_trajectory.cpu().numpy().flatten()
+    
+    # Initialize GPU tensor buffers across the COMPLETE step timeline
+    all_y = torch.zeros((steps, batch_size), device=device)
+    all_u = torch.zeros((steps, batch_size), device=device)
+    all_x1 = torch.zeros((steps, batch_size), device=device)
+    all_x2 = torch.zeros((steps, batch_size), device=device)
+    
+    state = plant.get_initial_state(batch_size)
+
+    # Prepare model for evaluation mode and reset hidden state memory
+    model.eval()
+    model.reset_memory(batch_size=batch_size, device=device)
+
+    print(f"📈 Testing Trajectory Tracking: {batch_size} trajectories across {steps} steps...")
+    delta_steps = hyperparam_config["train"]["delay_steps"]
+    
+    # Execute forward tracking simulation without tracking gradients
+    with torch.no_grad():
+        # FIX: Loop now runs for ALL steps to prevent early simulation freezing
+        for i in range(steps):
+            t = i * dt
+            y_current = plant.get_y(state, t) # This is y(t)
+            
+            # Grab current reference profile
+            current_r = r_trajectory[i].expand(batch_size, 1)
+
+            # FIX: Prevent index out of bounds using boundary clamping
+            look_ahead_idx = min(i + delta_steps, steps - 1)
+            target_r = r_trajectory[look_ahead_idx].expand(batch_size, 1)
+
+            # Concatenate current observed state and future look-ahead target
+            current_input = torch.cat([y_current, target_r], dim=-1).unsqueeze(1)
+
+            # --- INFERENCE ---
+            u_out = model(current_input, use_memory=True) 
+            u = u_out[:, -1, :]
+
+            # --- STEP PLANT ---
+            state, _ = plant.step(state, u, t, dt)
+
+            # --- LOGGING (Captured safely on every index) ---
+            all_y[i]  = y_current.squeeze()
+            all_u[i]  = u.squeeze()
+            all_x1[i] = state[:, 0]
+            all_x2[i] = state[:, 1]
+
+    # --- PLOTTING & EXPORT ---
+    time_axis = np.arange(steps) * dt
+
+    # Parse and save individual trajectory records
+    for b in range(batch_size):
+        state_dirname = os.path.join(dirname, f"initial_state_{b}")
+        
+        # Extract specific data for this trajectory (b)
+        y_traj = all_y[:, b].cpu().numpy()
+        u_traj = all_u[:, b].cpu().numpy()
+        x1_traj = all_x1[:, b].cpu().numpy()
+        x2_traj = all_x2[:, b].cpu().numpy()
+        
+        # FIX: Directly assign the flat reference array instead of using np.full
+        r_traj = r_np 
+
+        # SAVE THE CSV
+        df_traj = pd.DataFrame({
+            "time": time_axis,
+            "state_x1": x1_traj,
+            "state_x2": x2_traj,
+            "output_y": y_traj,
+            "control_u": u_traj,
+            "target_r": r_traj
+        })
+        save_df_to_csv(df_traj, dirname=state_dirname, filename="state_report")
+
+        # GENERATE PLOTS PER BATCH
+        plot_signals(
+            t=time_axis, 
+            signals=[u_traj],
+            labels=["Control Signal (u)"],
+            title=f"Trajectory {b}: Control Action",
+            xlabel="Time (h)", ylabel="Action Value",
+            dirname=state_dirname, filename="plot_control_signal"
+        )
+
+        plot_signals(
+            t=time_axis, 
+            signals=[y_traj, r_traj],
+            labels=["Output (y)", "Target (r)"],
+            title=f"Trajectory {b}: Tracking Performance",
+            xlabel="Time (h)", ylabel="Signal Value",
+            dirname=state_dirname, filename="plot_output_tracking"
+        )
+
+        plot_signals(
+            t=time_axis, 
+            signals=[x1_traj, x2_traj],
+            labels=["State x1", "State x2"],
+            title=f"Trajectory {b}: Internal Plant States",
+            xlabel="Time (h)", ylabel="State Magnitude",
+            dirname=state_dirname, filename="plot_plant_states"
+        )
+
+    # Batch Summary Plot
+    y_np = all_y.cpu().numpy()
+    summary_signals = [y_np[:, j] for j in range(batch_size)]
+    summary_signals.append(r_np)
+    
+    plot_signals(
+        t=time_axis,
+        signals=summary_signals,
+        labels=[None] * batch_size + ["Target"],
+        title=f"Batch Convergence ({batch_size} Trajectories)",
+        xlabel="Time (h)",
+        ylabel="System Output (y)",
+        dirname=dirname,
+        filename="batch_summary"
+    )
+    
+    # Calculate overarching summary tracking stats
+    compute_and_save_tracking_metrics(y_np, r_np, dt, dirname)
+
+    return ()
+
+
 
 #=== FUNCTION TO SEED EVERYTHING FOR REPRODUCIBILITY ===#
 def seed_everything(seed=42):
@@ -388,3 +534,4 @@ def load_model(checkpoint_path, device=None):
     model.eval()
     
     return model
+

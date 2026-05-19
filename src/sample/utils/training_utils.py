@@ -280,9 +280,7 @@ def train_controller_lr_decay(
     hyperparam_config, 
     dirname="name_directory", 
     num_sequences_to_use=None,
-    critical_value=1e-3,       # The loss threshold to hit
-    patience_steps=50,         # How many consecutive steps it must stay below critical_value
-    criterion_type="max"       # "max" for strict bounds, "mean" for rolling average
+    criterion_type="max"
     ):
     """
     Trains the network incrementally with an active early-stopping convergence criterion.
@@ -293,6 +291,9 @@ def train_controller_lr_decay(
     - criterion_type (str): Options: "max" (all steps in window must be below threshold) 
                             or "mean" (rolling average must be below threshold).
     """
+
+    critical_value = hyperparam_config["train"]["critical_loss_value"]
+    patience_steps = hyperparam_config["train"]["patience_steps"]
     # --- EXTRACT HYPERPARAMETERS ---
     train_cfg = hyperparam_config["train"]
     epochs = train_cfg["epochs"]
@@ -424,6 +425,157 @@ def train_controller_lr_decay(
     )
 
     return sequence_loss_history
+
+
+
+
+import numpy as np
+import pandas as pd
+import torch
+
+#=== FUNCTION TO TRAIN CONTROLLER WITH VALIDATION EARLY STOPPING ===#
+def train_controller_w_validation_early_stopping(
+    model, 
+    dataset_path, 
+    hyperparam_config, 
+    dirname="name_directory", 
+    num_sequences_to_use=None
+):
+    """
+    Trains the network incrementally where each sequence represents a single epoch.
+    Implements rolling look-ahead validation to calculate early-stopping patience.
+    """
+    # --- EXTRACT CONFIGURATION VALUES ---
+    train_cfg = hyperparam_config["train"]
+    patience_steps = train_cfg["patience_steps"]  # Number of sequences to look at
+    critical_value = train_cfg["critical_loss_value"]
+    device = train_cfg["device"]
+    lr = train_cfg["lr"]
+    dt = hyperparam_config["signal"]["dt"]
+
+    # --- INITIALIZE PIPELINES ---
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    
+    # Decays the learning rate slightly after every single sequence (epoch)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(
+        optimizer, 
+        gamma=train_cfg.get("lr_decay_rate", 0.995) 
+    )
+    
+    criterion = eval(train_cfg["loss_function"])  
+    
+    # Track metrics matching your single history array concept
+    train_loss_history = []
+    val_loss_history = []
+    
+    # --- CONVERGENCE TRACKERS ---
+    rolling_val_window = deque(maxlen=patience_steps)
+    converged = False
+    
+    print(f"📂 Loading dataset from {dataset_path}...")
+    dataset = torch.load(dataset_path, weights_only=True) 
+
+    # --- DATA CONCATENATION & SLICING ---
+    full_x = torch.cat(dataset["x"], dim=0)
+    full_y = torch.cat(dataset["y"], dim=0)
+    
+    if num_sequences_to_use is not None:
+        full_x = full_x[:num_sequences_to_use]
+        full_y = full_y[:num_sequences_to_use]
+    
+    total_sequences = full_x.shape[0]
+    print(f"📈 Starting online training across {total_sequences} individual sequences (epochs)...")
+    
+    model.to(device)
+
+    # --- SINGLE SEQUENCE STREAM LOOP ---
+    for s_idx in range(total_sequences):
+        if converged:
+            break
+            
+        x_input_single = full_x[s_idx:s_idx+1, :, :].to(device)  
+        u_target_single = full_y[s_idx:s_idx+1, :, :].to(device) 
+        
+        # =====================================================================
+        # PHASE 1: LOOK-AHEAD VALIDATION (Evaluate before learning)
+        # =====================================================================
+        model.eval()
+        with torch.no_grad():
+            u_val_pred = model(x_input_single)
+            val_loss = criterion(u_val_pred, u_target_single)
+            current_val_loss = val_loss.item()
+            val_loss_history.append(current_val_loss)
+            rolling_val_window.append(current_val_loss)
+
+        # =====================================================================
+        # PHASE 2: TRAINING UPDATE (Learn from the sequence)
+        # =====================================================================
+        model.train()
+        optimizer.zero_grad()
+        
+        u_pred_single = model(x_input_single)
+        loss = criterion(u_pred_single, u_target_single)
+        loss.backward()
+        optimizer.step()
+        
+        current_train_loss = loss.item()
+        train_loss_history.append(current_train_loss)
+        
+        # Advance learning rate decay per sequence
+        scheduler.step()
+        current_lr = optimizer.param_groups[0]['lr']
+
+        # =====================================================================
+        # PHASE 3: EVALUATE EARLY STOPPING CONVERGENCE
+        # =====================================================================
+        if len(rolling_val_window) == patience_steps:
+            # Check the average validation trend over our patience window
+            avg_rolling_val = sum(rolling_val_window) / patience_steps
+            
+            if avg_rolling_val < critical_value:
+                print(f"\n🎯 CONVERGENCE MET at Sequence/Epoch {s_idx+1}!")
+                print(f"📉 Rolling validation loss average ({avg_rolling_val:.6f}) dropped below threshold ({critical_value}).")
+                converged = True
+
+        # --- DATA PREPARATION FOR CSV LOGGING (Every 10 sequences) ---
+        if s_idx % 10 == 0 or converged:
+            u_p_np = u_pred_single[0].detach().cpu().numpy().flatten()
+            u_t_np = u_target_single[0].detach().cpu().numpy().flatten()
+            t_axis = np.arange(len(u_p_np)) * dt
+
+            comparison_df = pd.DataFrame({
+                "t": t_axis, "u_train": u_t_np, "u_pred": u_p_np, "abs_error": np.abs(u_t_np - u_p_np)
+            })
+            csv_filename = f"seq_epoch_{s_idx}_predictions"
+            save_df_to_csv(comparison_df, dirname=f"{dirname}/predictions", filename=csv_filename)
+
+        if (s_idx + 1) % 10 == 0 or (s_idx + 1) == total_sequences:
+            print(f"Epoch/Seq {s_idx+1}/{total_sequences} | LR: {current_lr:.4e} | Train Loss: {current_train_loss:.6f} | Look-Ahead Val Loss: {current_val_loss:.6f}")
+
+    # --- FINAL DATASET EXPORTS ---
+    print("💾 Saving finalized model and performance records...")
+    save_model(model, dirname=dirname, hyperparam_config=hyperparam_config, filename="trained_controller_disk")
+    
+    # Save combined history log
+    loss_df = pd.DataFrame({
+        "sequence_epoch": range(1, len(train_loss_history) + 1), 
+        "train_loss": train_loss_history,
+        "look_ahead_val_loss": val_loss_history
+    })
+    save_df_to_csv(loss_df, dirname=dirname, filename="total_sequence_loss")
+
+    stop_type_title = " (Early Stopped)" if converged else " (Full Run Completed)"
+    plot_signals(
+        loss_df["sequence_epoch"].values, 
+        [loss_df["train_loss"].values, loss_df["look_ahead_val_loss"].values],
+        labels=["Immediate Training Loss", "Look-Ahead Validation Loss"], 
+        xlabel="Total Sequences Evaluated (Epochs)", 
+        ylabel="Loss Value",
+        title=f"Online Learning Curve{stop_type_title}",
+        dirname=dirname, filename="sequence_loss_from_disk_plot"
+    )
+
+    return train_loss_history
 
 
 

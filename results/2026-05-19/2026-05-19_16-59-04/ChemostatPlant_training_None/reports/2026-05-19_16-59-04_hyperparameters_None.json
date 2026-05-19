@@ -1,0 +1,28 @@
+{
+    "signal": {
+        "lambd": 20,
+        "p": 0.2,
+        "seq_len": 100,
+        "dt": 0.5
+    },
+    "train": {
+        "epochs": 1,
+        "batch_size": 5000,
+        "lr": 0.001,
+        "device": "cuda",
+        "delay_steps": 20,
+        "loss_function": "nn.MSELoss()",
+        "lr_decay_rate": 1,
+        "critical_loss_value": 1e-05,
+        "patience_steps": 1000
+    },
+    "mamba": {
+        "d_model": 64,
+        "n_layers": 4,
+        "d_state": 16
+    },
+    "simulate": {
+        "batch_size": 10,
+        "seq_len": 500
+    }
+}

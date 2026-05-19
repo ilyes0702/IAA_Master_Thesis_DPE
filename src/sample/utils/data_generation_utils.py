@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 
 from src.sample.utils.saving_utils import save_df_to_csv, save_training_dataset
+from src.sample.utils.plotting_utils import plot_signals
 
 #=== FUNCTION TO GENERATE TRAINING DATA ===#
 def generate_training_batch(plant, hyperparam_config):
@@ -145,21 +146,66 @@ def generate_and_save_dataset(plant, hyperparam_config, num_batches, dirname):
                            dirname=dirname + "/dataset_logs", 
                            filename=f"{filename_base}.csv")
 
-            # --- SAVE INDIVIDUAL PLOT ---
-            # plot_signals(
-            #     time_axis,
-            #     [u_signal_plot, y_t_plot, y_next_plot, d_center_line],
-            #     labels=["u_control", "y_t", "y_next", "D_center"],
-            #     xlabel="Time",
-            #     ylabel="Signal",
-            #     title=f"Dataset Sample: {filename_base}",
-            #     dirname=dirname + "/dataset_plots",
-            #     filename=f"{filename_base}_plot"
-            # )
+            # --- SAVE INDIVIDUAL PLOT EVERY 1000 SEQUENCES ---
+            # global_seq_idx = b_idx * batch_size + s_idx
+            # if global_seq_idx % 1 == 0:
+            #     plot_signals(
+            #         time_axis,
+            #         [u_signal_plot, y_t_plot, y_next_plot, d_center_line],
+            #         labels=["u_control", "y_t", "y_next", "D_center"],
+            #         xlabel="Time",
+            #         ylabel="Signal",
+            #         title=f"Dataset Sample: {filename_base}",
+            #         dirname=dirname + "/dataset_plots",
+            #         filename=f"{filename_base}_plot_{global_seq_idx}.png"
+            #     )
 
         all_batches_x.append(x_tensor.cpu())
         all_batches_y.append(y_target.cpu())
+    # =========================================================================
+    # --- NEW: COMPUTE COMPREHENSIVE DATASET POPULATION STATISTICS ---
+    # =========================================================================
+    print("📊 Compiling macro-level dataset statistics...")
+    
+    # Concatenate all batches along the batch dimension to look at the entire dataset
+    # Shapes become: [Total_Sequences, Seq_Len, Features]
+    compiled_x = torch.cat(all_batches_x, dim=0).numpy()
+    compiled_y = torch.cat(all_batches_y, dim=0).numpy()
+    
+    # Extract complete flat continuous arrays for each underlying feature column
+    all_y_t = compiled_x[:, :, 0].flatten()
+    all_y_next = compiled_x[:, :, 1].flatten()
+    all_u_control = compiled_y[:, :, 0].flatten()
 
+    # Dictionary collection to easily structuralize pandas calculation fields
+    stats_data = {
+        "Metric": ["Mean", "Std_Dev", "Min", "25%", "50%_Median", "75%", "Max"],
+        
+        "y_t (Plant Out)": [
+            np.mean(all_y_t), np.std(all_y_t), np.min(all_y_t),
+            np.percentile(all_y_t, 25), np.percentile(all_y_t, 50), np.percentile(all_y_t, 75),
+            np.max(all_y_t)
+        ],
+        
+        "y_next (Plant Out+1)": [
+            np.mean(all_y_next), np.std(all_y_next), np.min(all_y_next),
+            np.percentile(all_y_next, 25), np.percentile(all_y_next, 50), np.percentile(all_y_next, 75),
+            np.max(all_y_next)
+        ],
+        
+        "u_control (Targets)": [
+            np.mean(all_u_control), np.std(all_u_control), np.min(all_u_control),
+            np.percentile(all_u_control, 25), np.percentile(all_u_control, 50), np.percentile(all_u_control, 75),
+            np.max(all_u_control)
+        ]
+    }
+    
+    stats_df = pd.DataFrame(stats_data)
+    
+    # Save statistics log report into your directory structure
+    save_df_to_csv(stats_df, dirname=dirname, filename="dataset_global_statistics")
+    print("📝 Global dataset statistical breakdown saved successfully.")
+    # =========================================================================
     # Final Save of the raw tensors for the Trainer to load later
     data_to_save = {"x": all_batches_x, "y": all_batches_y}
     save_training_dataset(data_to_save, dirname=dirname)

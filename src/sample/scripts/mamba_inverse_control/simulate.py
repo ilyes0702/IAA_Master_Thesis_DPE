@@ -14,18 +14,24 @@ print(f"Using device: {device}")
 
 if __name__ == "__main__":
     # 0. Log Run Description
-    run_description = get_run_description()
-    log_message(f"RUN DESCRIPTION: {run_description}")
+    #run_description = get_run_description()
+    #log_message(f"RUN DESCRIPTION: {run_description}")
     
     # 1. Initialize plant 
     plant = ChemostatPlant(hyperparam_config=hyperparam_config) 
 
     # 2. Load trained controller
-    # controller_path = "models/2026-05-13/2026-05-13_12-18-55/GPUChemostatPlant_training_None/2026-05-13_12-18-55_trained_controller_disk.pt"
+    controller_path = "models/2026-05-13/2026-05-13_12-18-55/GPUChemostatPlant_training_None/2026-05-13_12-18-55_trained_controller_disk.pt"
 
-    # controller_path_4000 = "models/2026-05-18/2026-05-18_11-35-09/ChemostatPlant_training_4000/2026-05-18_11-35-09_trained_controller_disk.pt"
+    controller_path_4000 = "models/2026-05-18/2026-05-18_11-35-09/ChemostatPlant_training_4000/2026-05-18_11-35-09_trained_controller_disk.pt"
 
-    controller_path = "models/2026-05-18/2026-05-18_15-50-15/ChemostatPlant_training_None/2026-05-18_15-50-15_trained_controller_disk.pt"
+    controller_path = "models/2026-05-19/2026-05-19_12-01-09/ChemostatPlant_training_6000/2026-05-19_12-01-09_trained_controller_disk.pt"
+
+    controller_path = "models/2026-05-19/2026-05-19_13-02-01/ChemostatPlant_training_None/2026-05-19_13-02-01_trained_controller_disk.pt"
+
+    controller_path = "models/2026-05-19/2026-05-19_15-27-50/ChemostatPlant_training_None/2026-05-19_15-27-50_trained_controller_disk.pt" # trained with bounded relative loss and 20-step delay, ok results
+
+    controller_path = "models/2026-05-19/2026-05-19_16-59-04/ChemostatPlant_training_None/2026-05-19_16-59-04_trained_controller_disk.pt" # trained with bounded relative loss and 20-step delay, ok results
     
     loaded_controller = load_model(controller_path)
     
@@ -36,16 +42,16 @@ if __name__ == "__main__":
         device=hyperparam_config["train"]["device"],
         mode="dynamic",
         gain=1.5,      # Sharper transition edges
-        period=24.0    # 24-hour cycle dynamics
+        period=40.0    # 24-hour cycle dynamics
     )
 
-    # r_static = generate_reference_trajectory(
-    #     steps=hyperparam_config["simulate"]["seq_len"],
-    #     dt=hyperparam_config["signal"]["dt"],
-    #     device=hyperparam_config["train"]["device"],
-    #     mode="constant",
-    #     constant_val=0.4
-    # )
+    r_static = generate_reference_trajectory(
+        steps=hyperparam_config["simulate"]["seq_len"],
+        dt=hyperparam_config["signal"]["dt"],
+        device=hyperparam_config["train"]["device"],
+        mode="constant",
+        constant_val=0.2
+    )
 
     
 
