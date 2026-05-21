@@ -11,4 +11,4 @@ plant = ChemostatPlant(hyperparam_config=hyperparam_config)
 
 dirname = plant.__class__.__name__ + "_training_data"
 
-generate_and_save_dataset(plant, hyperparam_config, num_batches=1, dirname= dirname)
+generate_and_save_dataset(plant, hyperparam_config, num_batches=1, dirname= dirname, show_plots=False)

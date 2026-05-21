@@ -30,7 +30,7 @@ if __name__ == "__main__":
 
     dataset_path = "results/2026-05-13/2026-05-13_11-33-29/GPUChemostatPlant_training_ata/dataset/2026-05-13_11-33-29_training_data.pt" #Vermutung, dass das das dataset war, das controller_4000 hervorgebracht hat
 
-    dataset_path = "results/2026-05-21/2026-05-21_15-49-29/ChemostatPlant_training_data/dataset/2026-05-21_15-49-29_training_data.pt"
+    dataset_path = "results/2026-05-21/2026-05-21_23-27-04/ChemostatPlant_training_data/dataset/2026-05-21_23-27-04_training_data.pt"
 
     # Define the data steps you want to test
     #data_steps = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
@@ -68,7 +68,7 @@ if __name__ == "__main__":
             hyperparam_config, 
             dirname=dirname, 
             num_sequences_to_use=count,
-            show_plots=True
+            show_plots=False
         )
         
         print(f"✅ Finished training for {count} sequences.")

@@ -478,6 +478,34 @@ def train_controller_kfold_exp(
     # --- DATA CONCATENATION & SLICING ---
     raw_x = dataset["x"]  
     raw_y = dataset["y"]  
+    if num_sequences_to_use is not None:
+        full_x = full_x[:num_sequences_to_use]
+        full_y = full_y[:num_sequences_to_use]
+    # 🔥 NEW: Calculate global normalization stats
+    all_y_values = []
+    all_u_values = []
+    for x_seq, y_seq in zip(raw_x, raw_y):
+        y_raw = x_seq.squeeze()
+        u_raw = y_seq.squeeze()
+        while y_raw.ndim > 1: y_raw = y_raw[..., 0]
+        while u_raw.ndim > 1: u_raw = u_raw[..., 0]
+        all_y_values.append(y_raw)
+        all_u_values.append(u_raw)
+
+    all_y_tensor = torch.cat(all_y_values)
+    all_u_tensor = torch.cat(all_u_values)
+
+    norm_stats = {
+        'y_mean': all_y_tensor.mean().item(),
+        'y_std': all_y_tensor.std().item(),
+        'u_mean': all_u_tensor.mean().item(),
+        'u_std': all_u_tensor.std().item()
+    }
+
+    # Save for simulation
+    import json
+    save_to_json(norm_stats, dirname=dirname, filename="normalization_stats")
+    
     delta_steps = hyperparam_config["train"]["delay_steps"] 
     
     processed_x_sequences = []
@@ -499,9 +527,13 @@ def train_controller_kfold_exp(
 
         max_valid_idx = len(y_raw) - delta_steps
 
-        y_t = y_raw[:max_valid_idx]
-        y_t_delta = y_raw[delta_steps : max_valid_idx + delta_steps]
-        u_t = u_raw[:max_valid_idx]
+        # 🔥 NEW: Normalize before slicing
+        y_raw_norm = (y_raw - norm_stats['y_mean']) / (norm_stats['y_std'] + 1e-8)
+        u_raw_norm = (u_raw - norm_stats['u_mean']) / (norm_stats['u_std'] + 1e-8)
+
+        y_t = y_raw_norm[:max_valid_idx]
+        y_t_delta = y_raw_norm[delta_steps : max_valid_idx + delta_steps]
+        u_t = u_raw_norm[:max_valid_idx]
 
         # Now y_t and y_t_delta are guaranteed 1D → stack to (seq_len, 2)
         triplet_inputs = torch.stack([y_t, y_t_delta], dim=-1)
@@ -746,14 +778,12 @@ def train_controller_kfold(
 
     print(f"📂 Loading dataset from {dataset_path}...")
     dataset = torch.load(dataset_path, weights_only=True) 
-
+    
     # --- DATA CONCATENATION & SLICING ---
     full_x = torch.cat(dataset["x"], dim=0)
     full_y = torch.cat(dataset["y"], dim=0)
     
-    if num_sequences_to_use is not None:
-        full_x = full_x[:num_sequences_to_use]
-        full_y = full_y[:num_sequences_to_use]
+    
     
     total_sequences = full_x.shape[0]
     print(f"📊 Total dataset size: {total_sequences} sequences. Preparing {k_folds}-Fold Split...")

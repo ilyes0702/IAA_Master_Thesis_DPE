@@ -117,8 +117,6 @@ def generate_and_save_dataset(plant, hyperparam_config, num_batches, dirname, sh
             
             filename_base = f"batch_{b_idx}_seq_{s_idx}.csv"
             save_df_to_csv(seq_df, dirname=logs_dir, filename=filename_base)
-
-            print("Dattebayo")
             
             if show_plots:
                 if s_idx % 1 == 0:
@@ -175,5 +173,11 @@ def generate_and_save_dataset(plant, hyperparam_config, num_batches, dirname, sh
     print("📝 Global dataset statistical breakdown saved successfully.")
     
     # Save the aggregated structured raw tensors dictionary to disk
-    data_to_save = {"x": all_batches_x, "y": all_batches_y}
+    # WITH THIS:
+    data_to_save = {
+    "x": torch.cat(all_batches_x, dim=0),  # Shape: (total_sequences, seq_len, 2)
+    "y": torch.cat(all_batches_y, dim=0)   # Shape: (total_sequences, seq_len, 1)
+    }
     save_training_dataset(data_to_save, dirname=dirname)
+
+    

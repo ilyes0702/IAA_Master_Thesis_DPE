@@ -7,6 +7,7 @@ import torch
 from src.sample.utils.general_utils import *
 from src.hyperparam_config import hyperparam_config
 from src.sample.classes.ChemostatPlant import ChemostatPlant
+from src.sample.classes.MambaInverseController import MambaInverseController_exp
 
 # Device Configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -31,9 +32,11 @@ if __name__ == "__main__":
 
     controller_path = "models/2026-05-19/2026-05-19_15-27-50/ChemostatPlant_training_None/2026-05-19_15-27-50_trained_controller_disk.pt" # trained with bounded relative loss and 20-step delay, ok results
 
-    controller_path = "models/2026-05-21/2026-05-21_14-55-19/ChemostatPlant_training_None/fold_4/2026-05-21_14-55-19_best_fold_model.pt" #
+    controller_path = "models/2026-05-21/2026-05-21_23-15-51/ChemostatPlant_training_None/fold_3/2026-05-21_23-15-51_best_fold_model.pt" #
     
-    loaded_controller = load_model(controller_path)
+    loaded_controller = load_model(MambaInverseController_exp, controller_path)
+
+    normalization_stats_path = "results/2026-05-21/2026-05-21_23-15-51/ChemostatPlant_training_None/reports/2026-05-21_23-15-51_normalization_stats.json"
     
 
     r_dynamic = generate_reference_trajectory(
@@ -54,12 +57,17 @@ if __name__ == "__main__":
     )
 
     
+    print(f"Model class: {loaded_controller.__class__.__name__}")  # Should print "MambaInverseController_exp"
+    print("Output projection bias:", loaded_controller.output_proj.bias.item())  # Likely non-zero!
+    # loaded_controller.output_proj.bias.data.fill_(0)  # Zero the bias term
+    # print("Output projection bias:", loaded_controller.output_proj.bias.item())
 
-    simulate_tracking(
+    simulate_tracking_exp(
         model=loaded_controller,
         plant=plant,
         r_trajectory=r_dynamic,
         hyperparam_config=hyperparam_config,
+        normalization_stats_path=normalization_stats_path,
         dirname=plant.__class__.__name__
     )
 
