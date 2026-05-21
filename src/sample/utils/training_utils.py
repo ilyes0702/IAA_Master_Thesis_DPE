@@ -427,6 +427,718 @@ def train_controller_lr_decay(
     return sequence_loss_history
 
 
+from collections import deque
+import torch
+import numpy as np
+import pandas as pd
+import os
+
+from collections import deque
+import torch
+import numpy as np
+import pandas as pd
+import os
+import copy
+
+
+import copy
+import numpy as np
+import torch
+import torch.nn as nn
+import pandas as pd
+
+import torch
+import torch.nn as nn
+import numpy as np
+import pandas as pd
+import copy
+
+def train_controller_kfold_exp(
+    model, 
+    dataset_path, 
+    hyperparam_config, 
+    dirname="name_directory", 
+    num_sequences_to_use=None,
+    k_folds=5,  
+    show_plots=False  
+):
+    # --- EXTRACT HYPERPARAMETERS ---
+    train_cfg = hyperparam_config["train"]
+    epochs = train_cfg["epochs"]
+    device = train_cfg["device"]
+    lr = train_cfg["lr"]
+    dt = hyperparam_config["signal"]["dt"]
+    
+    val_patience = train_cfg.get("val_patience_epochs", 3) 
+    min_delta = train_cfg.get("val_min_delta", 0)        
+
+    print(f"📂 Loading dataset from {dataset_path}...")
+    dataset = torch.load(dataset_path, weights_only=True) 
+
+    # --- DATA CONCATENATION & SLICING ---
+    raw_x = dataset["x"]  
+    raw_y = dataset["y"]  
+    delta_steps = hyperparam_config["train"]["delay_steps"] 
+    
+    processed_x_sequences = []
+    processed_y_sequences = []
+    
+    if num_sequences_to_use is not None:
+        raw_x = raw_x[:num_sequences_to_use]
+        raw_y = raw_y[:num_sequences_to_use]
+    
+    for x_seq, y_seq in zip(raw_x, raw_y):
+        y_raw = x_seq.squeeze()
+        u_raw = y_seq.squeeze()
+
+        # 🔥 NEW: Reduce to 1D by taking first element along ALL extra dimensions
+        while y_raw.ndim > 1:
+            y_raw = y_raw[..., 0]  # Repeatedly take first element along last dim
+        while u_raw.ndim > 1:
+            u_raw = u_raw[..., 0]
+
+        max_valid_idx = len(y_raw) - delta_steps
+
+        y_t = y_raw[:max_valid_idx]
+        y_t_delta = y_raw[delta_steps : max_valid_idx + delta_steps]
+        u_t = u_raw[:max_valid_idx]
+
+        # Now y_t and y_t_delta are guaranteed 1D → stack to (seq_len, 2)
+        triplet_inputs = torch.stack([y_t, y_t_delta], dim=-1)
+        processed_x_sequences.append(triplet_inputs)
+        processed_y_sequences.append(u_t.unsqueeze(-1))
+
+    full_x = torch.stack(processed_x_sequences, dim=0) 
+    full_y = torch.stack(processed_y_sequences, dim=0)
+
+    # --- IDENTIFY TOTAL SEQUENCES & SET UP K-FOLD INDICES ---
+    total_sequences = full_x.shape[0]
+    all_indices = np.arange(total_sequences)
+    np.random.shuffle(all_indices)
+    folds = np.array_split(all_indices, k_folds)
+
+    initial_model_state = copy.deepcopy(model.state_dict())
+    fold_histories = {}
+
+    # --- K-FOLD CROSS VALIDATION LOOP ---
+    for fold in range(k_folds):
+        print(f"\n==========================================")
+        print(f"🌀 STARTING FOLD {fold + 1} / {k_folds}")
+        print(f"==========================================")
+        
+        model.load_state_dict(initial_model_state)
+        model.to(device)
+        
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=train_cfg["lr_decay_rate"])
+        
+        loss_name = train_cfg["loss_function"].replace("()", "")
+        criterion = getattr(nn, loss_name)()
+        
+        val_idx_arr = folds[fold]
+        train_idx_arr = np.setdiff1d(all_indices, val_idx_arr)
+        
+        train_x, val_x = full_x[train_idx_arr], full_x[val_idx_arr]
+        train_y, val_y = full_y[train_idx_arr], full_y[val_idx_arr]
+        
+        train_size = train_x.shape[0]
+        val_size = val_x.shape[0]
+        
+        global_sequence_counter = 0
+        fold_train_seq_loss = []
+        fold_train_seq_indices = []
+        fold_val_epoch_history = []
+        fold_train_epoch_history = []  
+        
+        best_val_loss = float('inf')
+        patience_counter = 0
+        early_stopped = False
+
+        for epoch in range(epochs):
+            model.train()
+            epoch_train_losses = []
+            print(f"\n🎬 Fold {fold+1} | Starting Epoch {epoch+1}/{epochs}")
+            
+            shuffled_train_indices = torch.randperm(train_size)
+            
+            # --- 1. TRAINING PASS ---
+            for step, s_idx in enumerate(shuffled_train_indices):
+                s_idx = s_idx.item()
+                
+                # Extracting raw sequence block: Shape (1, Sequence_Length, 2)
+                x_input_single = train_x[s_idx:s_idx+1, :, :].to(device)  
+                u_target_single = train_y[s_idx:s_idx+1, :, :].to(device) 
+                
+                # 🔥 REDESIGN FIX: Explicitly split data into the 2 inputs requested by the model
+                # y_t sits at channel index 0, y_t_delta sits at channel index 1
+                y_t_split = x_input_single[:, :, 0:1].to(device)
+                y_t_delta_split = x_input_single[:, :, 1:2].to(device)
+                
+                optimizer.zero_grad()
+                
+                # Pass both explicit arguments into the model
+                u_pred_single = model(y_t=y_t_split, y_t_delta=y_t_delta_split, use_memory=False)
+                
+                loss = criterion(u_pred_single, u_target_single)
+                loss.backward()
+                optimizer.step()
+                
+                current_loss = loss.item()
+                epoch_train_losses.append(current_loss)
+                
+                fold_train_seq_loss.append(current_loss)
+                fold_train_seq_indices.append(global_sequence_counter)
+                global_sequence_counter += 1
+
+                u_p_np = u_pred_single[0].detach().cpu().numpy().flatten()
+                u_t_np = u_target_single[0].detach().cpu().numpy().flatten()
+                t_axis = np.arange(len(u_p_np)) * dt
+
+                comparison_df = pd.DataFrame({
+                    "t": t_axis, "u_train": u_t_np, "u_pred": u_p_np, "abs_error": np.abs(u_t_np - u_p_np)
+                })
+                fold_dir = f"{dirname}/fold_{fold+1}/predictions/epoch_{epoch+1}"
+                save_df_to_csv(comparison_df, dirname=fold_dir, filename=f"step_{step}_preds")
+
+                if show_plots:
+                    plot_signals(
+                        t=t_axis,
+                        signals=[u_t_np, u_p_np],
+                        labels=["Target (u_train)", "Predicted (u_pred)"],
+                        xlabel="Time (s)",
+                        ylabel="Signal Value",
+                        title=f"Fold {fold+1} | Epoch {epoch+1} | Train Step {step} Sequence Comparison",
+                        dirname=fold_dir,
+                        filename=f"step_sequence_plot"
+                    )
+
+            # Step learning rate once per complete training epoch loop
+            scheduler.step()
+
+            # --- 2. VALIDATION PASS ---
+            model.eval()
+            epoch_val_losses = []
+            
+            with torch.no_grad():
+                for v_idx in range(val_size):
+                    x_val_single = val_x[v_idx:v_idx+1, :, :].to(device)
+                    u_val_target = val_y[v_idx:v_idx+1, :, :].to(device)
+                    
+                    # 🔥 REDESIGN FIX: Explicitly split validation features into 2 arguments
+                    y_val_t_split = x_val_single[:, :, 0:1].to(device)   
+                    y_val_t_delta_split = x_val_single[:, :, 1:2].to(device)
+                    
+                    u_val_pred = model(y_t=y_val_t_split, y_t_delta=y_val_t_delta_split, use_memory=False)
+                    
+                    val_loss = criterion(u_val_pred, u_val_target)
+                    epoch_val_losses.append(val_loss.item())
+
+                    u_v_p_np = u_val_pred[0].detach().cpu().numpy().flatten()
+                    u_v_t_np = u_val_target[0].detach().cpu().numpy().flatten()
+                    t_val_axis = np.arange(len(u_v_p_np)) * dt
+                    
+                    val_fold_dir = f"{dirname}/fold_{fold+1}/validation/epoch_{epoch+1}"
+                    
+                    if show_plots:
+                        plot_signals(
+                            t=t_val_axis,
+                            signals=[u_v_t_np, u_v_p_np],
+                            labels=["Target (u_val)", "Predicted (u_val_pred)"],
+                            xlabel="Time (s)",
+                            ylabel="Signal Value",
+                            title=f"Fold {fold+1} | Epoch {epoch+1} | Val Sequence {v_idx+1}",
+                            dirname=val_fold_dir,
+                            filename=f"val_seq_sequence_plot"
+                        )
+            
+            mean_train_loss = np.mean(epoch_train_losses)
+            mean_val_loss = np.mean(epoch_val_losses) if val_size > 0 else 0.0
+            fold_val_epoch_history.append(mean_val_loss)
+            fold_train_epoch_history.append(mean_train_loss)  
+            
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f"✨ [Fold {fold+1}] Epoch {epoch+1} Summary:")
+            print(f"   ↳ LR: {current_lr:.6e} | Avg Train: {mean_train_loss:.6f} | Avg Val: {mean_val_loss:.6f}")
+
+            # --- 3. EVALUATE VALIDATION EARLY STOPPING ---
+            if mean_val_loss < (best_val_loss - min_delta):
+                best_val_loss = mean_val_loss
+                patience_counter = 0 
+                save_model(model, dirname=f"{dirname}/fold_{fold+1}", hyperparam_config=hyperparam_config, filename="best_fold_model")
+            else:
+                patience_counter += 1
+                if patience_counter >= val_patience:
+                    print(f"🛑 Early stopping fold {fold+1} at Epoch {epoch+1}.")
+                    early_stopped = True
+                    break
+                    
+        fold_histories[fold] = {
+            "train_seq_idx": fold_train_seq_indices,
+            "train_seq_loss": fold_train_seq_loss,
+            "val_epochs": list(range(1, len(fold_val_epoch_history) + 1)),
+            "train_loss_epochs": fold_train_epoch_history,  
+            "val_loss": fold_val_epoch_history
+        }
+
+        # --- PLOT INDIVIDUAL FOLD RESULTS ---
+        fold_title_suffix = " (Early Stopped)" if early_stopped else " (Full Run)"
+        
+        plot_signals(
+            t=np.array(fold_train_seq_indices),
+            signals=[np.array(fold_train_seq_loss)],
+            labels=[f"Fold {fold+1} Sequence Loss"],
+            xlabel="Total Training Sequences Processed",
+            ylabel="Loss Value",
+            title=f"Fold {fold+1} Granular Sequence Loss{fold_title_suffix}",
+            dirname=f"{dirname}/fold_{fold+1}", filename="granular_training_loss"
+        )
+        
+        plot_signals(
+            t=np.array(fold_histories[fold]["val_epochs"]),
+            signals=[
+                np.array(fold_train_epoch_history), 
+                np.array(fold_val_epoch_history)
+            ],
+            labels=[
+                f"Fold {fold+1} Avg Train Loss", 
+                f"Fold {fold+1} Avg Val Loss"
+            ],
+            xlabel="Epochs",
+            ylabel="Loss Value",
+            title=f"Fold {fold+1} Epoch-level Loss Progress",
+            dirname=f"{dirname}/fold_{fold+1}", filename="epoch_validation_loss"
+        )
+
+    # --- FINAL CROSS VALIDATION LOGGING SUMMARY ---
+    print("\n💾 Complete Cross-Validation run finished. Packing overarching metadata curves...")
+    
+    summary_records = []
+    for f in fold_histories:
+        final_best = min(fold_histories[f]["val_loss"])
+        summary_records.append({"fold": f+1, "best_recorded_val_loss": final_best})
+    
+    summary_df = pd.DataFrame(summary_records)
+    save_df_to_csv(summary_df, dirname=dirname, filename="kfold_cross_validation_summary")
+    
+    print("\n✅ K-Fold optimization execution finalized.")
+    return fold_histories
+
+
+def train_controller_kfold(
+    model, 
+    dataset_path, 
+    hyperparam_config, 
+    dirname="name_directory", 
+    num_sequences_to_use=None,
+    k_folds=5,  # Configures the number of cross-validation slices
+    show_plots=False  # Option to display plots during training (can be turned off for faster runs)
+    ):
+    
+    # --- EXTRACT HYPERPARAMETERS ---
+    train_cfg = hyperparam_config["train"]
+    epochs = train_cfg["epochs"]
+    device = train_cfg["device"]
+    lr = train_cfg["lr"]
+    dt = hyperparam_config["signal"]["dt"]
+    
+    val_patience = train_cfg.get("val_patience_epochs", 3) 
+    min_delta = train_cfg.get("val_min_delta", 0)        
+
+    print(f"📂 Loading dataset from {dataset_path}...")
+    dataset = torch.load(dataset_path, weights_only=True) 
+
+    # --- DATA CONCATENATION & SLICING ---
+    full_x = torch.cat(dataset["x"], dim=0)
+    full_y = torch.cat(dataset["y"], dim=0)
+    
+    if num_sequences_to_use is not None:
+        full_x = full_x[:num_sequences_to_use]
+        full_y = full_y[:num_sequences_to_use]
+    
+    total_sequences = full_x.shape[0]
+    print(f"📊 Total dataset size: {total_sequences} sequences. Preparing {k_folds}-Fold Split...")
+
+    # --- GENERATE INDICES FOR SEAMLESS K-FOLD SPLITTING ---
+    # We shuffle indices once globally so folds contain a balanced mixture of sequences
+    all_indices = np.arange(total_sequences)
+    np.random.shuffle(all_indices)
+    folds = np.array_split(all_indices, k_folds)
+
+    # Save a clean template of initial model weights so we can reset it every fold
+    initial_model_state = copy.deepcopy(model.state_dict())
+    
+    # Trackers for overarching cross-validation summary statistics
+    fold_histories = {}
+
+    # --- K-FOLD CROSS VALIDATION LOOP ---
+    for fold in range(k_folds):
+        print(f"\n==========================================")
+        print(f"🌀 STARTING FOLD {fold + 1} / {k_folds}")
+        print(f"==========================================")
+        
+        # Reset model weights & optimizer state to prevent data leakage from prior folds
+        model.load_state_dict(initial_model_state)
+        model.to(device)
+        
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=train_cfg["lr_decay_rate"])
+        criterion = eval(train_cfg["loss_function"])
+        
+        # Extract validation indices for current fold
+        val_idx_arr = folds[fold]
+        # Train indices are everything else EXCEPT the current validation fold
+        train_idx_arr = np.setdiff1d(all_indices, val_idx_arr)
+        
+        train_x, val_x = full_x[train_idx_arr], full_x[val_idx_arr]
+        train_y, val_y = full_y[train_idx_arr], full_y[val_idx_arr]
+        
+        train_size = train_x.shape[0]
+        val_size = val_x.shape[0]
+        
+        # Trackers for this specific fold run
+        global_sequence_counter = 0
+        fold_train_seq_loss = []
+        fold_train_seq_indices = []
+        fold_val_epoch_history = []
+        fold_train_epoch_history = []  # <--- UPDATED: New tracker for epoch-level train loss
+        
+        best_val_loss = float('inf')
+        patience_counter = 0
+        early_stopped = False
+
+        # --- NESTED EPOCH & SEQUENCE RUN LOOPS ---
+        for epoch in range(epochs):
+            model.train()
+            epoch_train_losses = []
+            print(f"\n🎬 Fold {fold+1} | Starting Epoch {epoch+1}/{epochs}")
+            
+            # Shuffle indices locally within our training fold every epoch
+            shuffled_train_indices = torch.randperm(train_size)
+            
+            # --- 1. TRAINING PASS ---
+            for step, s_idx in enumerate(shuffled_train_indices):
+                s_idx = s_idx.item()
+                
+                x_input_single = train_x[s_idx:s_idx+1, :, :].to(device)  
+                u_target_single = train_y[s_idx:s_idx+1, :, :].to(device) 
+                
+                optimizer.zero_grad()
+                u_pred_single = model(x_input_single)
+                loss = criterion(u_pred_single, u_target_single)
+                loss.backward()
+                
+                optimizer.step()
+                scheduler.step()
+                
+                current_loss = loss.item()
+                epoch_train_losses.append(current_loss)
+                
+                # Record step-by-step sequential metric
+                fold_train_seq_loss.append(current_loss)
+                fold_train_seq_indices.append(global_sequence_counter)
+                global_sequence_counter += 1
+
+                # Export tracking data with safe split path naming
+                u_p_np = u_pred_single[0].detach().cpu().numpy().flatten()
+                u_t_np = u_target_single[0].detach().cpu().numpy().flatten()
+                t_axis = np.arange(len(u_p_np)) * dt
+
+                comparison_df = pd.DataFrame({
+                    "t": t_axis, "u_train": u_t_np, "u_pred": u_p_np, "abs_error": np.abs(u_t_np - u_p_np)
+                })
+                fold_dir = f"{dirname}/fold_{fold+1}/predictions/epoch_{epoch+1}"
+                save_df_to_csv(comparison_df, dirname=fold_dir, filename=f"step_{step}_preds")
+
+                # --- NEW: Plot Single Sequence Training Prediction vs Target ---
+                if show_plots:
+                    plot_signals(
+                        t=t_axis,
+                        signals=[u_t_np, u_p_np],
+                        labels=["Target (u_train)", "Predicted (u_pred)"],
+                        xlabel="Time (s)",
+                        ylabel="Signal Value",
+                        title=f"Fold {fold+1} | Epoch {epoch+1} | Train Step {step} Sequence Comparison",
+                        dirname=fold_dir,
+                        # filename=f"step_{step}_sequence_plot"
+                        filename=f"step_sequence_plot"
+                    )
+
+            # --- 2. VALIDATION PASS ---
+            model.eval()
+            epoch_val_losses = []
+            
+            with torch.no_grad():
+                for v_idx in range(val_size):
+                    x_val_single = val_x[v_idx:v_idx+1, :, :].to(device)
+                    u_val_target = val_y[v_idx:v_idx+1, :, :].to(device)
+                    
+                    u_val_pred = model(x_val_single)
+                    val_loss = criterion(u_val_pred, u_val_target)
+                    epoch_val_losses.append(val_loss.item())
+
+                    # --- NEW: Process and Plot Validation Sequence ---
+                    u_v_p_np = u_val_pred[0].detach().cpu().numpy().flatten()
+                    u_v_t_np = u_val_target[0].detach().cpu().numpy().flatten()
+                    t_val_axis = np.arange(len(u_v_p_np)) * dt
+                    
+                    val_fold_dir = f"{dirname}/fold_{fold+1}/validation/epoch_{epoch+1}"
+                    
+                    if show_plots:
+                        plot_signals(
+                            t=t_val_axis,
+                            signals=[u_v_t_np, u_v_p_np],
+                            labels=["Target (u_val)", "Predicted (u_val_pred)"],
+                            xlabel="Time (s)",
+                            ylabel="Signal Value",
+                            title=f"Fold {fold+1} | Epoch {epoch+1} | Val Sequence {v_idx+1}",
+                            dirname=val_fold_dir,
+                            # filename=f"val_seq_{v_idx+1}_sequence_plot",
+                            filename=f"val_seq_sequence_plot"
+                        )
+            
+            mean_train_loss = np.mean(epoch_train_losses)
+            mean_val_loss = np.mean(epoch_val_losses) if val_size > 0 else 0.0
+            fold_val_epoch_history.append(mean_val_loss)
+            fold_train_epoch_history.append(mean_train_loss)  # <--- UPDATED: Store mean train loss
+            
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f"✨ [Fold {fold+1}] Epoch {epoch+1} Summary:")
+            print(f"   ↳ LR: {current_lr:.6e} | Avg Train: {mean_train_loss:.6f} | Avg Val: {mean_val_loss:.6f}")
+
+            # --- 3. EVALUATE VALIDATION EARLY STOPPING ---
+            if mean_val_loss < (best_val_loss - min_delta):
+                best_val_loss = mean_val_loss
+                patience_counter = 0 
+                # Save the absolute best model checkpoint seen for this distinct fold slice
+                save_model(model, dirname=f"{dirname}/fold_{fold+1}", hyperparam_config=hyperparam_config, filename="best_fold_model")
+            else:
+                patience_counter += 1
+                if patience_counter >= val_patience:
+                    print(f"🛑 Early stopping fold {fold+1} at Epoch {epoch+1}.")
+                    early_stopped = True
+                    break
+                    
+        # Save metrics collected explicitly out of this single fold run
+        fold_histories[fold] = {
+            "train_seq_idx": fold_train_seq_indices,
+            "train_seq_loss": fold_train_seq_loss,
+            "val_epochs": list(range(1, len(fold_val_epoch_history) + 1)),
+            "train_loss_epochs": fold_train_epoch_history,  # <--- UPDATED: Package it for the final return
+            "val_loss": fold_val_epoch_history
+        }
+
+        # --- PLOT INDIVIDUAL FOLD RESULTS ---
+        fold_title_suffix = " (Early Stopped)" if early_stopped else " (Full Run)"
+        
+        # Plot continuous granular sequence execution for this fold
+        plot_signals(
+            t=np.array(fold_train_seq_indices),
+            signals=[np.array(fold_train_seq_loss)],
+            labels=[f"Fold {fold+1} Sequence Loss"],
+            xlabel="Total Training Sequences Processed",
+            ylabel="Loss Value",
+            title=f"Fold {fold+1} Granular Sequence Loss{fold_title_suffix}",
+            dirname=f"{dirname}/fold_{fold+1}", filename="granular_training_loss"
+        )
+        
+        # Plot validation performance per epoch for this fold
+        # --- UPDATED PLOT: Pass BOTH arrays and BOTH labels into the epoch plot ---
+        plot_signals(
+            t=np.array(fold_histories[fold]["val_epochs"]),
+            signals=[
+                np.array(fold_train_epoch_history), 
+                np.array(fold_val_epoch_history)
+            ],
+            labels=[
+                f"Fold {fold+1} Avg Train Loss", 
+                f"Fold {fold+1} Avg Val Loss"
+            ],
+            xlabel="Epochs",
+            ylabel="Loss Value",
+            title=f"Fold {fold+1} Epoch-level Loss Progress",
+            dirname=f"{dirname}/fold_{fold+1}", filename="epoch_validation_loss"
+        )
+
+    # --- FINAL CROSS VALIDATION LOGGING SUMMARY ---
+    print("\n💾 Complete Cross-Validation run finished. Packing overarching metadata curves...")
+    
+    # Build summary logs tracking final validation results per fold to disk
+    summary_records = []
+    for f in fold_histories:
+        final_best = min(fold_histories[f]["val_loss"])
+        summary_records.append({"fold": f+1, "best_recorded_val_loss": final_best})
+    
+    summary_df = pd.DataFrame(summary_records)
+    save_df_to_csv(summary_df, dirname=dirname, filename="kfold_cross_validation_summary")
+    
+    print("\n✅ K-Fold optimization execution finalized.")
+    return fold_histories
+
+
+def train_controller_es(
+    model, 
+    dataset_path, 
+    hyperparam_config, 
+    dirname="name_directory", 
+    num_sequences_to_use=None,
+    val_split=0.2
+    ):
+    
+    # --- EXTRACT HYPERPARAMETERS ---
+    train_cfg = hyperparam_config["train"]
+    epochs = train_cfg["epochs"]
+    device = train_cfg["device"]
+    lr = train_cfg["lr"]
+    dt = hyperparam_config["signal"]["dt"]
+    
+    # Validation Early Stopping Config
+    # If your config file doesn't have these specific keys yet, add them or use these fallbacks
+    val_patience = train_cfg.get("val_patience_epochs", 3) 
+    min_delta = train_cfg.get("val_min_delta", 1e-4)        
+
+    # --- INITIALIZE PIPELINES ---
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=train_cfg["lr_decay_rate"])
+    criterion = eval(train_cfg["loss_function"])
+    
+    # Histories to save and track for plotting
+    epoch_indices = []
+    epoch_train_history = []
+    epoch_val_history = []
+    
+    # --- EARLY STOPPING CONFIGURATION ---
+    best_val_loss = float('inf')
+    patience_counter = 0
+    early_stopped = False
+    
+    print(f"📂 Loading dataset from {dataset_path}...")
+    dataset = torch.load(dataset_path, weights_only=True) 
+
+    # --- DATA CONCATENATION & SLICING ---
+    full_x = torch.cat(dataset["x"], dim=0)
+    full_y = torch.cat(dataset["y"], dim=0)
+    
+    if num_sequences_to_use is not None:
+        full_x = full_x[:num_sequences_to_use]
+        full_y = full_y[:num_sequences_to_use]
+    
+    total_sequences = full_x.shape[0]
+    
+    # --- TRAIN / VALIDATION SPLIT ---
+    val_size = int(total_sequences * val_split)
+    train_size = total_sequences - val_size
+    
+    train_x, val_x = full_x[:train_size], full_x[train_size:]
+    train_y, val_y = full_y[:train_size], full_y[train_size:]
+    
+    print(f"📊 Dataset Split -> Training: {train_size} sequences | Validation: {val_size} sequences")
+    model.to(device)
+
+    # --- NESTED EPOCH & SEQUENCE RUN LOOPS ---
+    for epoch in range(epochs):
+        model.train()
+        epoch_train_losses = []
+        print(f"\n🎬 Starting Epoch {epoch+1}/{epochs}")
+
+        # --- NEW: SHUFFLE TRAINING INDICES EVERY EPOCH ---
+        # Generates a random order of indices (e.g., [412, 73, 5901, ...])
+        shuffled_indices = torch.randperm(train_size)
+        
+        # --- 1. TRAINING PASS ---
+        for step, s_idx in enumerate(shuffled_indices):
+            # Convert the tensor item to a standard python integer
+            s_idx = s_idx.item()
+
+            x_input_single = train_x[s_idx:s_idx+1, :, :].to(device)  
+            u_target_single = train_y[s_idx:s_idx+1, :, :].to(device)
+            
+            optimizer.zero_grad()
+            u_pred_single = model(x_input_single)
+            loss = criterion(u_pred_single, u_target_single)
+            loss.backward()
+            
+            optimizer.step()
+            scheduler.step()
+            
+            epoch_train_losses.append(loss.item())
+
+            # Export tracking CSV records for analysis
+            u_p_np = u_pred_single[0].detach().cpu().numpy().flatten()
+            u_t_np = u_target_single[0].detach().cpu().numpy().flatten()
+            t_axis = np.arange(len(u_p_np)) * dt
+
+            comparison_df = pd.DataFrame({
+                "t": t_axis, "u_train": u_t_np, "u_pred": u_p_np, "abs_error": np.abs(u_t_np - u_p_np)
+            })
+            save_df_to_csv(comparison_df, dirname=f"{dirname}/predictions/epoch_{epoch+1}", filename=f"seq_{s_idx}_preds")
+
+        # --- 2. VALIDATION PASS ---
+        model.eval()
+        epoch_val_losses = []
+        
+        with torch.no_grad():
+            for v_idx in range(val_size):
+                x_val_single = val_x[v_idx:v_idx+1, :, :].to(device)
+                u_val_target = val_y[v_idx:v_idx+1, :, :].to(device)
+                
+                u_val_pred = model(x_val_single)
+                val_loss = criterion(u_val_pred, u_val_target)
+                epoch_val_losses.append(val_loss.item())
+        
+        # Aggregate Epoch Data
+        mean_train_loss = np.mean(epoch_train_losses)
+        mean_val_loss = np.mean(epoch_val_losses) if val_size > 0 else 0.0
+        
+        epoch_indices.append(epoch + 1)
+        epoch_train_history.append(mean_train_loss)
+        epoch_val_history.append(mean_val_loss)
+        
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"✨ Epoch {epoch+1}/{epochs} Summary:")
+        print(f"   ↳ LR: {current_lr:.6e} | Avg Train Loss: {mean_train_loss:.6f} | Avg Val Loss: {mean_val_loss:.6f}")
+
+        # --- 3. EVALUATE VALIDATION EARLY STOPPING CRITERION ---
+        # Did the validation loss drop significantly past our threshold?
+        if mean_val_loss < (best_val_loss - min_delta):
+            best_val_loss = mean_val_loss
+            patience_counter = 0  # Reset counter since it is still improving
+            # Option to save the "best" model checkpoint here if wanted
+        else:
+            patience_counter += 1
+            print(f"⚠️ Validation loss stopped decreasing. Patience counter: {patience_counter}/{val_patience}")
+            
+            if patience_counter >= val_patience:
+                print(f"\n🛑 EARLY STOPPING TRIGGERED! Validation loss plateaued for {val_patience} consecutive epochs.")
+                early_stopped = True
+                break
+
+    # --- FINAL DATASET EXPORTS & DUAL PLOTTING ---
+    print("\n💾 Saving finalized model and performance records...")
+    save_model(model, dirname=dirname, hyperparam_config=hyperparam_config, filename="trained_controller_disk")
+    
+    # Save training progression metrics to a csv file
+    epoch_metrics_df = pd.DataFrame({
+        "epoch": epoch_indices, 
+        "train_loss": epoch_train_history, 
+        "val_loss": epoch_val_history
+    })
+    save_df_to_csv(epoch_metrics_df, dirname=dirname, filename="epoch_learning_curve_data")
+
+    # Generate the requested comparative Training vs Validation learning curve
+    stop_title_suffix = " (Early Stopped)" if early_stopped else " (Full Run Completed)"
+    plot_signals(
+        t=epoch_metrics_df["epoch"].values, 
+        signals=[epoch_metrics_df["train_loss"].values, epoch_metrics_df["val_loss"].values],
+        labels=["Average Training Loss", "Average Validation Loss"], 
+        xlabel="Epochs", 
+        ylabel="Loss Value",
+        title=f"Mamba Controller Learning Curves{stop_title_suffix}",
+        dirname=dirname, 
+        filename="training_validation_losses_plot"
+    )
+
+    return epoch_train_history, epoch_val_history
+
 
 
 import numpy as np

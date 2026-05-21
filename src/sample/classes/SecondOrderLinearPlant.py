@@ -23,8 +23,8 @@ class SecondOrderLinearPlant:
         Returns [batch_size, 2] tensor of states [x1, x2].
         Initializes with randomized initial conditions for robust learning.
         """
-        x1_init = torch.rand((batch_size, 1), device=self.device) * 2.0 - 1.0  # -1.0 to 1.0
-        x2_init = torch.rand((batch_size, 1), device=self.device) * 2.0 - 1.0  # -1.0 to 1.0
+        x1_init = torch.rand((batch_size, 1), device=self.device) * 2.0  # -1.0 to 1.0
+        x2_init = torch.rand((batch_size, 1), device=self.device) * 2.0  # -1.0 to 1.0
         return torch.cat([x1_init, x2_init], dim=1)
 
     def get_y(self, state, t=None):
@@ -41,7 +41,7 @@ class SecondOrderLinearPlant:
         dx2/dt = -23 * omega * x2 + (omega^2) * x1 + u
         """
         dx1dt = x2
-        dx2dt = -23.0 * self.omega * x2 + (self.omega ** 2) * x1 + u
+        dx2dt = - 1* self.omega * x2 + (self.omega ** 2) * x1 + u
         return dx1dt, dx2dt
 
     def step(self, state, u, t, dt):
@@ -91,7 +91,7 @@ class SecondOrderLinearPlant:
         
         # Center point behavior for a linear mechanical system 
         # Since it is symmetric around 0, we center u_buffer around 0.0 or a small offset
-        u_center = torch.rand((self.batch_size, 1), device=self.device) * 0.2 - 0.1 # -0.1 to 0.1
+        u_center = torch.rand((self.batch_size, 1), device=self.device) * 0.2 # -0.1 to 0.1
         self.current_u_center = u_center
         self.u_buffer = u_center + (v_norm * self.p)
         

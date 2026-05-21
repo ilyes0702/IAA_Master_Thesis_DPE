@@ -1,7 +1,7 @@
 import torch
 from src.sample.classes.ChemostatPlant import ChemostatPlant
 from src.hyperparam_config import hyperparam_config
-from src.sample.classes.MambaInverseController import MambaInverseController
+from src.sample.classes.MambaInverseController import MambaInverseController_exp
 from src.sample.utils.training_utils import *
 from src.sample.config import *
 from src.sample.utils.saving_utils import *
@@ -26,7 +26,11 @@ if __name__ == "__main__":
 
     dataset_path = "results/2026-05-19/2026-05-19_10-22-09/ChemostatPlant_training_data/dataset/2026-05-19_10-22-09_training_data.pt"
 
-    dataset_path = "results/2026-05-19/2026-05-19_16-58-14/ChemostatPlant_training_data/dataset/2026-05-19_16-58-14_training_data.pt"
+    dataset_path_20260520 = "results/2026-05-20/2026-05-20_22-14-28/ChemostatPlant_training_data/dataset/2026-05-20_22-14-28_training_data.pt"
+
+    dataset_path = "results/2026-05-13/2026-05-13_11-33-29/GPUChemostatPlant_training_ata/dataset/2026-05-13_11-33-29_training_data.pt" #Vermutung, dass das das dataset war, das controller_4000 hervorgebracht hat
+
+    dataset_path = "results/2026-05-21/2026-05-21_15-49-29/ChemostatPlant_training_data/dataset/2026-05-21_15-49-29_training_data.pt"
 
     # Define the data steps you want to test
     #data_steps = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
@@ -35,7 +39,7 @@ if __name__ == "__main__":
     # If you want to re-initialize the model for each run (recommended for benchmarking)
     def get_fresh_model():
         # Replace this with your actual model initialization code
-        return MambaInverseController(hyperparam_config=hyperparam_config).to(device)
+        return MambaInverseController_exp(hyperparam_config=hyperparam_config).to(device)
 
     for count in data_steps:
         print(f"\n--- Starting Training Experiment with {count} sequences ---")
@@ -58,12 +62,44 @@ if __name__ == "__main__":
         current_controller = get_fresh_model()
         
         # 4. Train
-        train_controller_lr_decay(
+        train_controller_kfold_exp(
             current_controller, 
             dataset_path, 
             hyperparam_config, 
             dirname=dirname, 
-            num_sequences_to_use=count
+            num_sequences_to_use=count,
+            show_plots=True
         )
         
         print(f"✅ Finished training for {count} sequences.")
+
+
+        # --- ADDED: Print the matrices after training ---
+        # print("\n--- Extracting Mamba Matrices ---")
+        
+        # # NOTE: Adjust 'mamba' to match the actual attribute name inside your MambaInverseController
+        # mamba_block = current_controller.mamba 
+
+        # 1. Extract and print Matrix A
+        # The true A matrix used in the math is -exp(A_log)
+        # with torch.no_grad():
+        #     matrix_A = -torch.exp(mamba_block.A_log.float())
+        #     print(f"Matrix A shape: {matrix_A.shape}")
+        #     print("Matrix A (First 2 rows):\n", matrix_A[:2])
+
+        # 2. Extract and print the projection weights for B and C
+        # Because B and C are dynamic, we look at the weight matrix that generates them
+        # with torch.no_grad():
+        #     x_proj_weight = mamba_block.x_proj.weight
+        #     print(f"\nx_proj weight shape: {x_proj_weight.shape}")
+            
+        #     # x_proj outputs [dt_rank, d_state, d_state] split vertically
+        #     dt_rank = mamba_block.dt_rank
+        #     d_state = mamba_block.d_state
+            
+        #     # Slice out the static weights responsible for generating B and C
+        #     B_projection_weights = x_proj_weight[dt_rank : dt_rank + d_state, :]
+        #     C_projection_weights = x_proj_weight[dt_rank + d_state :, :]
+            
+        #     print(f"B Projection Weight shape: {B_projection_weights.shape}")
+        #     print(f"C Projection Weight shape: {C_projection_weights.shape}")

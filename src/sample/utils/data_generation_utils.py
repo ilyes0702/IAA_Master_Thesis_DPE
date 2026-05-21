@@ -146,7 +146,7 @@ def generate_and_save_dataset(plant, hyperparam_config, num_batches, dirname):
                            dirname=dirname + "/dataset_logs", 
                            filename=f"{filename_base}.csv")
 
-            # --- SAVE INDIVIDUAL PLOT EVERY 1000 SEQUENCES ---
+            # # --- SAVE INDIVIDUAL PLOT EVERY 1000 SEQUENCES ---
             # global_seq_idx = b_idx * batch_size + s_idx
             # if global_seq_idx % 1 == 0:
             #     plot_signals(
