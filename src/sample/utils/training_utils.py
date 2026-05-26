@@ -459,7 +459,7 @@ def train_controller_kfold_exp(
     hyperparam_config, 
     dirname="name_directory", 
     num_sequences_to_use=None,
-    k_folds=5,  
+    k_folds=1,  
     show_plots=False  
 ):
     # --- EXTRACT HYPERPARAMETERS ---
@@ -478,9 +478,7 @@ def train_controller_kfold_exp(
     # --- DATA CONCATENATION & SLICING ---
     raw_x = dataset["x"]  
     raw_y = dataset["y"]  
-    if num_sequences_to_use is not None:
-        full_x = full_x[:num_sequences_to_use]
-        full_y = full_y[:num_sequences_to_use]
+    
     # 🔥 NEW: Calculate global normalization stats
     all_y_values = []
     all_u_values = []
@@ -494,7 +492,9 @@ def train_controller_kfold_exp(
 
     all_y_tensor = torch.cat(all_y_values)
     all_u_tensor = torch.cat(all_u_values)
-
+    if num_sequences_to_use is not None:
+        raw_x = raw_x[:num_sequences_to_use]
+        raw_y = raw_y[:num_sequences_to_use]
     norm_stats = {
         'y_mean': all_y_tensor.mean().item(),
         'y_std': all_y_tensor.std().item(),
@@ -503,7 +503,6 @@ def train_controller_kfold_exp(
     }
 
     # Save for simulation
-    import json
     save_to_json(norm_stats, dirname=dirname, filename="normalization_stats")
     
     delta_steps = hyperparam_config["train"]["delay_steps"] 
@@ -511,9 +510,7 @@ def train_controller_kfold_exp(
     processed_x_sequences = []
     processed_y_sequences = []
     
-    if num_sequences_to_use is not None:
-        raw_x = raw_x[:num_sequences_to_use]
-        raw_y = raw_y[:num_sequences_to_use]
+    
     
     for x_seq, y_seq in zip(raw_x, raw_y):
         y_raw = x_seq.squeeze()
@@ -609,7 +606,7 @@ def train_controller_kfold_exp(
                 optimizer.zero_grad()
                 
                 # Pass both explicit arguments into the model
-                u_pred_single = model(y_t=y_t_split, y_t_delta=y_t_delta_split, use_memory=False)
+                u_pred_single = model(y_t=y_t_split, y_t_delta=y_t_delta_split, use_memory=True)
                 
                 loss = criterion(u_pred_single, u_target_single)
                 loss.backward()

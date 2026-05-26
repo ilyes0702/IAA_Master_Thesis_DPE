@@ -88,6 +88,9 @@ def generate_and_save_dataset(plant, hyperparam_config, num_batches, dirname, sh
     for b_idx in range(num_batches):
         # 1. RUN CORRECTED SIMULATION (Fixed time-alignment)
         x_tensor, y_target = generate_training_batch(plant, hyperparam_config)
+        print(f"Batch {b_idx+1}/{num_batches} generated. Tensor shapes:")
+        print("x_tensor.shape:", x_tensor.shape)
+        print("y_target.shape:", y_target.shape)
         
         # Extract D_centers for this batch (Shape: [batch_size, 1])
         batch_d_centers = plant.current_D_center.cpu().numpy()

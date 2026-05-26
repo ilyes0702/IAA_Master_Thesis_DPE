@@ -1,18 +1,25 @@
 import torch
 hyperparam_config = {
+    "plant" :{
+        "mu-max": 0.5,
+        "Ks": 0.1,
+        "Y": 0.5,
+        "sR": 1.0,
+        "Ki": 0.1
+    },
     "signal": {
         "lambd": 15,
-        "p": 0.2,
-        "seq_len": 1000,
-        "dt": 0.5
+        "p": 0.15,
+        "seq_len": 101,
+        "dt": 0.2
     },
     "train": {
         "number_of_folds": 1,
         "epochs": 30,
-        "batch_size": 1000,
+        "batch_size": 100,
         "lr": 1e-3,
         "device": "cuda", # if torch.cuda.is_available() else "cpu",
-        "delay_steps": 5,
+        "delay_steps": 10,
         "loss_function": "MSELoss()", # "mape_loss", "sobolev_loss", "log_cosh_loss", "cosine_shape_loss"
         "lr_decay_rate":1,
         "critical_loss_value": 1e-2,
@@ -20,7 +27,7 @@ hyperparam_config = {
     },
     "mamba": {
         "d_model": 64,
-        "d_state": 64
+        "d_state": 16
     },
     "simulate": {
         "batch_size": 10,
@@ -37,7 +44,7 @@ hyperparam_config_SecondOrderLinearPlant = {
     },
     "train": {
         "epochs": 1,
-        "batch_size": 5000,
+        "batch_size": 1000,
         "lr": 1e-3,
         "device": "cuda", # if torch.cuda.is_available() else "cpu",
         "delay_steps": 1,

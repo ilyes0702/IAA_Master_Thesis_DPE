@@ -32,11 +32,11 @@ if __name__ == "__main__":
 
     controller_path = "models/2026-05-19/2026-05-19_15-27-50/ChemostatPlant_training_None/2026-05-19_15-27-50_trained_controller_disk.pt" # trained with bounded relative loss and 20-step delay, ok results
 
-    controller_path = "models/2026-05-21/2026-05-21_23-15-51/ChemostatPlant_training_None/fold_3/2026-05-21_23-15-51_best_fold_model.pt" #
+    controller_path = "models/2026-05-25/2026-05-25_10-03-58/ChemostatPlant_training_None/fold_5/2026-05-25_10-03-58_best_fold_model.pt" #
     
     loaded_controller = load_model(MambaInverseController_exp, controller_path)
 
-    normalization_stats_path = "results/2026-05-21/2026-05-21_23-15-51/ChemostatPlant_training_None/reports/2026-05-21_23-15-51_normalization_stats.json"
+    normalization_stats_path = "results/2026-05-25/2026-05-25_10-03-58/ChemostatPlant_training_None/reports/2026-05-25_10-03-58_normalization_stats.json"
     
 
     r_dynamic = generate_reference_trajectory(

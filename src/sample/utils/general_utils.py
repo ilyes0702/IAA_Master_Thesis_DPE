@@ -9,7 +9,7 @@ from src.sample.utils.saving_utils import *
 from src.sample.config import *
 from src.sample.utils.plotting_utils import plot_signals
 import torch
-from src.sample.classes.MambaInverseController import MambaInverseController, MambaInverseController_exp
+from src.sample.classes.MambaInverseController import MambaInverseController, MambaInverseController
 import matplotlib.pyplot as plt
 import random
 

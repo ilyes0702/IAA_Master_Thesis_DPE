@@ -51,7 +51,7 @@ class MambaInverseController_old(BaseInverseController):
 
 
 
-class MambaInverseController(BaseInverseController):
+class MambaInverseController_seq2seq(BaseInverseController):
     def __init__(self, hyperparam_config):  # Fixed typo: __init__
         super().__init__(input_dim=2, output_dim=1)
         # Standardize variable naming
@@ -92,7 +92,7 @@ import torch
 import torch.nn as nn
 from mamba_ssm import Mamba
 
-class MambaInverseController_exp(nn.Module):
+class MambaInverseController(nn.Module):
     def __init__(self, hyperparam_config):
         super().__init__()
         

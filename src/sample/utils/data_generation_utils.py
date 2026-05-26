@@ -68,7 +68,7 @@ def generate_training_batch(plant, hyperparam_config):
     return x_tensor, y_target
 
 
-def generate_and_save_dataset(plant, hyperparam_config, num_batches, dirname):
+def generate_and_save_dataset(plant, hyperparam_config, num_batches, dirname, show_plots=False):
     """
     Simulates physics, saves CSVs/Plots for EVERY individual trajectory, 
     and returns the final tensors for training.
@@ -147,18 +147,20 @@ def generate_and_save_dataset(plant, hyperparam_config, num_batches, dirname):
                            filename=f"{filename_base}.csv")
 
             # # --- SAVE INDIVIDUAL PLOT EVERY 1000 SEQUENCES ---
-            # global_seq_idx = b_idx * batch_size + s_idx
-            # if global_seq_idx % 1 == 0:
-            #     plot_signals(
-            #         time_axis,
-            #         [u_signal_plot, y_t_plot, y_next_plot, d_center_line],
-            #         labels=["u_control", "y_t", "y_next", "D_center"],
-            #         xlabel="Time",
-            #         ylabel="Signal",
-            #         title=f"Dataset Sample: {filename_base}",
-            #         dirname=dirname + "/dataset_plots",
-            #         filename=f"{filename_base}_plot_{global_seq_idx}.png"
-            #     )
+
+            if show_plots:
+                global_seq_idx = b_idx * batch_size + s_idx
+                if global_seq_idx % 1 == 0:
+                    plot_signals(
+                        time_axis,
+                        [u_signal_plot, y_t_plot, y_next_plot, d_center_line],
+                        labels=["u_control", "y_t", "y_next", "D_center"],
+                        xlabel="Time",
+                        ylabel="Signal",
+                        title=f"Dataset Sample: {filename_base}",
+                        dirname=dirname + "/dataset_plots",
+                        filename=f"{filename_base}_plot_{global_seq_idx}.png"
+                    )
 
         all_batches_x.append(x_tensor.cpu())
         all_batches_y.append(y_target.cpu())

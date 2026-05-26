@@ -13,11 +13,12 @@ class ChemostatPlant:
 
         # Biological Parameters from Config
 
-        self.mu_max = torch.tensor(0.5, device=self.device)
-        self.Ks = torch.tensor(0.2, device=self.device)
-        self.Y = torch.tensor(0.6, device=self.device)
-        self.sR = torch.tensor(1.0, device=self.device)
-        
+        self.mu_max = torch.tensor(hyperparam_config["plant"]["mu-max"], device=self.device)
+        self.Ks = torch.tensor(hyperparam_config["plant"]["Ks"], device=self.device)
+        self.Y = torch.tensor(hyperparam_config["plant"]["Y"], device=self.device)
+        self.sR = torch.tensor(hyperparam_config["plant"]["sR"], device=self.device)
+        self.Ki = torch.tensor(hyperparam_config["plant"]["Ki"], device=self.device)
+
         # Buffer for control signals
         self.u_buffer = None
       
@@ -27,7 +28,7 @@ class ChemostatPlant:
         Initializes with random biological values to ensure robust learning.
         """
         x_init = torch.rand((batch_size, 1), device=self.device) * 0.5 + 0.1 # 0.1 to 0.6
-        s_init = torch.rand((batch_size, 1), device=self.device) * 0.5       # 0.0 to 0.5
+        s_init = torch.rand((batch_size, 1), device=self.device) * 0.5 +0.1      # 0.1 to 0.6
         return torch.cat([x_init, s_init], dim=1)
 
     def get_y(self, state, t=None):
@@ -37,8 +38,9 @@ class ChemostatPlant:
         """
         x = state[:, 0:1]
         s = state[:, 1:2]
+        # mu = (self.mu_max * s) / (self.Ks + s + (s**2 / self.Ki))
         mu = (self.mu_max * s) / (self.Ks + s)
-        return mu # Growth rate is our output to track
+        return mu # Substrate concentration is our output to track
 
     def dynamics(self, x, s, u):
         mu = (self.mu_max * s) / (self.Ks + s)

@@ -7,7 +7,7 @@ plt.style.use("src/sample/style.mplstyle")
 
 
 plant = ChemostatPlant(hyperparam_config=hyperparam_config)
-# plant = SecondOrderLinearPlant(hyperparam_config=hyperparam_config_SecondOrderLinearPlant)
+#plant = SecondOrderLinearPlant(hyperparam_config=hyperparam_config_SecondOrderLinearPlant)
 
 dirname = plant.__class__.__name__ + "_training_data"
 

@@ -32,6 +32,8 @@ if __name__ == "__main__":
 
     dataset_path = "results/2026-05-21/2026-05-21_23-27-04/ChemostatPlant_training_data/dataset/2026-05-21_23-27-04_training_data.pt"
 
+    dataset_path = "results/2026-05-26/2026-05-26_12-33-22/ChemostatPlant_training_data/dataset/2026-05-26_12-33-22_training_data.pt" # output: substrate concentration
+
     # Define the data steps you want to test
     #data_steps = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
     data_steps = [None]
