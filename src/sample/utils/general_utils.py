@@ -15,6 +15,25 @@ import random
 
 plt.style.use("src/sample/style.mplstyle")
 
+
+import pickle
+
+def load_scaler(scaler_dir):
+    """
+    Loads the fitted scaler_x and scaler_y for a specific fold.
+    
+    Args:
+        fold_dir (str): Path to the specific fold directory (e.g., 'name_directory/fold_1')
+    Returns:
+        scaler_x, scaler_y: The deserialized scikit-learn StandardScaler objects
+    """
+    with open(scaler_dir, "rb") as f:
+        scaler = pickle.load(f)
+        
+        
+    print(f"✅ Successfully loaded scalers from {scaler_dir}")
+    return scaler
+
 #=== FUNCTION TO COMPUTE AND SAVE TRACKING METRICS ===#
 def compute_and_save_tracking_metrics(
     y_np,        # Actual output [steps, batch_size]
@@ -130,7 +149,10 @@ def generate_reference_trajectory(steps, dt, device, mode="constant", constant_v
         sine_base = np.sin(2 * np.pi * time_axis / period)
         
         # Use tanh to sharpen the curve into a "soft" rectangle with an upward linear drift
-        r_trajectory_np = 0.25 + 0.02 * np.tanh(gain * sine_base) - 0.00 * time_axis
+
+        noise = np.random.uniform(-0.005, 0.005, size=time_axis.shape)
+
+        r_trajectory_np = 0.25 + 0.02 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism
         
         # Convert the structural numpy baseline into a target PyTorch tensor array
         r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
@@ -672,6 +694,201 @@ def simulate_tracking_exp(model, plant, r_trajectory, hyperparam_config, normali
         "simulated_controls": all_u.cpu().numpy()
     }
 
+def simulate_tracking_sakura(model, plant, r_trajectory, hyperparam_config, x_scaler, y_scaler, dirname):
+    """
+    Simulates a controlled plant over a specified time horizon while tracking a reference trajectory.
+    Aligns perfectly with the mict processing pipeline, using scikit-learn scalers for normalizations.
+    """
+    # Extract configuration sub-dictionaries
+    train_cfg = hyperparam_config["train"]
+    sig_cfg   = hyperparam_config["signal"]
+    sim_cfg   = hyperparam_config["simulate"]
+
+    # Unpack specific parameters
+    steps = sim_cfg["seq_len"]
+    dt = sig_cfg["dt"]
+    batch_size = sim_cfg["batch_size"]
+    device = train_cfg["device"]
+
+    # Flatten reference tensor for CPU metrics calculations
+    r_np = r_trajectory.cpu().numpy().flatten()
+    
+    # Initialize GPU tensor buffers across the COMPLETE step timeline
+    all_y = torch.zeros((steps, batch_size), device=device)
+    all_u = torch.zeros((steps, batch_size), device=device)
+    all_x1 = torch.zeros((steps, batch_size), device=device)
+    all_x2 = torch.zeros((steps, batch_size), device=device)
+    
+    state = plant.get_initial_state(batch_size)
+
+    # Prepare model for evaluation mode
+    model.eval()
+
+    print(f"📈 Testing Trajectory Tracking: {batch_size} trajectories across {steps} steps...")
+    delta_steps = hyperparam_config["train"]["delay_steps"]
+    
+    # Keep track of the historical pairs over time for Mamba's memory tracking per batch trajectory
+    # List of lists to hold history for each sequence batch item cleanly
+    history_pairs = [[] for _ in range(batch_size)]
+
+    # Execute forward tracking simulation without tracking gradients
+    with torch.no_grad():
+        for i in range(steps):
+            t = i * dt
+            y_current = plant.get_y(state, t)  # Shape: (batch_size, 1)
+
+            # Prevent index out of bounds
+            look_ahead_idx = min(i + delta_steps, steps - 1)
+            target_r = r_trajectory[look_ahead_idx].expand(batch_size, 1)  # Shape: (batch_size, 1)
+
+            # Convert current steps to CPU NumPy arrays for Scikit-Learn transformations
+            y_curr_np = y_current.cpu().numpy()
+            tgt_r_np = target_r.cpu().numpy()
+
+            # Process normalization matching mict's structure step-by-step per batch trajectory
+            batch_y_t_norm = []
+            batch_y_next_norm = []
+
+            for b_idx in range(batch_size):
+                input_pair = np.array([[y_curr_np[b_idx, 0], tgt_r_np[b_idx, 0]]])
+                # Transform using the exact x_scaler fitted during training
+                input_normalized = x_scaler.transform(input_pair) if x_scaler else input_pair
+                history_pairs[b_idx].append(input_normalized[0])
+
+                # Extract the history vectors up to this step idx
+                curr_history = np.array(history_pairs[b_idx]) # Shape: (i + 1, 2)
+                batch_y_t_norm.append(curr_history[:, 0])
+                batch_y_next_norm.append(curr_history[:, 1])
+
+            # Convert compiled histories into 3D Tensors: [Batch, Seq_Len, 1]
+            y_t_tensor = torch.tensor(np.array(batch_y_t_norm), dtype=torch.float32).unsqueeze(-1).to(device)
+            y_next_tensor = torch.tensor(np.array(batch_y_next_norm), dtype=torch.float32).unsqueeze(-1).to(device)
+
+            # Model inference: passes entire tracking history down to the recurrent block
+            u_seq_norm = model(y_t=y_t_tensor, y_next=y_next_tensor)
+            
+            # Extract the normalized control signal exclusively for the CURRENT step (the last item)
+            u_norm_np = u_seq_norm[:, -1, :].cpu().numpy() # Shape: (batch_size, 1)
+
+            # Inverse transform via y_scaler to obtain raw control actions for the physical system
+            if y_scaler:
+                u_unscaled = y_scaler.inverse_transform(u_norm_np)
+            else:
+                u_unscaled = u_norm_np
+            
+            u = torch.tensor(u_unscaled, dtype=torch.float32, device=device)
+
+            # Step the physical plant forward
+            state, _ = plant.step(state, u, t, dt)
+
+            # Logging
+            all_y[i] = y_current.view(-1)
+            all_u[i] = u.view(-1)
+            all_x1[i] = state[:, 0]
+            all_x2[i] = state[:, 1]
+
+    # --- PLOTTING & EXPORT ---
+    time_axis = np.arange(steps) * dt
+    trajectory_reports = []
+
+    # Parse and save individual trajectory records
+    for b in range(batch_size):
+        state_dirname = os.path.join(dirname, f"initial_state_{b}")
+        os.makedirs(state_dirname, exist_ok=True) 
+        
+        y_traj = all_y[:, b].cpu().numpy()
+        u_traj = all_u[:, b].cpu().numpy()
+        x1_traj = all_x1[:, b].cpu().numpy()
+        x2_traj = all_x2[:, b].cpu().numpy()
+        r_traj = r_np 
+
+        df_traj = pd.DataFrame({
+            "time": time_axis,
+            "state_x1": x1_traj,
+            "state_x2": x2_traj,
+            "output_y": y_traj,
+            "control_u": u_traj,
+            "target_r": r_traj
+        })
+        save_df_to_csv(df_traj, dirname=state_dirname, filename="state_report")
+        trajectory_reports.append(df_traj)
+
+        # GENERATE TIME-SERIES PLOTS PER BATCH INDEX
+        plot_signals(
+            t=time_axis, 
+            signals=[u_traj],
+            labels=["Control Signal (u)"],
+            title=f"Trajectory {b}: Control Action",
+            xlabel="Time (h)", ylabel="Action Value",
+            dirname=state_dirname, filename="plot_control_signal"
+        )
+
+        plot_signals(
+            t=time_axis, 
+            signals=[y_traj, r_traj],
+            labels=["Output (y)", "Target (r)"],
+            title=f"Trajectory {b}: Tracking Performance",
+            xlabel="Time (h)", ylabel="Signal Value",
+            dirname=state_dirname, filename="plot_output_tracking"
+        )
+
+        # GENERATE PARITY PLOTS PER BATCH INDEX
+        sorted_indices = np.argsort(r_traj)
+        plot_signals(
+            t=r_traj[sorted_indices],
+            signals=[y_traj[sorted_indices], r_traj[sorted_indices]],   
+            labels=["Output (y)", "Ideal (y = r)"],
+            title=f"Trajectory {b}: Parity Plot",
+            xlabel="Reference (r)", ylabel="Output (y)",
+            dirname=state_dirname, filename="parity_plot_output_tracking"
+        )
+
+        plot_signals(
+            t=time_axis, 
+            signals=[x1_traj, x2_traj],
+            labels=["State x1", "State x2"],
+            title=f"Trajectory {b}: Internal Plant States",
+            xlabel="Time (h)", ylabel="State Magnitude",
+            dirname=state_dirname, filename="plot_plant_states"
+        )
+
+    # --- GLOBAL BATCH OVERLAY PLOT GENERATION ---
+    y_np = all_y.cpu().numpy()
+    summary_signals = [y_np[:, j] for j in range(batch_size)]
+    sum_w_ref = summary_signals + [r_np]
+    
+    plot_signals(
+        t=time_axis,
+        signals=sum_w_ref,
+        labels=[f"Traj {j}" for j in range(batch_size)] + ["Target Reference"],
+        title=f"Batch Convergence ({batch_size} Trajectories Overview)",
+        xlabel="Time (h)", ylabel="System Output (y)",
+        dirname=dirname, filename="batch_summary"
+    )
+
+    # GLOBAL BATCH PARITY MAP GENERATION
+    sorted_batch_indices = np.argsort(r_np)
+    batch_summary_signals = [y_np[sorted_batch_indices, j] for j in range(batch_size)]
+    batch_sum_w_ref = batch_summary_signals + [r_np[sorted_batch_indices]]
+
+    plot_signals(
+        t=r_np[sorted_batch_indices],
+        signals=batch_sum_w_ref,   
+        labels=[f"Traj {j}" for j in range(batch_size)] + ["Ideal Line"],
+        title=f"Batch Convergence ({batch_size} Trajectories) Parity Map",
+        xlabel="Reference Target (r)", ylabel="System Output (y)",
+        dirname=dirname, filename="batch_summary_parity_plot"
+    )
+    
+    # --- METRICS COMPILATION ---
+    tracking_metrics = compute_and_save_tracking_metrics(y_np, r_np, dt, dirname)
+
+    return {
+        "trajectory_dataframes": trajectory_reports,
+        "metrics": tracking_metrics,
+        "simulated_outputs": y_np,
+        "simulated_controls": all_u.cpu().numpy()
+    }
 
 def simulate_tracking_old(model, plant, r_trajectory, hyperparam_config, dirname):
     """

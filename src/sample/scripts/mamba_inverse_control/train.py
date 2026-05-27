@@ -1,107 +1,69 @@
+"""
+Train the Mamba inverse controller for the Chemostat plant.
+
+This script loads a prepared training dataset (features X and targets Y),
+initializes the plant and controller using the shared hyperparameter
+configuration, and runs the training routine to produce a trained controller
+and any associated artifacts (saved models, logs, plots).
+
+Usage: run this file as a script. Adjust dataset_path below if needed.
+"""
+
 import torch
 from src.sample.classes.ChemostatPlant import ChemostatPlant
 from src.hyperparam_config import hyperparam_config
-from src.sample.classes.MambaInverseController import MambaInverseController_exp
-from src.sample.utils.training_utils import *
+from src.sample.classes.MambaInverseController import MambaInverseController
+from src.sample.utils.training_utils import *  # train_controller, etc.
 from src.sample.config import *
 from src.sample.utils.saving_utils import *
 
-# --- 1. Device Configuration --- #
+# Device configuration: use GPU if available, otherwise fallback to CPU.
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 if __name__ == "__main__":
-    # 0. Log Run Description
-    #run_description = get_run_description()
-    #log_message(f"RUN DESCRIPTION: {run_description}")
-    
+    # Instantiate plant using shared hyperparameters (for naming and metadata).
+    plant = ChemostatPlant(hyperparam_config=hyperparam_config)
 
-    # Initialize controller
-    #controller = MambaInverseController(hyperparam_config=hyperparam_config).to(device)
-    
-    # Initialize plant    
-    plant = ChemostatPlant(hyperparam_config=hyperparam_config) 
-  
-    #dataset_path = "results/2026-05-13/2026-05-13_11-33-29/GPUChemostatPlant_training_ata/dataset/2026-05-13_11-33-29_training_data.pt"    
+    # Path to the prepared training dataset. Change if you generated data at
+    # a different timestamp or location.
+    dataset_path = (
+        "results/2026-05-27/2026-05-27_14-20-39/ChemostatPlant_training_data/dataset/2026-05-27_14-20-39_training_data.pt"
+    )
 
-    dataset_path = "results/2026-05-19/2026-05-19_10-22-09/ChemostatPlant_training_data/dataset/2026-05-19_10-22-09_training_data.pt"
+    # Load the dataset from disk. The file is expected to be a dict-like object
+    # containing 'x' and 'y' keys. If loading fails, inspect the path first.
+    dataset = torch.load(dataset_path, weights_only=True)
 
-    dataset_path_20260520 = "results/2026-05-20/2026-05-20_22-14-28/ChemostatPlant_training_data/dataset/2026-05-20_22-14-28_training_data.pt"
+    # Extract features (X) and targets (Y).
+    # X: (total_sequences, seq_len, 2) -> [y_t, y_next]
+    # Y: (total_sequences, seq_len, 1) -> [u_control]
+    X = dataset["x"]
+    Y = dataset["y"]
 
-    dataset_path = "results/2026-05-13/2026-05-13_11-33-29/GPUChemostatPlant_training_ata/dataset/2026-05-13_11-33-29_training_data.pt" #Vermutung, dass das das dataset war, das controller_4000 hervorgebracht hat
+    # Quick sanity prints to confirm shapes and sample values.
+    print("✅ Dataset successfully loaded!")
+    print(f"Features (X) shape: {X.shape}")
+    print(f"Targets  (Y) shape: {Y.shape}")
 
-    dataset_path = "results/2026-05-21/2026-05-21_23-27-04/ChemostatPlant_training_data/dataset/2026-05-21_23-27-04_training_data.pt"
+    print("\nFirst sequence item sample:")
+    print(f"First step inputs [y(t), y(t+Δ)]: {X[0, 0]}")
+    print(f"First step target control [u(t)]: {Y[0, 0]}")
 
-    dataset_path = "results/2026-05-26/2026-05-26_12-33-22/ChemostatPlant_training_data/dataset/2026-05-26_12-33-22_training_data.pt" # output: substrate concentration
+    # Initialize the inverse controller and move it to the selected device.
+    controller = MambaInverseController(hyperparam_config=hyperparam_config).to(device)
 
-    # Define the data steps you want to test
-    #data_steps = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
-    data_steps = [None]
+    # Directory name to store training artifacts (models, plots, logs).
+    dirname = f"{plant.__class__.__name__}_training"
 
-    # If you want to re-initialize the model for each run (recommended for benchmarking)
-    def get_fresh_model():
-        # Replace this with your actual model initialization code
-        return MambaInverseController_exp(hyperparam_config=hyperparam_config).to(device)
-
-    for count in data_steps:
-        print(f"\n--- Starting Training Experiment with {count} sequences ---")
+    # Run the training routine. show_plots can be toggled for interactive use.
+    train_controller(
+        controller,
+        X,
+        Y,
+        hyperparam_config,
+        dirname=dirname,
+        show_plots=False,
+    )
         
-        # 1. Create a specific directory name
-        dirname = f"{plant.__class__.__name__}_training_{count}"
         
-        # 2. Save the config for this run
-        save_to_json(hyperparam_config, dirname, filename=f"hyperparameters_{count}")
-        metadata_df = pd.DataFrame({
-            "experiment_sequences": [str(count)],
-            "source_dataset_path": [dataset_path]
-        })
-        
-        # Saves into: results/.../ChemostatPlant_training_None/reports/..._dataset_source_log.csv
-        save_df_to_csv(metadata_df, dirname=dirname, filename=f"dataset_source_log")
-        print(f"📝 Logged source dataset configuration path.")
-
-        # 3. Get a fresh model (otherwise the 200-run starts with 100-run weights)
-        current_controller = get_fresh_model()
-        
-        # 4. Train
-        train_controller_kfold_exp(
-            current_controller, 
-            dataset_path, 
-            hyperparam_config, 
-            dirname=dirname, 
-            num_sequences_to_use=count,
-            show_plots=False
-        )
-        
-        print(f"✅ Finished training for {count} sequences.")
-
-
-        # --- ADDED: Print the matrices after training ---
-        # print("\n--- Extracting Mamba Matrices ---")
-        
-        # # NOTE: Adjust 'mamba' to match the actual attribute name inside your MambaInverseController
-        # mamba_block = current_controller.mamba 
-
-        # 1. Extract and print Matrix A
-        # The true A matrix used in the math is -exp(A_log)
-        # with torch.no_grad():
-        #     matrix_A = -torch.exp(mamba_block.A_log.float())
-        #     print(f"Matrix A shape: {matrix_A.shape}")
-        #     print("Matrix A (First 2 rows):\n", matrix_A[:2])
-
-        # 2. Extract and print the projection weights for B and C
-        # Because B and C are dynamic, we look at the weight matrix that generates them
-        # with torch.no_grad():
-        #     x_proj_weight = mamba_block.x_proj.weight
-        #     print(f"\nx_proj weight shape: {x_proj_weight.shape}")
-            
-        #     # x_proj outputs [dt_rank, d_state, d_state] split vertically
-        #     dt_rank = mamba_block.dt_rank
-        #     d_state = mamba_block.d_state
-            
-        #     # Slice out the static weights responsible for generating B and C
-        #     B_projection_weights = x_proj_weight[dt_rank : dt_rank + d_state, :]
-        #     C_projection_weights = x_proj_weight[dt_rank + d_state :, :]
-            
-        #     print(f"B Projection Weight shape: {B_projection_weights.shape}")
-        #     print(f"C Projection Weight shape: {C_projection_weights.shape}")

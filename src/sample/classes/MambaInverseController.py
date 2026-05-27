@@ -103,39 +103,18 @@ class MambaInverseController(nn.Module):
         # because we will combine the 2 inputs inside the forward pass
         self.input_proj = nn.Linear(2, self.d_model)
         
-        self.mamba = Mamba(
+        self.core = Mamba(
             d_model=self.d_model, 
             d_state=self.d_state, 
             d_conv=4, 
-            expand=2,
-            layer_idx=0
+            expand=2
         )
         self.output_proj = nn.Linear(self.d_model, 1)
-        self.memory = None
 
-    def reset_memory(self, batch_size, device):
-        # Increased max_seqlen to 200,000 to safely cover your dataset scale
-        self.memory = InferenceParams(
-            max_seqlen=200000,
-            max_batch_size=batch_size
-        )
-
-    def forward(self, y_t, y_t_delta, use_memory=False):
-        # 🔥 NEW: Ensure inputs have feature dimension (..., 1)
-        if y_t.ndim == 1:
-            y_t = y_t.unsqueeze(-1)  # (seq_len,) → (seq_len, 1)
-        if y_t_delta.ndim == 1:
-            y_t_delta = y_t_delta.unsqueeze(-1)
-
-        # Combine along feature dimension → (..., 2)
-        combined_features = torch.cat([y_t, y_t_delta], dim=-1)
-
-        x = self.input_proj(combined_features)  # Now input is (..., 2) ✅
-
-        if use_memory and self.memory is not None:
-            x = self.mamba(x, inference_params=self.memory)
-        else:
-            x = self.mamba(x)
-
-        u_t = self.output_proj(x)
-        return u_t
+    def forward(self, y_t, y_next):
+        # Concatenate features into [Batch, Seq_len, 2]
+        x = torch.cat([y_t, y_next], dim=-1)
+        
+        x = self.input_proj(x)
+        x = self.core(x)  # Dispatches sequence context using official custom CUDA kernels
+        return self.output_proj(x)

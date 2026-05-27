@@ -9,6 +9,7 @@ from PIL import Image
 from src.sample.config import date as default_date
 from src.sample.config import date_and_time as default_date_and_time
 
+import pickle
 
 #=== FUNCTION TO SAVE TRAINED MODEL ===#
 def save_model(model, dirname, hyperparam_config, filename="trained_controller"):
@@ -224,3 +225,48 @@ def save_training_dataset(data_dict, dirname, filename="training_data"):
     # Save the dictionary containing the tensors
     torch.save(data_dict, full_path)
     print(f"📦 Dataset Tensors saved to: {full_path}")
+
+
+    #=== FUNCTION TO SAVE SCALER OBJECTS IN SPECIFIED DIRECTORY ===#
+def save_scaler_object(scaler, dirname, filename, max_path_length=255):
+    """
+    Saves a scikit-learn or custom scaler object to a pickle (.pkl) file.
+
+    Parameters:
+    - scaler: The scaler object (e.g., MinMaxScaler, StandardScaler) to be saved.
+    - dirname (str): The subdirectory path where the scaler will be stored.
+    - filename (str): The name of the file (without or with the .pkl extension).
+    - max_path_length (int): The maximum allowed path length in characters (default: 255).
+
+    Returns:
+    - None: The function saves the object but does not return anything.
+
+    The scaler is saved in the results/<date>/<date_and_time>/<dirname>/scalers/
+    directory as <date_and_time>_<filename>.pkl. If the specified directory does not exist,
+    it is created automatically. If the full path exceeds max_path_length, the filename is 
+    automatically truncated.
+    """
+    # 1. Standardize file extension
+    if not filename.endswith(".pkl"):
+        filename += ".pkl"
+
+    # 2. Construct paths using your specific global variables
+    target_dir = f"results/{default_date}/{default_date_and_time}/{dirname}/scalers/"
+    save_filename = f"{default_date_and_time}_{filename}"
+    
+    os.makedirs(target_dir, exist_ok=True)
+    full_path = os.path.join(target_dir, save_filename)
+
+    # 3. Handle Path Length Truncation
+    if len(full_path) > max_path_length:
+        basename, ext = os.path.splitext(save_filename)
+        allowed_len = max_path_length - len(os.path.join(target_dir, ext))
+        save_filename = basename[:allowed_len] + ext
+        full_path = os.path.join(target_dir, save_filename)
+        print(f"⚠️ Filename too long, truncated to: {save_filename}")
+
+    # 4. Write the binary pickle file
+    with open(full_path, "wb") as f:
+        pickle.dump(scaler, f)
+        
+    print(f"💾 Scaler successfully saved to: {full_path}")

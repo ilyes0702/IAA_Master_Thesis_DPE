@@ -3,27 +3,27 @@ hyperparam_config = {
     "plant" :{
         "mu-max": 0.5,
         "Ks": 0.1,
-        "Y": 0.5,
+        "Y": 0.6,
         "sR": 1.0,
-        "Ki": 0.1
+        "Ki": 0.1,
+        "D_center_min": 0.25,
+        "D_center_max": 0.3
     },
     "signal": {
         "lambd": 15,
         "p": 0.15,
-        "seq_len": 101,
-        "dt": 0.2
+        "seq_len": 1001,
+        "dt": 0.1
     },
     "train": {
-        "number_of_folds": 1,
+        "k_folds": 5,
         "epochs": 30,
-        "batch_size": 100,
+        "batch_size": 10000,
         "lr": 1e-3,
         "device": "cuda", # if torch.cuda.is_available() else "cpu",
-        "delay_steps": 10,
-        "loss_function": "MSELoss()", # "mape_loss", "sobolev_loss", "log_cosh_loss", "cosine_shape_loss"
+        "delay_steps": 1,
+        "loss_function": "MSELoss()", 
         "lr_decay_rate":1,
-        "critical_loss_value": 1e-2,
-        "patience_steps": 1000
     },
     "mamba": {
         "d_model": 64,

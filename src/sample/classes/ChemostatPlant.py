@@ -1,54 +1,47 @@
 import torch
-import numpy as np
-import random
 
 class ChemostatPlant:
     def __init__(self, hyperparam_config):
         self.device = hyperparam_config["train"]["device"]
-        self.batch_size = hyperparam_config["train"]["batch_size"]
-        self.seq_len = hyperparam_config["signal"]["seq_len"]
-        self.lambd = hyperparam_config["signal"]["lambd"]
-        self.p = hyperparam_config["signal"]["p"]
         self.dt = hyperparam_config["signal"]["dt"]
 
         # Biological Parameters from Config
-
         self.mu_max = torch.tensor(hyperparam_config["plant"]["mu-max"], device=self.device)
         self.Ks = torch.tensor(hyperparam_config["plant"]["Ks"], device=self.device)
         self.Y = torch.tensor(hyperparam_config["plant"]["Y"], device=self.device)
         self.sR = torch.tensor(hyperparam_config["plant"]["sR"], device=self.device)
         self.Ki = torch.tensor(hyperparam_config["plant"]["Ki"], device=self.device)
 
-        # Buffer for control signals
-        self.u_buffer = None
-      
     def get_initial_state(self, batch_size):
         """
         Returns [batch_size, 2] tensor of [Biomass (x), Substrate (s)].
         Initializes with random biological values to ensure robust learning.
         """
         x_init = torch.rand((batch_size, 1), device=self.device) * 0.5 + 0.1 # 0.1 to 0.6
-        s_init = torch.rand((batch_size, 1), device=self.device) * 0.5 +0.1      # 0.1 to 0.6
+        s_init = torch.rand((batch_size, 1), device=self.device) * 0.5 + 0.1 # 0.1 to 0.6
         return torch.cat([x_init, s_init], dim=1)
 
     def get_y(self, state, t=None):
         """
-        The inverse learner usually wants to track Growth Rate (mu) 
-        or Biomass (x). Here we return Growth Rate as the 'observable' y.
+        Calculates and returns Growth Rate (mu) as the observable plant output tracker.
         """
-        x = state[:, 0:1]
         s = state[:, 1:2]
-        # mu = (self.mu_max * s) / (self.Ks + s + (s**2 / self.Ki))
         mu = (self.mu_max * s) / (self.Ks + s)
-        return mu # Substrate concentration is our output to track
+        return mu 
 
     def dynamics(self, x, s, u):
+        """
+        Calculates continuous derivative transformations for standard Chemostat vessels.
+        """
         mu = (self.mu_max * s) / (self.Ks + s)
         dxdt = mu * x - u * x
         dsdt = u * (self.sR - s) - (mu * x / self.Y)
         return dxdt, dsdt
 
     def step(self, state, u, t, dt):
+        """
+        Standard Runge-Kutta 4th Order numerical integration execution block.
+        """
         x, s = state[:, 0:1], state[:, 1:2]
         
         # k1
@@ -66,48 +59,6 @@ class ChemostatPlant:
         state_next = torch.cat([x_next, s_next], dim=1)
         return state_next, self.get_y(state_next)
 
-    def reset_trajectory(self):
-        """
-        Implements the Canaday/RC logic:
-        1. Uniform sampling
-        2. Fourier Transform
-        3. Frequency cutoff (1/lambda)
-        4. Inverse Fourier Transform
-        5. Scaling to range [-p, p] and shifting to physical bounds.
-        """
-        # Step 1: Sample values from a uniform distribution [-1, 1]
-        raw = torch.rand((self.batch_size, self.seq_len), device=self.device) * 2 - 1
-        
-        # Step 2: Fourier-transform to frequency domain
-        fft_sig = torch.fft.rfft(raw, dim=1)
-        freqs = torch.fft.rfftfreq(self.seq_len, d=self.dt)
-        
-        # Step 3: Drop frequencies above 1/lambda
-        # Note: lambda must be > delta (the plant's characteristic time)
-        cutoff = 1.0 / self.lambd
-        fft_sig[:, freqs > cutoff] = 0
-        
-        # Step 4: Inverse-Fourier-transform
-        v_train = torch.fft.irfft(fft_sig, n=self.seq_len, dim=1)
-        
-        # Step 5: Normalize and Scale to [-p, p]
-        # First, ensure the signal is centered and normalized to [-1, 1]
-        v_min = v_train.min(dim=1, keepdim=True)[0]
-        v_max = v_train.max(dim=1, keepdim=True)[0]
-        v_norm = 2 * (v_train - v_min) / (v_max - v_min + 1e-8) - 1
-        
-        # Apply scaling p and shift to a safe operating point for the Chemostat
-        # D_center should be roughly 0.5 * mu_max to keep the plant 'alive'
-        # Randomize the center point for each batch member
-        D_center = torch.rand((self.batch_size, 1), device=self.device) * 0.1 + 0.2 # 0.2 to 0.5
-        self.current_D_center = D_center
-        self.u_buffer = D_center + (v_norm * self.p)        
-        
-        return D_center
-
-    def get_u_at_step(self, t_idx):
-        return self.u_buffer[:, t_idx].unsqueeze(1)
-    
     def get_plot_config(self):
         return [
             {
@@ -131,7 +82,6 @@ class ChemostatPlant:
         ]
 
     def parse_state(self, state):
-        # state is [x, s]
         return {
             "biomass": state[0].item() if torch.is_tensor(state) else state[0],
             "substrate": state[1].item() if torch.is_tensor(state) else state[1]
