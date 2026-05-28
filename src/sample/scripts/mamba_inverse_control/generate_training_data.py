@@ -10,7 +10,8 @@ includes the project) so imports resolve correctly.
 
 from src.sample.utils.data_generation_utils import *
 from src.sample.classes.ChemostatPlant import ChemostatPlant
-from src.hyperparam_config import hyperparam_config
+from src.sample.classes.TrophophasePlant import TrophophasePlant
+from src.hyperparam_config import *
 import matplotlib.pyplot as plt
 
 # Apply project style for plots (if plotting is enabled)
@@ -24,7 +25,10 @@ def main() -> None:
 	option below. The dataset folder is named after the plant class.
 	"""
 
+	hyperparam_config = hyperparam_config_ChemostatPlant
+
 	# Choose plant model and corresponding hyperparameters
+	#plant = ChemostatPlant(hyperparam_config=hyperparam_config)
 	plant = ChemostatPlant(hyperparam_config=hyperparam_config)
 
 	# Directory name will be e.g. 'ChemostatPlant_training_data'

@@ -11,7 +11,8 @@ Usage: run this file as a script. Adjust dataset_path below if needed.
 
 import torch
 from src.sample.classes.ChemostatPlant import ChemostatPlant
-from src.hyperparam_config import hyperparam_config
+from src.sample.classes.TrophophasePlant import TrophophasePlant
+from src.hyperparam_config import hyperparam_config_TrophophasePlant, hyperparam_config_ChemostatPlant
 from src.sample.classes.MambaInverseController import MambaInverseController
 from src.sample.utils.training_utils import *  # train_controller, etc.
 from src.sample.config import *
@@ -23,13 +24,23 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 if __name__ == "__main__":
     # Instantiate plant using shared hyperparameters (for naming and metadata).
+    
+    hyperparam_config = hyperparam_config_ChemostatPlant
+    
     plant = ChemostatPlant(hyperparam_config=hyperparam_config)
+    #plant = TrophophasePlant(hyperparam_config=hyperparam_config_TrophophasePlant)
+
+    
 
     # Path to the prepared training dataset. Change if you generated data at
     # a different timestamp or location.
     dataset_path = (
-        "results/2026-05-27/2026-05-27_14-20-39/ChemostatPlant_training_data/dataset/2026-05-27_14-20-39_training_data.pt"
+       "results/2026-05-28/2026-05-28_11-44-57/ChemostatPlant_training_data/dataset/2026-05-28_11-44-57_training_data.pt"
     )
+
+    # dataset_path = (
+    #     "results/2026-05-28/2026-05-28_11-09-42/TrophophasePlant_training_data/dataset/2026-05-28_11-09-42_training_data.pt"
+    # ) # Trophophase plant
 
     # Load the dataset from disk. The file is expected to be a dict-like object
     # containing 'x' and 'y' keys. If loading fails, inspect the path first.
