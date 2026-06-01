@@ -10,6 +10,7 @@ includes the project) so imports resolve correctly.
 
 from src.sample.utils.data_generation_utils import *
 from src.sample.classes.ChemostatPlant import ChemostatPlant
+from src.sample.classes.MassSpringDamperPlant import MassSpringDamperPlant
 from src.sample.classes.TrophophasePlant import TrophophasePlant
 from src.hyperparam_config import *
 import matplotlib.pyplot as plt
@@ -26,10 +27,11 @@ def main() -> None:
 	"""
 
 	hyperparam_config = hyperparam_config_ChemostatPlant
+	hyperparam_config = hyperparam_config_MassSpringDamperPlant
 
 	# Choose plant model and corresponding hyperparameters
 	#plant = ChemostatPlant(hyperparam_config=hyperparam_config)
-	plant = ChemostatPlant(hyperparam_config=hyperparam_config)
+	plant = MassSpringDamperPlant(hyperparam_config=hyperparam_config)
 
 	# Directory name will be e.g. 'ChemostatPlant_training_data'
 	dirname = plant.__class__.__name__ + "_training_data"

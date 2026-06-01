@@ -16,6 +16,7 @@ from src.sample.utils.general_utils import *
 from src.hyperparam_config import *
 from src.sample.classes.ChemostatPlant import ChemostatPlant
 from src.sample.classes.TrophophasePlant import TrophophasePlant
+from src.sample.classes.MassSpringDamperPlant import MassSpringDamperPlant
 from src.sample.classes.MambaInverseController import MambaInverseController
 
 # Device configuration (printed for visibility)
@@ -28,16 +29,16 @@ def main():
     # run_description = get_run_description()
     # log_message(f"RUN DESCRIPTION: {run_description}")
 
-    hyperparam_config = hyperparam_config_ChemostatPlant
+    hyperparam_config = hyperparam_config_MassSpringDamperPlant
     # Initialize the plant model using hyperparameters
-    plant = ChemostatPlant(hyperparam_config=hyperparam_config_ChemostatPlant)
+    plant = MassSpringDamperPlant(hyperparam_config=hyperparam_config_MassSpringDamperPlant)
 
     #plant = TrophophasePlant(hyperparam_config_TrophophasePlant)
     
 
     # Path to the trained controller checkpoint (keep as configured)
     controller_path = (
-        "models/2026-05-28/2026-05-28_11-55-10/ChemostatPlant_training/fold_1/2026-05-28_11-55-10_best_fold_model.pt"
+        "models/2026-06-01/2026-06-01_09-30-01/MassSpringDamperPlant_training/fold_1/2026-06-01_09-30-01_best_fold_model.pt"
     )
 
     # Load the trained inverse controller
@@ -45,11 +46,11 @@ def main():
 
     # Load input/output scalers from training run directory
     scaler_x = load_scaler(
-        "results/2026-05-28/2026-05-28_11-55-10/ChemostatPlant_training/fold_1/scalers/2026-05-28_11-55-10_scaler_x.pkl"
+        "results/2026-06-01/2026-06-01_09-30-01/MassSpringDamperPlant_training/fold_1/scalers/2026-06-01_09-30-01_scaler_x.pkl"
     )
 
     scaler_y = load_scaler(
-        "results/2026-05-28/2026-05-28_11-55-10/ChemostatPlant_training/fold_1/scalers/2026-05-28_11-55-10_scaler_y.pkl"
+        "results/2026-06-01/2026-06-01_09-30-01/MassSpringDamperPlant_training/fold_1/scalers/2026-06-01_09-30-01_scaler_y.pkl"
         )
 
     # Generate a dynamic reference trajectory (time-varying target)
@@ -59,7 +60,7 @@ def main():
         device=hyperparam_config["train"]["device"],
         mode="dynamic",
         gain=1.2,      # sharper transition edges
-        period=10.0    # period for cyclic dynamics
+        period=5.0    # period for cyclic dynamics
     )
 
     # Generate a constant reference trajectory (steady target)
@@ -68,7 +69,7 @@ def main():
         dt=hyperparam_config["signal"]["dt"],
         device=hyperparam_config["train"]["device"],
         mode="constant",
-        constant_val=0.015,
+        constant_val=0.15,
     )
 
     # Run the simulation using the dynamic reference by default

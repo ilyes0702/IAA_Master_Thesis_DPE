@@ -10,7 +10,7 @@ class ChemostatPlant:
         self.Ks = torch.tensor(hyperparam_config["plant"]["Ks"], device=self.device)
         self.Y = torch.tensor(hyperparam_config["plant"]["Y"], device=self.device)
         self.sR = torch.tensor(hyperparam_config["plant"]["sR"], device=self.device)
-        self.Ki = torch.tensor(hyperparam_config["plant"]["Ki"], device=self.device)
+        
 
     def get_initial_state(self, batch_size):
         """

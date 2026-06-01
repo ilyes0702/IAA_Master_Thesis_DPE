@@ -5,7 +5,6 @@ hyperparam_config_ChemostatPlant = {
         "Ks": 0.2,
         "Y": 0.6,
         "sR": 1.0,
-        "Ki": 0.1,
         "D_center_min": 0.25,
         "D_center_max": 0.3
     },
@@ -35,6 +34,39 @@ hyperparam_config_ChemostatPlant = {
     }
 }
 
+hyperparam_config_MassSpringDamperPlant = {
+    "plant" :{
+        "m": 0.1,
+        "d": -0.5,
+        "k": 1.0,
+        "D_center_min": 0.5,
+        "D_center_max": 0.5
+    },
+    "signal": {
+        "lambd": 15,
+        "p": 0.15,
+        "seq_len": 1001,
+        "dt": 0.1
+    },
+    "train": {
+        "k_folds": 5,
+        "epochs": 50,
+        "batch_size":10000,
+        "lr": 1e-3,
+        "device": "cuda", # if torch.cuda.is_available() else "cpu",
+        "delay_steps": 1,
+        "loss_function": "MSELoss()", 
+        "lr_decay_rate":1,
+    },
+    "mamba": {
+        "d_model": 64,
+        "d_state": 16
+    },
+    "simulate": {
+        "batch_size": 10,
+        "seq_len": 500,
+    }
+}
 
 hyperparam_config_TrophophasePlant = {
     "plant" :{

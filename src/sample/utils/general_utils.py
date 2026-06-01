@@ -15,7 +15,6 @@ import random
 
 plt.style.use("src/sample/style.mplstyle")
 
-
 import pickle
 
 def load_scaler(scaler_dir):
@@ -152,7 +151,7 @@ def generate_reference_trajectory(steps, dt, device, mode="constant", constant_v
 
         noise = np.random.uniform(-0.005, 0.005, size=time_axis.shape)
 
-        r_trajectory_np = 0.25 + 0.02 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism
+        r_trajectory_np = 0.5 + 0.09 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism
         
         # Convert the structural numpy baseline into a target PyTorch tensor array
         r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
