@@ -8,8 +8,10 @@ Usage: run this script from the project root (or ensure PYTHONPATH
 includes the project) so imports resolve correctly.
 """
 
+from sample.utils.data_generation_utils import generate_and_save_dataset_mimo
 from src.sample.utils.data_generation_utils import *
 from src.sample.classes.ChemostatPlant import ChemostatPlant
+from src.sample.classes.IdiophasePlant import IdiophasePlant
 from src.sample.classes.MassSpringDamperPlant import MassSpringDamperPlant
 from src.sample.classes.TrophophasePlant import TrophophasePlant
 from src.hyperparam_config import *
@@ -27,21 +29,31 @@ def main() -> None:
 	"""
 
 	hyperparam_config = hyperparam_config_ChemostatPlant
-	hyperparam_config = hyperparam_config_MassSpringDamperPlant
+	#hyperparam_config = hyperparam_config_MassSpringDamperPlant
 
 	# Choose plant model and corresponding hyperparameters
-	#plant = ChemostatPlant(hyperparam_config=hyperparam_config)
-	plant = MassSpringDamperPlant(hyperparam_config=hyperparam_config)
+	plant = ChemostatPlant(hyperparam_config=hyperparam_config)
+	#plant = MassSpringDamperPlant(hyperparam_config=hyperparam_config)
 
 	# Directory name will be e.g. 'ChemostatPlant_training_data'
+
+	#hyperparam_config = hyperparam_config_IdiophasePlant
+
+	#plant = IdiophasePlant(hyperparam_config)
 	dirname = plant.__class__.__name__ + "_training_data"
 
-	# Generate and save a single batch of training data without showing plots
-	generate_and_save_dataset(plant, 
-						   hyperparam_config, 
-						   dirname=dirname, 
-						   show_plots=False)
+	# Generate and save a single batch of training data without showing 
 
+	
+
+    # Generate and save MIMO dataset with delays
+	generate_and_save_dataset(
+        plant,
+        hyperparam_config,
+        dirname=dirname,
+        show_plots=False,
+        save_logs=False
+    )
 
 if __name__ == "__main__":
 	main()

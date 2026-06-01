@@ -18,7 +18,7 @@ from src.sample.utils.saving_utils import *
 
 plt.style.use("src/sample/style.mplstyle")
 
-def train_controller(
+def train_controller_siso_old(
     model, 
     X_raw,          # Pass RAW un-normalized arrays now! Shape: [Total_Seqs, Seq_Len, 2]
     Y_raw,          # Pass RAW un-normalized targets!    Shape: [Total_Seqs, Seq_Len, 1]
@@ -32,7 +32,7 @@ def train_controller(
     device = train_cfg["device"]
     lr = train_cfg["lr"]
     dt = hyperparam_config["signal"]["dt"]
-    k_folds = train_cfg.get("k_folds")
+    k_folds = train_cfg["k_folds"]
     
     batch_size = 64
     val_patience = train_cfg.get("val_patience_epochs", 3) 
@@ -295,5 +295,286 @@ def train_controller(
     summary_df = pd.DataFrame(summary_records)
     save_df_to_csv(summary_df, dirname=dirname, filename="kfold_cross_validation_summary")
     
+    print("\n✅ K-Fold optimization execution finalized.")
+    return fold_histories
+
+
+import os
+import copy
+import numpy as np
+import torch
+import torch.nn as nn
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
+
+# Assuming your save utilities are imported correctly
+# from src.sample.utils.saving_utils import save_scaler_object, save_model, save_df_to_csv
+# from src.sample.utils.plotting_utils import plot_signals
+
+def train_controller(
+    model,
+    X_raw,          # Clean Shape: [Total_Seqs, Seq_Len, input_dim * 2] (y_t and y_next)
+    Y_raw,          # Clean Shape: [Total_Seqs, Seq_Len, output_dim]
+    hyperparam_config,
+    dirname="name_directory",
+    show_plots=False
+):
+    # --- EXTRACT HYPERPARAMETERS ---
+    train_cfg = hyperparam_config["train"]
+    epochs = train_cfg["epochs"]
+    device = train_cfg["device"]
+    lr = train_cfg["lr"]
+    dt = hyperparam_config["signal"]["dt"]
+    k_folds = train_cfg.get("k_folds", 5)
+
+    batch_size = 64
+    val_patience = train_cfg.get("val_patience_epochs", 3)
+    min_delta = train_cfg.get("val_min_delta", 0)
+
+    # --- MIMO-SPECIFIC CONFIG ---
+    mamba_cfg = hyperparam_config.get("mamba", {})
+    input_dim = mamba_cfg.get("input_dim", 2)    # Number of plant outputs (y1, y2)
+    output_dim = mamba_cfg.get("output_dim", 2)  # Number of control inputs (u1, u2)
+
+    # --- IDENTIFY TOTAL SEQUENCES & SET UP K-FOLD INDICES ---
+    total_sequences = X_raw.shape[0]
+    all_indices = np.arange(total_sequences)
+    np.random.shuffle(all_indices)
+    folds = np.array_split(all_indices, k_folds)
+
+    initial_model_state = copy.deepcopy(model.state_dict())
+    fold_histories = {}
+
+    # --- K-FOLD CROSS VALIDATION LOOP ---
+    for fold in range(k_folds):
+        print(f"\n==========================================")
+        print(f"🌀 STARTING FOLD {fold + 1} / {k_folds}")
+        print(f"==========================================")
+
+        model.load_state_dict(initial_model_state)
+        model.to(device)
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=train_cfg["lr_decay_rate"])
+
+        loss_name = train_cfg["loss_function"].replace("()", "")
+        criterion = getattr(nn, loss_name)()
+
+        val_idx_arr = folds[fold]
+        train_idx_arr = np.setdiff1d(all_indices, val_idx_arr)
+
+        # Isolate raw splits for this specific fold
+        train_x_raw, val_x_raw = X_raw[train_idx_arr], X_raw[val_idx_arr]
+        train_y_raw, val_y_raw = Y_raw[train_idx_arr], Y_raw[val_idx_arr]
+
+        # --- ⚡ INTERNAL FOLD STANDARD SCALING (NO LEAKAGE) ---
+        print(f"⚖️ Fitting independent StandardScalers for Fold {fold + 1}...")
+
+        N_train, seq_len, dim_x = train_x_raw.shape
+        dim_y = train_y_raw.shape[-1]
+
+        train_x_flat = train_x_raw.reshape(-1, dim_x)
+        train_y_flat = train_y_raw.reshape(-1, dim_y)
+
+        scaler_x = StandardScaler()
+        scaler_y = StandardScaler()
+
+        scaler_x.fit(train_x_flat)
+        scaler_y.fit(train_y_flat)
+
+        # Transform arrays and rebuild clean 3D Tensors
+        train_x = torch.tensor(scaler_x.transform(train_x_flat).reshape(N_train, seq_len, dim_x), dtype=torch.float32)
+        train_y = torch.tensor(scaler_y.transform(train_y_flat).reshape(N_train, seq_len, dim_y), dtype=torch.float32)
+
+        N_val = val_x_raw.shape[0]
+        val_x_flat = val_x_raw.reshape(-1, dim_x)
+        val_y_flat = val_y_raw.reshape(-1, dim_y)
+
+        val_x = torch.tensor(scaler_x.transform(val_x_flat).reshape(N_val, seq_len, dim_x), dtype=torch.float32)
+        val_y = torch.tensor(scaler_y.transform(val_y_flat).reshape(N_val, seq_len, dim_y), dtype=torch.float32)
+
+        # --- 💾 SAVE SCALER OBJECTS FOR THIS FOLD ---
+        fold_dir = f"{dirname}/fold_{fold+1}"
+
+        save_scaler_object(scaler_x, dirname=fold_dir, filename="scaler_x")
+        save_scaler_object(scaler_y, dirname=fold_dir, filename="scaler_y")
+        print(f"💾 Scalers saved to disk at: {fold_dir}/scaler_*.pkl")
+
+        train_size = train_x.shape[0]
+        val_size = val_x.shape[0]
+
+        global_batch_counter = 0
+        fold_train_batch_loss = []
+        fold_train_batch_indices = []
+        fold_val_epoch_history = []
+        fold_train_epoch_history = []
+
+        best_val_loss = float('inf')
+        patience_counter = 0
+        early_stopped = False
+
+        for epoch in range(epochs):
+            model.train()
+            epoch_train_loss_accum = 0.0
+            print(f"\n🎬 Fold {fold+1} | Starting Epoch {epoch+1}/{epochs}")
+
+            shuffled_train_indices = torch.randperm(train_size)
+
+            # --- 1. MINI-BATCH TRAINING PASS ---
+            for i in range(0, train_size, batch_size):
+                batch_indices = shuffled_train_indices[i : i + batch_size]
+                current_batch_size = len(batch_indices)
+
+                batch_x = train_x[batch_indices].to(device)
+                batch_y = train_y[batch_indices].to(device)
+
+                # --- Clean Slicing: Only extract current and next values ---
+                y_t_split = batch_x[:, :, :input_dim]
+                y_next_split = batch_x[:, :, input_dim:] # Takes exactly the remaining input_dim columns
+
+                if hasattr(model, 'reset_memory'):
+                    model.reset_memory(batch_size=current_batch_size, device=device)
+
+                optimizer.zero_grad()
+                u_pred_batch = model(y_t_split, y_next_split)
+
+                loss = criterion(u_pred_batch, batch_y)
+                loss.backward()
+                optimizer.step()
+
+                current_loss_val = loss.item()
+                epoch_train_loss_accum += current_loss_val * current_batch_size
+
+                fold_train_batch_loss.append(current_loss_val)
+                fold_train_batch_indices.append(global_batch_counter)
+                global_batch_counter += 1
+
+                if i == 0 and show_plots:
+                    u_p_np = u_pred_batch[0].detach().cpu().numpy()
+                    u_t_np = batch_y[0].detach().cpu().numpy()
+                    t_axis = np.arange(u_p_np.shape[0]) * dt
+
+                    for out_dim in range(output_dim):
+                        plot_signals(
+                            t=t_axis,
+                            signals=[u_t_np[:, out_dim], u_p_np[:, out_dim]],
+                            labels=[f"Target (u_{out_dim+1})", f"Predicted (u_{out_dim+1})"],
+                            xlabel="Time (s)",
+                            ylabel="Signal Value",
+                            title=f"Fold {fold+1} | Epoch {epoch+1} | Train Step {i} | Output {out_dim+1}",
+                            dirname=f"{fold_dir}/predictions/epoch_{epoch+1}",
+                            filename=f"train_step_{i}_output_{out_dim+1}_plot"
+                        )
+
+            scheduler.step()
+
+            # --- 2. VALIDATION PASS ---
+            model.eval()
+            epoch_val_loss_accum = 0.0
+
+            with torch.no_grad():
+                for i in range(0, val_size, batch_size):
+                    batch_val_x = val_x[i : i + batch_size].to(device)
+                    batch_val_y = val_y[i : i + batch_size].to(device)
+                    current_val_batch_size = len(batch_val_x)
+
+                    # --- Clean Slicing matching train pass ---
+                    y_val_t_split = batch_val_x[:, :, :input_dim]
+                    y_val_next_split = batch_val_x[:, :, input_dim:]
+
+                    if hasattr(model, 'reset_memory'):
+                        model.reset_memory(batch_size=current_val_batch_size, device=device)
+
+                    u_val_pred = model(y_val_t_split, y_val_next_split)
+                    val_loss = criterion(u_val_pred, batch_val_y)
+
+                    epoch_val_loss_accum += val_loss.item() * current_val_batch_size
+
+                    if i == 0 and show_plots:
+                        u_v_p_np = u_val_pred[0].detach().cpu().numpy()
+                        u_v_t_np = batch_val_y[0].detach().cpu().numpy()
+                        t_val_axis = np.arange(u_v_p_np.shape[0]) * dt
+
+                        for out_dim in range(output_dim):
+                            plot_signals(
+                                t=t_val_axis,
+                                signals=[u_v_t_np[:, out_dim], u_v_p_np[:, out_dim]],
+                                labels=[f"Target (u_{out_dim+1})", f"Predicted (u_{out_dim+1})"],
+                                xlabel="Time (s)",
+                                ylabel="Signal Value",
+                                title=f"Fold {fold+1} | Epoch {epoch+1} | Val Step {i} | Output {out_dim+1}",
+                                dirname=f"{fold_dir}/validation/epoch_{epoch+1}",
+                                filename=f"val_step_{i}_output_{out_dim+1}_plot"
+                            )
+
+            mean_train_loss = epoch_train_loss_accum / train_size
+            mean_val_loss = (epoch_val_loss_accum / val_size) if val_size > 0 else 0.0
+
+            fold_val_epoch_history.append(mean_val_loss)
+            fold_train_epoch_history.append(mean_train_loss)
+
+            if fold not in fold_histories:
+                fold_histories[fold] = {
+                    "train_loss": [],
+                    "val_loss": [],
+                    "val_epochs": []
+                }
+
+            fold_histories[fold]["train_loss"].append(mean_train_loss)
+            fold_histories[fold]["val_loss"].append(mean_val_loss)
+            fold_histories[fold]["val_epochs"].append(epoch + 1)
+
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f"✨ [Fold {fold+1}] Epoch {epoch+1} Summary:")
+            print(f"   ↳ LR: {current_lr:.6e} | Avg Train Loss: {mean_train_loss:.6f} | Avg Val Loss: {mean_val_loss:.6f}")
+
+            # --- 3. EVALUATE VALIDATION EARLY STOPPING ---
+            if mean_val_loss < (best_val_loss - min_delta):
+                best_val_loss = mean_val_loss
+                patience_counter = 0
+                save_model(model, dirname=fold_dir, hyperparam_config=hyperparam_config, filename="best_fold_model")
+            else:
+                patience_counter += 1
+                if patience_counter >= val_patience:
+                    print(f"🛑 Early stopping fold {fold+1} at Epoch {epoch+1}.")
+                    early_stopped = True
+                    break
+
+        # --- 4. PLOT LOSS CURVES ---
+        fold_title_suffix = " (Early Stopped)" if early_stopped else " (Full Run)"
+
+        plot_signals(
+            t=np.array(fold_train_batch_indices),
+            signals=[np.array(fold_train_batch_loss)],
+            labels=[f"Fold {fold+1} Batch Loss"],
+            xlabel="Total Training Batch Optimization Iterations",
+            ylabel="Loss Value",
+            title=f"Fold {fold+1} Granular Step Loss{fold_title_suffix}",
+            dirname=fold_dir,
+            filename="granular_training_loss"
+        )
+
+        plot_signals(
+            t=np.array(fold_histories[fold]["val_epochs"]),
+            signals=[np.array(fold_train_epoch_history), np.array(fold_val_epoch_history)],
+            labels=[f"Fold {fold+1} Avg Train Loss", f"Fold {fold+1} Avg Val Loss"],
+            xlabel="Epochs",
+            ylabel="Loss Value",
+            title=f"Fold {fold+1} Epoch-level Loss Progress",
+            dirname=fold_dir,
+            filename="epoch_validation_loss"
+        )
+
+    # --- FINAL CROSS VALIDATION LOGGING SUMMARY ---
+    print("\n💾 Complete Cross-Validation run finished. Packing overarching metadata curves...")
+
+    summary_records = []
+    for f in fold_histories:
+        final_best = min(fold_histories[f]["val_loss"])
+        summary_records.append({"fold": f+1, "best_recorded_val_loss": final_best})
+
+    summary_df = pd.DataFrame(summary_records)
+    save_df_to_csv(summary_df, dirname=dirname, filename="kfold_cross_validation_summary")
+
     print("\n✅ K-Fold optimization execution finalized.")
     return fold_histories

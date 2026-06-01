@@ -1,352 +1,235 @@
 import os
+import copy
 import numpy as np
 import torch
 import pandas as pd
 from src.sample.utils.saving_utils import save_df_to_csv, save_training_dataset
 from src.sample.utils.plotting_utils import plot_signals
-import copy
+from Archive.data_generation_utils_siso_old import generate_canaday_signals
 
-#=== FUNCTION TO GENERATE TRAINING SIGNALS ACCORDING TO CANADAY ===#
+# =====================================================================
+# 1. MIMO Canaday Signal Generation
+# =====================================================================
 def generate_canaday_signals(hyperparam_config):
     """
-    Generate smooth, band-limited control signals using the Canaday/RC methodology.
-
-    This function creates physically-bounded control signals by applying a low-pass
-    filter in the frequency domain to smooth noise, then scaling and shifting the
-    result to the plant's operating bounds.
-
-    The process follows five steps:
-    1. Uniform sampling: Generate random values in [-1, 1]
-    2. Fourier Transform: Convert to frequency domain using FFT
-    3. Frequency cutoff: Zero out frequencies above 1/lambda (low-pass filter)
-    4. Inverse Fourier Transform: Convert back to time domain using iFFT
-    5. Scaling & shifting: Normalize to [-p, p] then shift to [D_center_min, D_center_max]
-
-    Args:
-        hyperparam_config: Dictionary with nested 'signal', 'train', and 'plant' configs:
-            - signal['seq_len']: Sequence length (number of timesteps)
-            - signal['dt']: Sampling interval
-            - signal['lambd']: Bandwidth parameter (lambda); cutoff = 1/lambda
-            - signal['p']: Half-width of the normalized signal range
-            - train['batch_size']: Number of signals to generate
-            - train['device']: torch device (cpu or cuda)
-            - plant['D_center_min']: Minimum center offset
-            - plant['D_center_max']: Maximum center offset
-
-    Returns:
-        u_buffer: torch.Tensor of shape [batch_size, seq_len] with control signals
-        D_center: torch.Tensor of shape [batch_size, 1] with randomly sampled center offsets
+    Generate MIMO control signals (u1, u2, ...) using Canaday's method.
+    Each control input is generated independently.
     """
-    sig_cfg = hyperparam_config["signal"]
     train_cfg = hyperparam_config["train"]
-    plant_cfg = hyperparam_config["plant"]
-    
-    batch_size = train_cfg["batch_size"]
-    seq_len = sig_cfg["seq_len"]
-    device = train_cfg["device"]
-    
-    # Step 1: Sample values from a uniform distribution [-1, 1]
-    raw = torch.rand((batch_size, seq_len), device=device) * 2 - 1
-    
-    # Step 2: Fourier-transform to frequency domain
-    fft_sig = torch.fft.rfft(raw, dim=1)
-    freqs = torch.fft.rfftfreq(seq_len, d=sig_cfg["dt"])
-    
-    # Step 3: Drop frequencies above 1/lambda
-    cutoff = 1.0 / sig_cfg["lambd"]
-    fft_sig[:, freqs > cutoff] = 0
-    
-    # Step 4: Inverse-Fourier-transform
-    v_train = torch.fft.irfft(fft_sig, n=seq_len, dim=1)
-    
-    # Step 5: Normalize and Scale to [-p, p]
-    v_min = v_train.min(dim=1, keepdim=True)[0]
-    v_max = v_train.max(dim=1, keepdim=True)[0]
-    v_norm = 2 * (v_train - v_min) / (v_max - v_min + 1e-8) - 1
-    
-    # Read configurable target limits instead of using hardcoded numbers
-    c_min = plant_cfg["D_center_min"]
-    c_max = plant_cfg["D_center_max"]
-    
-    D_center = torch.rand((batch_size, 1), device=device) * (c_max - c_min) + c_min
-    u_buffer = D_center + (v_norm * sig_cfg["p"])
-    
+    mamba_cfg = hyperparam_config["mamba"]
+
+    batch_size = int(train_cfg["batch_size"])
+    output_dim = mamba_cfg.get("output_dim", 2)  # Number of control inputs (u1, u2, ...)
+
+    u_buffer = []
+    D_center_list = []
+
+    for _ in range(output_dim):
+        # Generate a single control signal (SISO case)
+        u_single, D_center = generate_canaday_signals(hyperparam_config)
+        # Ensure u_single is 3D: [batch_size, seq_len, 1]
+        u_single = u_single.unsqueeze(-1)  
+        u_buffer.append(u_single)
+        D_center_list.append(D_center)
+
+    # Stack to get [batch_size, seq_len, output_dim]
+    u_buffer = torch.cat(u_buffer, dim=-1)  
+    D_center = torch.stack(D_center_list, dim=-1)  # Shape: [batch_size, output_dim]
+
     return u_buffer, D_center
 
 
-#=== FUNCTION TO GENERATE TRAINING BATCH ===#
+# =====================================================================
+# 2. FIXED: Fully Clean MIMO Training Batch (No Delays)
+# =====================================================================
 def generate_training_batch(plant, hyperparam_config):
     """
-    Generate a single training batch by simulating the plant with control signals.
-
-    The function creates control signals using the Canaday generator long enough to
-    support a slicing window that may include a lookahead (delay_steps). It then
-    simulates the plant for the extended horizon and slices out sequences of
-    length `seq_len` returning model inputs and targets.
-
-    Args:
-        plant: Plant object implementing get_initial_state(batch_size), get_y(state, t),
-               and step(state, u, t, dt) methods.
-        hyperparam_config: Dictionary containing nested 'signal' and 'train' configs
-                           with keys used below (seq_len, dt, batch_size, delay_steps, device).
-
-    Returns:
-        x_tensor: torch.Tensor of shape [batch_size, seq_len, features] containing
-                  stacked [y_t, y_next] for each timestep.
-        y_target: torch.Tensor of shape [batch_size, seq_len, 1] containing the control
-                  signals (u) corresponding to each timestep.
-        D_center: torch.Tensor of shape [batch_size, 1] containing the center offsets
-                  used when generating the control signals.
+    Generate a clean MIMO training batch without any look-back delay tensors.
+    Slices perfectly to match only y_t and y_next.
     """
     sig_cfg = hyperparam_config["signal"]
     train_cfg = hyperparam_config["train"]
-    
-    seq_len = sig_cfg["seq_len"]
+
+    seq_len = int(sig_cfg["seq_len"])
     dt = sig_cfg["dt"]
-    batch_size = train_cfg["batch_size"]
-    delta_steps = train_cfg["delay_steps"]
+    batch_size = int(train_cfg["batch_size"])
+    delta_steps = int(train_cfg.get("delay_steps", 1)) # Step lookahead window length
     device = train_cfg["device"]
 
+    # Initialize plant state
     state = plant.get_initial_state(batch_size)
-    
-    # 1. 🔥 FIX: Generate signals long enough to support your slicing window
-    # Extend control signal generation by delta_steps
+
+    # Extend seq_len long enough to pull clean future states (y_next)
     extended_config = copy.deepcopy(hyperparam_config)
     extended_config["signal"]["seq_len"] = seq_len + delta_steps
     u_buffer, D_center = generate_canaday_signals(extended_config)
-    
+
     raw_y_history = []
     raw_u_history = []
 
-    # 2. 🔥 FIX: Run the simulation loop for the full extended horizon
     total_simulation_steps = seq_len + delta_steps
     for t_idx in range(total_simulation_steps):
         t = t_idx * dt
-        u_signal = u_buffer[:, t_idx].unsqueeze(1)
-        y_t = plant.get_y(state, t)
-        
+        u_signal = u_buffer[:, t_idx, :]  # Shape: [batch_size, output_dim]
+        y_t = plant.get_y(state, t)       # Shape: [batch_size, input_dim]
+
         raw_y_history.append(y_t)
         raw_u_history.append(u_signal)
-        
+
         state, _ = plant.step(state, u_signal, t, dt)
         state = state.detach()
 
-    # 3. 🔥 FIX: Slice out clean, full-length sequences of length (seq_len)
-    all_y_t = raw_y_history[:seq_len]
-    all_y_next = raw_y_history[delta_steps : seq_len + delta_steps] 
-    all_u = raw_u_history[:seq_len]     
+    # Slice out exact pairs without historical delay padding
+    all_y_t = raw_y_history[:seq_len]  
+    all_y_next = raw_y_history[delta_steps : seq_len + delta_steps]  
+    all_u = raw_u_history[:seq_len]  
 
-    # Construct model tensors: Shapes will now be exactly [Batch, seq_len, Feature]
+    # Construct the training matrix tensors
+    # x_tensor shape: [batch_size, seq_len, input_dim * 2] (holding [y_t, y_next])
     x_tensor = torch.cat([
-        torch.stack(all_y_t, dim=1), 
+        torch.stack(all_y_t, dim=1),  
         torch.stack(all_y_next, dim=1)
     ], dim=-1).to(device)
-    
+
+    # y_target shape: [batch_size, seq_len, output_dim]
     y_target = torch.stack(all_u, dim=1).to(device)
-    
+
     return x_tensor, y_target, D_center
 
 
-import os
-import torch
-import numpy as np
-import pandas as pd
-
-def generate_and_save_dataset(plant, hyperparam_config, dirname, show_plots=False):
-    """Generate and save training dataset with all sequences in parallel.
-    
-    Generates a batch of training sequences simultaneously by simulating the plant
-    with multiple input signals in parallel. Each sequence consists of states,
-    control inputs, and outputs saved to individual CSV files with visualization support.
-    
-    Args:
-        plant: Plant dynamics model with step() method for state evolution.
-        hyperparam_config (dict): Configuration dict with keys:
-            - "signal": Signal parameters (dt, freq_min, freq_max, etc.)
-            - "train": Training parameters (batch_size, seq_len, delta_steps, etc.)
-        dirname (str): Root directory where dataset logs will be saved.
-        show_plots (bool, optional): If True, generate and display plots for each sequence.
-            Defaults to False.
-    
-    Returns:
-        None. Saves CSV files to dirname/dataset_logs/ with one file per sequence.
+# =====================================================================
+# 3. Clean Dataset Compilation and Disk Exporter
+# =====================================================================
+def generate_and_save_dataset(
+    plant,
+    hyperparam_config,
+    dirname,
+    show_plots=False,
+    save_logs=False
+):
+    """
+    Generate and save a clean MIMO dataset tracking only current and future plant outputs.
+    Removes historical delayed state inputs entirely.
     """
     sig_cfg = hyperparam_config["signal"]
     train_cfg = hyperparam_config["train"]
+    mamba_cfg = hyperparam_config["mamba"]
     dt = sig_cfg["dt"]
     
-    # This now represents the TOTAL number of sequences generated simultaneously
-    total_sequences = train_cfg["batch_size"] 
-    
+    # Automatically infer dimensions from config setup
+    input_dim = mamba_cfg.get("input_dim", 2)   # (y1, y2)
+    output_dim = mamba_cfg.get("output_dim", 2) # (u1, u2)
+
+    total_sequences = int(train_cfg["batch_size"])
     logs_dir = os.path.join(dirname, "dataset_logs")
-    os.makedirs(logs_dir, exist_ok=True)
+    plots_dir = os.path.join(dirname, "dataset_plots")
 
-    # 1. 🔥 SIMULTANEOUS GENERATION: No loop. One shot.
-    print(f"🚀 Simulating {total_sequences} sequences simultaneously in parallel...")
+    print(f"🚀 Simulating {total_sequences} parallel MIMO sequences...")
+    # Fits flawlessly now that generate_training_batch matches
     x_tensor, y_target, batch_d_centers = generate_training_batch(plant, hyperparam_config)
-    
-    print(f"✅ Simulation complete. Matrix shapes: x={x_tensor.shape}, y={y_target.shape}")
-    
-    # Move entire blocks to CPU/NumPy at once for disk writing
-    batch_d_centers_np = batch_d_centers.cpu().numpy()
-    x_np = x_tensor.cpu().numpy() 
-    y_np = y_target.cpu().numpy() 
-    
-    # 2. File Saving Loop (Only needed because saving to individual CSVs is an I/O operation)
-    print(f"💾 Saving {total_sequences} sequence files to disk...")
-    for s_idx in range(total_sequences):
-        y_t_plot = x_np[s_idx, :, 0]
-        y_next_plot = x_np[s_idx, :, 1]
-        u_signal_plot = y_np[s_idx, :, 0]
-        d_center_val = float(batch_d_centers_np[s_idx])
-        
-        num_samples = len(u_signal_plot)
-        time_axis = np.arange(num_samples) * dt
 
-        seq_df = pd.DataFrame({
-            "t": time_axis,
-            "y_t": y_t_plot,
-            "y_next": y_next_plot,
-            "u_control": u_signal_plot,
-            "D_center": d_center_val
-        })
-        
+    print(f"✅ Simulation complete. Shapes: x={x_tensor.shape}, y={y_target.shape}")
+
+    x_np = x_tensor.cpu().numpy()  
+    y_np = y_target.cpu().numpy()  
+    batch_d_centers_np = batch_d_centers.cpu().numpy()  
+
+    # Save individual sequences
+    for s_idx in range(total_sequences):
+        y_t = x_np[s_idx, :, :input_dim]          
+        y_next = x_np[s_idx, :, input_dim:]       
+        u = y_np[s_idx]                           
+
+        time_axis = np.arange(len(u)) * dt
+
+        columns = ["t"]
+        values = [time_axis]
+
+        # Dynamically append columns without hardcoded loops
+        for i in range(input_dim):
+            columns.append(f"y_{i+1}_t")
+            values.append(y_t[:, i])
+        for i in range(input_dim):
+            columns.append(f"y_{i+1}_next")
+            values.append(y_next[:, i])
+
+        for i in range(output_dim):
+            columns.append(f"u_{i+1}")
+            values.append(u[:, i])
+
+        d_center = np.squeeze(batch_d_centers_np[s_idx])
+        for i in range(output_dim):
+            columns.append(f"D_center_u_{i+1}")
+            d_center_value = float(d_center[i]) if output_dim > 1 else float(d_center)
+            values.append(np.full(len(time_axis), d_center_value))
+
+        seq_df = pd.DataFrame({col: val for col, val in zip(columns, values)})
         filename_base = f"sequence_{s_idx}.csv"
-        save_df_to_csv(seq_df, dirname=logs_dir, filename=filename_base)
         
+        if save_logs:
+            save_df_to_csv(seq_df, dirname=logs_dir, filename=filename_base)
+
         if show_plots:
+            signals_to_plot = []
+            labels_to_plot = []
+
+            for i in range(input_dim):
+                signals_to_plot.append(y_t[:, i])
+                labels_to_plot.append(f"y_{i+1}_t")
+            for i in range(input_dim):
+                signals_to_plot.append(y_next[:, i])
+                labels_to_plot.append(f"y_{i+1}_next")
+            for i in range(output_dim):
+                signals_to_plot.append(u[:, i])
+                labels_to_plot.append(f"u_{i+1}")
+
             plot_signals(
-                time_axis,
-                [u_signal_plot, y_t_plot, y_next_plot],
-                labels=["u_control", "y_t", "y_next"],
-                xlabel="Time", ylabel="Signal",
-                title=f"Dataset Sample: {filename_base}",
-                dirname=os.path.join(dirname, "dataset_plots"),
-                filename=f"{filename_base}_plot.png"
+                t=time_axis,
+                signals=signals_to_plot,
+                labels=labels_to_plot,
+                xlabel="Time [h]",
+                ylabel="Signal Profile",
+                title=f"MIMO Sequence {s_idx} Profile",
+                dirname=plots_dir,
+                filename=f"{filename_base}_plot.png",
+                show=True
             )
 
-    # 3. 📊 Macro-level dataset statistics computed instantaneously via NumPy flattening
-    print("📊 Compiling macro-level dataset statistics...")
-    all_y_t = x_np[:, :, 0].flatten()
-    all_y_next = x_np[:, :, 1].flatten()
-    all_u_control = y_np[:, :, 0].flatten()
+    # 📊 Compile Clean Global Statistics
+    print("📊 Compiling MIMO macro-dataset statistics...")
+    stats_data = {"Metric": ["Mean", "Std_Dev", "Min", "25%", "50%", "75%", "Max"]}
 
-    stats_data = {
-        "Metric": ["Mean", "Std_Dev", "Min", "25%", "50%_Median", "75%", "Max"],
-        "y_t (Plant Out)": [
-            np.mean(all_y_t), np.std(all_y_t), np.min(all_y_t),
-            np.percentile(all_y_t, 25), np.percentile(all_y_t, 50), np.percentile(all_y_t, 75), np.max(all_y_t)
-        ],
-        "y_next (Plant Out+1)": [
-            np.mean(all_y_next), np.std(all_y_next), np.min(all_y_next),
-            np.percentile(all_y_next, 25), np.percentile(all_y_next, 50), np.percentile(all_y_next, 75), np.max(all_y_next)
-        ],
-        "u_control (Targets)": [
-            np.mean(all_u_control), np.std(all_u_control), np.min(all_u_control),
-            np.percentile(all_u_control, 25), np.percentile(all_u_control, 50), np.percentile(all_u_control, 75), np.max(all_u_control)
+    for i in range(input_dim):
+        slice_y_t = x_np[:, :, i]
+        stats_data[f"y_{i+1}_t"] = [
+            np.mean(slice_y_t), np.std(slice_y_t), np.min(slice_y_t),
+            np.percentile(slice_y_t, 25), np.percentile(slice_y_t, 50),
+            np.percentile(slice_y_t, 75), np.max(slice_y_t)
         ]
-    }
-    
+        
+    for i in range(input_dim):
+        slice_y_next = x_np[:, :, input_dim + i]
+        stats_data[f"y_{i+1}_next"] = [
+            np.mean(slice_y_next), np.std(slice_y_next), np.min(slice_y_next),
+            np.percentile(slice_y_next, 25), np.percentile(slice_y_next, 50),
+            np.percentile(slice_y_next, 75), np.max(slice_y_next)
+        ]
+
+    for i in range(output_dim):
+        slice_u = y_np[:, :, i]
+        stats_data[f"u_{i+1}"] = [
+            np.mean(slice_u), np.std(slice_u), np.min(slice_u),
+            np.percentile(slice_u, 25), np.percentile(slice_u, 50),
+            np.percentile(slice_u, 75), np.max(slice_u)
+        ]
+
     stats_df = pd.DataFrame(stats_data)
-    save_df_to_csv(stats_df, dirname=dirname, filename="dataset_global_statistics.csv")
-    
-    # 4. Save the full, aggregated training dataset
+    save_df_to_csv(stats_df, dirname=dirname, filename="mimo_dataset_global_statistics.csv")
+
+    # Package unified training dataset structures
     data_to_save = {
-        "x": x_tensor.cpu(),  
-        "y": y_target.cpu()   
+        "x": x_tensor.cpu(),
+        "y": y_target.cpu()
     }
     save_training_dataset(data_to_save, dirname=dirname)
-    print(f"🎉 Done! Dataset successfully generated in one single batch pass.")
-
-
-
-def generate_exact_sequence_dataset(plant, hyperparam_config, dirname, total_sequences, show_plots=False):
-    """Generates and saves an exact number of total sequences without nested batch loops."""
-    sig_cfg = hyperparam_config["signal"]
-    train_cfg = hyperparam_config["train"]
-    dt = sig_cfg["dt"]
-    total_sequences = train_cfg["num_sequences"]  # Total number of sequences to generate across all batches
-    
-    
-    
-    all_x = []
-    all_y = []
-    
-    logs_dir = os.path.join(dirname, "dataset_logs")
-    os.makedirs(logs_dir, exist_ok=True)
-    
-    sequences_saved = 0
-    print(f"📂 Target: Generating exactly {total_sequences} sequences.")
-    
-    while sequences_saved < total_sequences:
-        # 1. Generate a batch of parallel sequences
-        x_tensor, y_target, batch_d_centers = generate_training_batch(plant, hyperparam_config)
-        
-        # Move to CPU / NumPy for disk-writing operations
-        x_np = x_tensor.cpu().numpy()
-        y_np = y_target.cpu().numpy()
-        d_centers_np = batch_d_centers.cpu().numpy()
-        
-        # 2. Iterate through the generated batch linearly
-        num_generated = x_np.shape[0]
-        for idx in range(num_generated):
-            if sequences_saved >= total_sequences:
-                break  # Stop immediately if we reached our exact target limit
-                
-            y_t_plot = x_np[idx, :, 0]
-            y_next_plot = x_np[idx, :, 1]
-            u_signal_plot = y_np[idx, :, 0]
-            d_center_val = float(d_centers_np[idx])
-            
-            time_axis = np.arange(len(u_signal_plot)) * dt
-            
-            # Save the individual sequence CSV
-            seq_df = pd.DataFrame({
-                "t": time_axis, "y_t": y_t_plot, "y_next": y_next_plot, 
-                "u_control": u_signal_plot, "D_center": d_center_val
-            })
-            
-            filename_base = f"sequence_{sequences_saved}.csv"
-            save_df_to_csv(seq_df, dirname=logs_dir, filename=filename_base)
-            
-            if show_plots:
-                plot_signals(
-                    time_axis, [u_signal_plot, y_t_plot, y_next_plot],
-                    labels=["u_control", "y_t", "y_next"],
-                    xlabel="Time", ylabel="Signal",
-                    title=f"Dataset Sample: {filename_base}",
-                    dirname=os.path.join(dirname, "dataset_plots"),
-                    filename=f"{filename_base}_plot.png"
-                )
-                
-            # Keep track of individual sequences to slice the global tensors later
-            all_x.append(x_tensor[idx].cpu())
-            all_y.append(y_target[idx].cpu())
-            
-            sequences_saved += 1
-            
-        print(f"📈 Progress: {sequences_saved}/{total_sequences} sequences saved.")
-
-    # 3. Compile precise global statistics and save final dataset
-    print("📊 Compiling macro-level dataset statistics...")
-    compiled_x = torch.stack(all_x, dim=0).numpy()
-    compiled_y = torch.stack(all_y, dim=0).numpy()
-    
-    all_y_t = compiled_x[:, :, 0].flatten()
-    all_y_next = compiled_x[:, :, 1].flatten()
-    all_u_control = compiled_y[:, :, 0].flatten()
-
-    stats_df = pd.DataFrame({
-        "Metric": ["Mean", "Std_Dev", "Min", "25%", "50%_Median", "75%", "Max"],
-        "y_t (Plant Out)": [np.mean(all_y_t), np.std(all_y_t), np.min(all_y_t), np.percentile(all_y_t, 25), np.percentile(all_y_t, 50), np.percentile(all_y_t, 75), np.max(all_y_t)],
-        "y_next (Plant Out+1)": [np.mean(all_y_next), np.std(all_y_next), np.min(all_y_next), np.percentile(all_y_next, 25), np.percentile(all_y_next, 50), np.percentile(all_y_next, 75), np.max(all_y_next)],
-        "u_control (Targets)": [np.mean(all_u_control), np.std(all_u_control), np.min(all_u_control), np.percentile(all_u_control, 25), np.percentile(all_u_control, 50), np.percentile(all_u_control, 75), np.max(all_u_control)]
-    })
-    save_df_to_csv(stats_df, dirname=dirname, filename="dataset_global_statistics.csv")
-    
-    data_to_save = {
-        "x": torch.stack(all_x, dim=0),  
-        "y": torch.stack(all_y, dim=0)   
-    }
-    save_training_dataset(data_to_save, dirname=dirname)
-    print(f"✅ Success! Dataset saved with exactly {sequences_saved} entries.")
+    print(f"🎉 Clean tracking MIMO dataset generated successfully without historical delays.")

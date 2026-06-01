@@ -14,10 +14,11 @@ import torch
 # Utility functions and classes for simulation
 from src.sample.utils.general_utils import *
 from src.hyperparam_config import *
-from src.sample.classes.ChemostatPlant import ChemostatPlant
-from src.sample.classes.TrophophasePlant import TrophophasePlant
+from src.sample.classes.IdiophasePlant import IdiophasePlant
 from src.sample.classes.MassSpringDamperPlant import MassSpringDamperPlant
-from src.sample.classes.MambaInverseController import MambaInverseController
+from src.sample.classes.TrophophasePlant import TrophophasePlant
+from src.sample.classes.ChemostatPlant import ChemostatPlant
+from src.sample.classes.MambaInverseController import *
 
 # Device configuration (printed for visibility)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -29,16 +30,16 @@ def main():
     # run_description = get_run_description()
     # log_message(f"RUN DESCRIPTION: {run_description}")
 
-    hyperparam_config = hyperparam_config_MassSpringDamperPlant
+    hyperparam_config = hyperparam_config_ChemostatPlant
     # Initialize the plant model using hyperparameters
-    plant = MassSpringDamperPlant(hyperparam_config=hyperparam_config_MassSpringDamperPlant)
+    plant = ChemostatPlant(hyperparam_config=hyperparam_config)
 
     #plant = TrophophasePlant(hyperparam_config_TrophophasePlant)
     
 
     # Path to the trained controller checkpoint (keep as configured)
     controller_path = (
-        "models/2026-06-01/2026-06-01_09-30-01/MassSpringDamperPlant_training/fold_1/2026-06-01_09-30-01_best_fold_model.pt"
+        "models/2026-06-01/2026-06-01_12-59-53/ChemostatPlant_training/fold_5/2026-06-01_12-59-53_best_fold_model.pt"
     )
 
     # Load the trained inverse controller
@@ -46,12 +47,14 @@ def main():
 
     # Load input/output scalers from training run directory
     scaler_x = load_scaler(
-        "results/2026-06-01/2026-06-01_09-30-01/MassSpringDamperPlant_training/fold_1/scalers/2026-06-01_09-30-01_scaler_x.pkl"
+        "results/2026-06-01/2026-06-01_12-59-53/ChemostatPlant_training/fold_5/scalers/2026-06-01_12-59-53_scaler_x.pkl"
     )
 
     scaler_y = load_scaler(
-        "results/2026-06-01/2026-06-01_09-30-01/MassSpringDamperPlant_training/fold_1/scalers/2026-06-01_09-30-01_scaler_y.pkl"
+        "results/2026-06-01/2026-06-01_12-59-53/ChemostatPlant_training/fold_5/scalers/2026-06-01_12-59-53_scaler_y.pkl"
         )
+    
+    # Example: Separate sine and cosine trajectories for y1 and y2
 
     # Generate a dynamic reference trajectory (time-varying target)
     r_dynamic = generate_reference_trajectory(
@@ -63,6 +66,17 @@ def main():
         period=5.0    # period for cyclic dynamics
     )
 
+    simulate_tracking_mimo(
+        model=loaded_controller,
+        plant=plant,
+        r_trajectories=[r_dynamic.squeeze()],
+        hyperparam_config=hyperparam_config,
+        x_scaler=scaler_x,
+        y_scaler=scaler_y,
+        dirname=plant.__class__.__name__,
+    )
+    
+
     # Generate a constant reference trajectory (steady target)
     r_static = generate_reference_trajectory(
         steps=hyperparam_config["simulate"]["seq_len"],
@@ -72,16 +86,7 @@ def main():
         constant_val=0.15,
     )
 
-    # Run the simulation using the dynamic reference by default
-    simulate_tracking_sakura(
-        model=loaded_controller,
-        plant=plant,
-        r_trajectory=r_dynamic,
-        hyperparam_config=hyperparam_config,
-        x_scaler=scaler_x,
-        y_scaler=scaler_y,
-        dirname=plant.__class__.__name__,
-    )
+    
 
 
 if __name__ == "__main__":

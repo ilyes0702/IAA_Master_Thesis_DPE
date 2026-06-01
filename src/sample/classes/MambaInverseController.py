@@ -92,7 +92,7 @@ import torch
 import torch.nn as nn
 from mamba_ssm import Mamba
 
-class MambaInverseController(nn.Module):
+class MambaInverseControllerSISO(nn.Module):
     def __init__(self, hyperparam_config):
         super().__init__()
         
@@ -118,3 +118,47 @@ class MambaInverseController(nn.Module):
         x = self.input_proj(x)
         x = self.core(x)  # Dispatches sequence context using official custom CUDA kernels
         return self.output_proj(x)
+
+
+
+
+class MambaInverseController(nn.Module):
+    def __init__(self, hyperparam_config):
+        super().__init__()
+        
+        # Read MIMO dimensions from configuration dynamically
+        self.input_dim = hyperparam_config["mamba"].get("input_dim", 2)   # Number of plant outputs to track (e.g., y1, y2)
+        self.output_dim = hyperparam_config["mamba"].get("output_dim", 2) # Number of plant control inputs (e.g., u1, u2)
+        
+        self.d_model = hyperparam_config["mamba"]["d_model"]
+        self.d_state = hyperparam_config["mamba"]["d_state"]
+
+        # Because we concatenate y_t and y_next, the total feature dimension 
+        # entering the projection layer is always 2 * input_dim.
+        self.input_proj = nn.Linear(self.input_dim * 2, self.d_model)
+        
+        self.core = Mamba(
+            d_model=self.d_model, 
+            d_state=self.d_state, 
+            d_conv=4, 
+            expand=2
+        )
+        
+        # Maps the latent space back to the multi-variable control inputs space
+        self.output_proj = nn.Linear(self.d_model, self.output_dim)
+
+    def forward(self, y_t, y_next):
+        """
+        Args:
+            y_t (Tensor): Current plant outputs, shape [Batch, Seq_len, input_dim]
+            y_next (Tensor): Target/next plant outputs, shape [Batch, Seq_len, input_dim]
+
+        Returns:
+            Tensor: Control input vectors, shape [Batch, Seq_len, output_dim]
+        """
+        # Concatenate y_t and y_next along the feature dimension
+        x = torch.cat([y_t, y_next], dim=-1)  # Shape: [Batch, Seq_len, input_dim * 2]
+
+        x = self.input_proj(x)  # Shape: [Batch, Seq_len, d_model]
+        x = self.core(x)  # Shape: [Batch, Seq_len, d_model]
+        return self.output_proj(x)  # Shape: [Batch, Seq_len, output_dim]

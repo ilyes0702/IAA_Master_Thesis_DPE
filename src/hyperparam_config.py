@@ -26,7 +26,9 @@ hyperparam_config_ChemostatPlant = {
     },
     "mamba": {
         "d_model": 64,
-        "d_state": 16
+        "d_state": 16,
+        "input_dim": 1,  # y
+        "output_dim": 1  # u
     },
     "simulate": {
         "batch_size": 10,
@@ -34,10 +36,53 @@ hyperparam_config_ChemostatPlant = {
     }
 }
 
+hyperparam_config_IdiophasePlant = {
+        "signal": {
+            "seq_len": 351,
+            "dt": 0.1,
+            "lambd": 5.0,
+            "p": 0.19
+        },
+        "train": {
+            "batch_size": 10000,
+            "device": "cuda",
+            "delay_steps": 1,
+            "epochs": 50,
+            "lr": 1e-3,
+            "loss_function": "MSELoss()",
+            "k_folds": 5,
+            "lr_decay_rate":1,
+        },
+        "plant": {
+            "mu_max": 0.12,
+            "Ks": 50.0,
+            "p1": 0.00047,
+            "p2": 200000.0,
+            "p5": 0.9,
+            "p6": 100.0,
+            "p7": 0.04,
+            "q": 2000.0,
+            "mu_Pen": 3.0,
+            "V_idiophase": 170.0,
+            "D_center_min": 0.2,
+            "D_center_max": 0.6
+        },
+        "mamba": {
+            "d_model": 64,
+            "d_state": 16,
+            "input_dim": 2,  # y1, y2
+            "output_dim": 2  # u1, u2
+        },
+        "simulate": {
+            "batch_size": 10,
+            "seq_len": 351,
+        }
+    }
+
 hyperparam_config_MassSpringDamperPlant = {
     "plant" :{
         "m": 0.1,
-        "d": -0.5,
+        "d": 0.5,
         "k": 1.0,
         "D_center_min": 0.5,
         "D_center_max": 0.5

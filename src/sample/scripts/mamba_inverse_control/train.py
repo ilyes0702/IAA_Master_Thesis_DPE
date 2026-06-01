@@ -10,13 +10,19 @@ Usage: run this file as a script. Adjust dataset_path below if needed.
 """
 
 import torch
+
+from src.sample.config import *
+
 from src.sample.classes.ChemostatPlant import ChemostatPlant
 from src.sample.classes.MassSpringDamperPlant import MassSpringDamperPlant
 from src.sample.classes.TrophophasePlant import TrophophasePlant
-from src.hyperparam_config import hyperparam_config_TrophophasePlant, hyperparam_config_ChemostatPlant, hyperparam_config_MassSpringDamperPlant
-from src.sample.classes.MambaInverseController import MambaInverseController
+from src.sample.classes.IdiophasePlant import IdiophasePlant
+from src.sample.classes.MambaInverseController import *
+
+from src.hyperparam_config import *
+
 from src.sample.utils.training_utils import *  # train_controller, etc.
-from src.sample.config import *
+
 from src.sample.utils.saving_utils import *
 
 # Device configuration: use GPU if available, otherwise fallback to CPU.
@@ -24,32 +30,23 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 if __name__ == "__main__":
-    # Instantiate plant using shared hyperparameters (for naming and metadata).
+    # Instantiate plant using shared hyperparameters.
+    hyperparam_config = hyperparam_config_ChemostatPlant
     
-    hyperparam_config = hyperparam_config_MassSpringDamperPlant
-    
-    plant = MassSpringDamperPlant(hyperparam_config=hyperparam_config)
+    plant = ChemostatPlant(hyperparam_config=hyperparam_config)
     #plant = TrophophasePlant(hyperparam_config=hyperparam_config_TrophophasePlant)
 
-    
-
-    # Path to the prepared training dataset. Change if you generated data at
-    # a different timestamp or location.
     dataset_path = (
-       "results/2026-06-01/2026-06-01_09-28-10/MassSpringDamperPlant_training_data/dataset/2026-06-01_09-28-10_training_data.pt"
+       "results/2026-06-01/2026-06-01_12-58-27/ChemostatPlant_training_data/dataset/2026-06-01_12-58-27_training_data.pt"
     )
 
-    # dataset_path = (
-    #     "results/2026-05-28/2026-05-28_11-09-42/TrophophasePlant_training_data/dataset/2026-05-28_11-09-42_training_data.pt"
-    # ) # Trophophase plant
 
-    # Load the dataset from disk. The file is expected to be a dict-like object
-    # containing 'x' and 'y' keys. If loading fails, inspect the path first.
+    # Load the dataset from disk. The file is expected to be a dict-like object containing 'x' and 'y' keys. If loading fails, inspect the path first.
     dataset = torch.load(dataset_path, weights_only=True)
 
     # Extract features (X) and targets (Y).
-    # X: (total_sequences, seq_len, 2) -> [y_t, y_next]
-    # Y: (total_sequences, seq_len, 1) -> [u_control]
+    # X: (total_sequences, seq_len, 2*num_outputs) -> [y_t, y_next]
+    # Y: (total_sequences, seq_len, 1*num_inputs) -> [u_control]
     X = dataset["x"]
     Y = dataset["y"]
 
@@ -58,9 +55,6 @@ if __name__ == "__main__":
     print(f"Features (X) shape: {X.shape}")
     print(f"Targets  (Y) shape: {Y.shape}")
 
-    print("\nFirst sequence item sample:")
-    print(f"First step inputs [y(t), y(t+Δ)]: {X[0, 0]}")
-    print(f"First step target control [u(t)]: {Y[0, 0]}")
 
     # Initialize the inverse controller and move it to the selected device.
     controller = MambaInverseController(hyperparam_config=hyperparam_config).to(device)
@@ -75,7 +69,7 @@ if __name__ == "__main__":
         Y,
         hyperparam_config,
         dirname=dirname,
-        show_plots=True,
+        show_plots=False,
     )
         
         
