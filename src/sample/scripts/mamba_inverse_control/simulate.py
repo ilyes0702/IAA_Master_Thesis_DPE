@@ -14,11 +14,12 @@ import torch
 # Utility functions and classes for simulation
 from src.sample.utils.general_utils import *
 from src.hyperparam_config import *
-from src.sample.classes.IdiophasePlant import IdiophasePlant
-from src.sample.classes.MassSpringDamperPlant import MassSpringDamperPlant
-from src.sample.classes.TrophophasePlant import TrophophasePlant
-from src.sample.classes.ChemostatPlant import ChemostatPlant
-from src.sample.classes.MambaInverseController import *
+from src.sample.classes.plants.IdiophasePlant import IdiophasePlant
+from src.sample.classes.plants.MassSpringDamperPlant import MassSpringDamperPlant
+from src.sample.classes.plants.TrophophasePlant import TrophophasePlant
+from src.sample.classes.plants.ChemostatPlant import ChemostatPlant
+from src.sample.classes.plants.YeastFermentation import FedBatchYeastPlant
+from src.sample.classes.controllers.MambaInverseController import *
 
 # Device configuration (printed for visibility)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -30,16 +31,15 @@ def main():
     # run_description = get_run_description()
     # log_message(f"RUN DESCRIPTION: {run_description}")
 
-    hyperparam_config = hyperparam_config_ChemostatPlant
-    # Initialize the plant model using hyperparameters
-    plant = ChemostatPlant(hyperparam_config=hyperparam_config)
+    hyperparam_config = hyperparam_config_FedBatchYeastPlant   # Initialize the plant model using hyperparameters
+    plant = FedBatchYeastPlant(hyperparam_config=hyperparam_config)
 
     #plant = TrophophasePlant(hyperparam_config_TrophophasePlant)
     
 
     # Path to the trained controller checkpoint (keep as configured)
     controller_path = (
-        "models/2026-06-01/2026-06-01_12-59-53/ChemostatPlant_training/fold_5/2026-06-01_12-59-53_best_fold_model.pt"
+        "models/2026-06-08/2026-06-08_15-22-20/FedBatchYeastPlant_training/fold_2/2026-06-08_15-22-20_best_fold_model.pt"
     )
 
     # Load the trained inverse controller
@@ -47,11 +47,11 @@ def main():
 
     # Load input/output scalers from training run directory
     scaler_x = load_scaler(
-        "results/2026-06-01/2026-06-01_12-59-53/ChemostatPlant_training/fold_5/scalers/2026-06-01_12-59-53_scaler_x.pkl"
+        "results/2026-06-08/2026-06-08_15-22-20/FedBatchYeastPlant_training/fold_2/scalers/2026-06-08_15-22-20_scaler_x.pkl"
     )
 
     scaler_y = load_scaler(
-        "results/2026-06-01/2026-06-01_12-59-53/ChemostatPlant_training/fold_5/scalers/2026-06-01_12-59-53_scaler_y.pkl"
+        "results/2026-06-08/2026-06-08_15-22-20/FedBatchYeastPlant_training/fold_2/scalers/2026-06-08_15-22-20_scaler_y.pkl"
         )
     
     # Example: Separate sine and cosine trajectories for y1 and y2
@@ -66,25 +66,40 @@ def main():
         period=5.0    # period for cyclic dynamics
     )
 
-    simulate_tracking_mimo(
-        model=loaded_controller,
-        plant=plant,
-        r_trajectories=[r_dynamic.squeeze()],
-        hyperparam_config=hyperparam_config,
-        x_scaler=scaler_x,
-        y_scaler=scaler_y,
-        dirname=plant.__class__.__name__,
-    )
-    
-
-    # Generate a constant reference trajectory (steady target)
     r_static = generate_reference_trajectory(
         steps=hyperparam_config["simulate"]["seq_len"],
         dt=hyperparam_config["signal"]["dt"],
         device=hyperparam_config["train"]["device"],
         mode="constant",
-        constant_val=0.15,
+        constant_val=40,
     )
+
+    r_smooth = generate_smooth_profile_trajectory(
+        time_axis=torch.arange(hyperparam_config["simulate"]["seq_len"]) * hyperparam_config["signal"]["dt"],
+        config={
+            'y_floor': 0.25,
+            'y_peak': 0.025,
+            't_rise_center': 10.0,
+            'k_rise': 1.0,
+            't_sink_center': 25.0,
+            'k_sink': 1.0
+        }
+    )
+
+    simulate_tracking_sakura(
+        model=loaded_controller,
+        plant=plant,
+        r_trajectories=[r_static.squeeze()],
+        hyperparam_config=hyperparam_config,
+        x_scaler=scaler_x,
+        y_scaler=scaler_y,
+        dirname=plant.__class__.__name__,
+        plot_individual_plots = False
+    )
+    
+
+    # Generate a constant reference trajectory (steady target)
+    
 
     
 

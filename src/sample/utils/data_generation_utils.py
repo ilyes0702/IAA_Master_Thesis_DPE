@@ -5,39 +5,105 @@ import torch
 import pandas as pd
 from src.sample.utils.saving_utils import save_df_to_csv, save_training_dataset
 from src.sample.utils.plotting_utils import plot_signals
-from Archive.data_generation_utils_siso_old import generate_canaday_signals
 
-# =====================================================================
-# 1. MIMO Canaday Signal Generation
-# =====================================================================
+
+def generate_canaday_signal_single(hyperparam_config, channel_idx=1):
+    """
+    Generate smooth, band-limited control signals using an Active Shielding methodology
+    to guarantee that each unique MIMO channel stays completely within its hard limits,
+    utilizing independent, channel-specific lambda (bandwidth) and p (amplitude) settings.
+    """
+    sig_cfg = hyperparam_config["signal"]
+    train_cfg = hyperparam_config["train"]
+    plant_cfg = hyperparam_config["plant"]
+    
+    batch_size = train_cfg["batch_size"]
+    seq_len = sig_cfg["seq_len"]
+    device = train_cfg["device"]
+    
+    # 🎯 NEW: Dynamic Channel-Specific Lambda (Bandwidth) Extraction
+    lambd = sig_cfg.get(f"u_{channel_idx}_lambd")
+    if lambd is None: 
+        lambd = sig_cfg["lambd"]  # Global fallback
+    
+    # 🎯 NEW: Dynamic Channel-Specific Configured Amplitude Extraction
+    configured_p = sig_cfg.get(f"u_{channel_idx}_p")
+    if configured_p is None: 
+        configured_p = sig_cfg["p"]  # Global fallback
+    
+    # Step 1: Sample values from a uniform distribution [-1, 1]
+    raw = torch.rand((batch_size, seq_len), device=device) * 2 - 1
+    
+    # Step 2: Fourier-transform to frequency domain
+    fft_sig = torch.fft.rfft(raw, dim=1)
+    freqs = torch.fft.rfftfreq(seq_len, d=sig_cfg["dt"])
+    
+    # Step 3: Drop frequencies above 1/lambda using the channel-specific lambda
+    cutoff = 1.0 / lambd
+    fft_sig[:, freqs > cutoff] = 0
+    
+    # Step 4: Inverse-Fourier-transform
+    v_train = torch.fft.irfft(fft_sig, n=seq_len, dim=1)
+    
+    # Step 5: Normalize to [-1, 1]
+    v_min = v_train.min(dim=1, keepdim=True)[0]
+    v_max = v_train.max(dim=1, keepdim=True)[0]
+    v_norm = 2 * (v_train - v_min) / (v_max - v_min + 1e-8) - 1
+    
+    # Dynamic Channel-Specific Center Value Extraction
+    c_min = plant_cfg.get(f"u_{channel_idx}_D_center_min")
+    
+        
+    c_max = plant_cfg.get(f"u_{channel_idx}_D_center_max")
+    
+
+    # Read channel-specific hard boundaries or fall back to system defaults
+    u_hard_min = plant_cfg.get(f"u_{channel_idx}_hard_min")
+    
+    
+    u_hard_max = plant_cfg.get(f"u_{channel_idx}_hard_max")
+    
+    
+    # Generate random baseline centers across the channel-specific configured range
+    u_center = torch.rand((batch_size, 1), device=device) * (c_max - c_min) + c_min
+    
+    # 🎯 ACTIVE SHIELDING: Calculate exact allowable deviation limits per trajectory row
+    dist_to_max = u_hard_max - u_center
+    dist_to_min = u_center - u_hard_min
+    max_safe_p = torch.minimum(dist_to_max, dist_to_min)
+    
+    # Adapt amplitude: use the channel-specific configured p, but scale down if it approaches boundaries
+    adaptive_p = torch.minimum(torch.full_like(max_safe_p, configured_p), max_safe_p * 0.98)
+    
+    u_buffer = u_center + (v_norm * adaptive_p)
+    
+    # Guard clamp for precision floating point margins
+    u_buffer = torch.clamp(u_buffer, u_hard_min, u_hard_max)
+    
+    return u_buffer, u_center
+
+
 def generate_canaday_signals(hyperparam_config):
-    """
-    Generate MIMO control signals (u1, u2, ...) using Canaday's method.
-    Each control input is generated independently.
-    """
+    """Generate independent MIMO control vectors using index-aware tracking."""
     train_cfg = hyperparam_config["train"]
     mamba_cfg = hyperparam_config["mamba"]
 
-    batch_size = int(train_cfg["batch_size"])
-    output_dim = mamba_cfg.get("output_dim", 2)  # Number of control inputs (u1, u2, ...)
+    batch_size = train_cfg["batch_size"]
+    output_dim = mamba_cfg["output_dim"] 
 
     u_buffer = []
     D_center_list = []
 
-    for _ in range(output_dim):
-        # Generate a single control signal (SISO case)
-        u_single, D_center = generate_canaday_signals(hyperparam_config)
-        # Ensure u_single is 3D: [batch_size, seq_len, 1]
-        u_single = u_single.unsqueeze(-1)  
-        u_buffer.append(u_single)
+    for i in range(output_dim):
+        # Pass 1-based index to resolve channel configurations cleanly
+        u_single, D_center = generate_canaday_signal_single(hyperparam_config, channel_idx=i+1)
+        u_buffer.append(u_single.unsqueeze(-1))
         D_center_list.append(D_center)
 
-    # Stack to get [batch_size, seq_len, output_dim]
     u_buffer = torch.cat(u_buffer, dim=-1)  
-    D_center = torch.stack(D_center_list, dim=-1)  # Shape: [batch_size, output_dim]
+    D_center = torch.stack(D_center_list, dim=-1) 
 
     return u_buffer, D_center
-
 
 # =====================================================================
 # 2. FIXED: Fully Clean MIMO Training Batch (No Delays)
@@ -109,50 +175,95 @@ def generate_and_save_dataset(
 ):
     """
     Generate and save a clean MIMO dataset tracking only current and future plant outputs.
-    Removes historical delayed state inputs entirely.
+    Removes historical delayed state inputs entirely. Logs a console warning specifying 
+    which sequence transcends hard bounds defined inside hyperparam_config['plant'] for 
+    BOTH outputs (y) and control inputs (u).
+    
+    EXCLUDES any out-of-bounds curves from the final training dataset and stats.
     """
     sig_cfg = hyperparam_config["signal"]
     train_cfg = hyperparam_config["train"]
     mamba_cfg = hyperparam_config["mamba"]
+    plant_cfg = hyperparam_config.get("plant", {})
+    device = train_cfg.get("device", "cpu")
     dt = sig_cfg["dt"]
     
-    # Automatically infer dimensions from config setup
-    input_dim = mamba_cfg.get("input_dim", 2)   # (y1, y2)
-    output_dim = mamba_cfg.get("output_dim", 2) # (u1, u2)
-
+    input_dim = mamba_cfg.get("input_dim", 2)   # e.g., (y1, y2)
+    output_dim = mamba_cfg.get("output_dim", 2) # e.g., (u1, u2)
     total_sequences = int(train_cfg["batch_size"])
+    
     logs_dir = os.path.join(dirname, "dataset_logs")
     plots_dir = os.path.join(dirname, "dataset_plots")
 
-    print(f"🚀 Simulating {total_sequences} parallel MIMO sequences...")
-    # Fits flawlessly now that generate_training_batch matches
-    x_tensor, y_target, batch_d_centers = generate_training_batch(plant, hyperparam_config)
+    print(f"🚀 Running batch simulation for {total_sequences} sequences...")
+    x_tensor_raw, y_target_raw, batch_d_centers = generate_training_batch(plant, hyperparam_config)
 
-    print(f"✅ Simulation complete. Shapes: x={x_tensor.shape}, y={y_target.shape}")
-
-    x_np = x_tensor.cpu().numpy()  
-    y_np = y_target.cpu().numpy()  
+    x_np = x_tensor_raw.cpu().numpy()  
+    y_np = y_target_raw.cpu().numpy()  
     batch_d_centers_np = batch_d_centers.cpu().numpy()  
 
-    # Save individual sequences
+    violated_sequences_count = 0
+    valid_x_list, valid_y_list, valid_dfs = [], [], []
+    valid_idx_counter = 0
+
     for s_idx in range(total_sequences):
         y_t = x_np[s_idx, :, :input_dim]          
         y_next = x_np[s_idx, :, input_dim:]       
         u = y_np[s_idx]                           
 
+        seq_has_violation = False
+
+        # 📊 1. DYNAMIC OUTPUTS (y) BOUNDS CHECK
+        for i in range(input_dim):
+            single_seq_y = y_t[:, i]
+            h_min = plant_cfg.get(f"y_{i+1}_hard_min")
+            h_max = plant_cfg.get(f"y_{i+1}_hard_max")
+            
+            if h_min is not None and np.min(single_seq_y) < h_min:
+                print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] Output y_{i+1} dropped below limit! "
+                      f"Bound: {h_min}, Min Found: {np.min(single_seq_y):.4f}\033[0m")
+                seq_has_violation = True
+                
+            if h_max is not None and np.max(single_seq_y) > h_max:
+                print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] Output y_{i+1} exceeded limit! "
+                      f"Bound: {h_max}, Max Found: {np.max(single_seq_y):.4f}\033[0m")
+                seq_has_violation = True
+
+        # 🕹️ 2. DYNAMIC CONTROL INPUTS (u) BOUNDS CHECK
+        for i in range(output_dim):
+            single_seq_u = u[:, i]
+            h_min = plant_cfg.get(f"f_u_{i+1}_hard_min") or plant_cfg.get(f"u_{i+1}_hard_min")
+            h_max = plant_cfg.get(f"f_u_{i+1}_hard_max") or plant_cfg.get(f"u_{i+1}_hard_max")
+            
+            if h_min is not None and np.min(single_seq_u) < h_min:
+                print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] Input u_{i+1} dropped below limit! "
+                      f"Bound: {h_min}, Min Found: {np.min(single_seq_u):.4f}\033[0m")
+                seq_has_violation = True
+                
+            if h_max is not None and np.max(single_seq_u) > h_max:
+                print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] Input u_{i+1} exceeded limit! "
+                      f"Bound: {h_max}, Max Found: {np.max(single_seq_u):.4f}\033[0m")
+                seq_has_violation = True
+
+        if seq_has_violation:
+            violated_sequences_count += 1
+            print(f"\033[91m🛑 Excluding [Seq {s_idx}] from final dataset structures.\033[0m")
+            continue
+
+        # Append execution histories if valid
+        valid_x_list.append(x_tensor_raw[s_idx])
+        valid_y_list.append(y_target_raw[s_idx])
+
+        # Construct logs dynamically
         time_axis = np.arange(len(u)) * dt
+        columns, values = ["t"], [time_axis]
 
-        columns = ["t"]
-        values = [time_axis]
-
-        # Dynamically append columns without hardcoded loops
         for i in range(input_dim):
             columns.append(f"y_{i+1}_t")
             values.append(y_t[:, i])
         for i in range(input_dim):
             columns.append(f"y_{i+1}_next")
             values.append(y_next[:, i])
-
         for i in range(output_dim):
             columns.append(f"u_{i+1}")
             values.append(u[:, i])
@@ -160,11 +271,14 @@ def generate_and_save_dataset(
         d_center = np.squeeze(batch_d_centers_np[s_idx])
         for i in range(output_dim):
             columns.append(f"D_center_u_{i+1}")
-            d_center_value = float(d_center[i]) if output_dim > 1 else float(d_center)
-            values.append(np.full(len(time_axis), d_center_value))
+            d_val = float(d_center[i]) if output_dim > 1 else float(d_center)
+            values.append(np.full(len(time_axis), d_val))
 
         seq_df = pd.DataFrame({col: val for col, val in zip(columns, values)})
-        filename_base = f"sequence_{s_idx}.csv"
+        valid_dfs.append(seq_df)
+        
+        filename_base = f"sequence_{valid_idx_counter}.csv"
+        valid_idx_counter += 1
         
         if save_logs:
             save_df_to_csv(seq_df, dirname=logs_dir, filename=filename_base)
@@ -189,18 +303,44 @@ def generate_and_save_dataset(
                 labels=labels_to_plot,
                 xlabel="Time [h]",
                 ylabel="Signal Profile",
-                title=f"MIMO Sequence {s_idx} Profile",
+                title=f"MIMO Valid Sequence {valid_idx_counter-1} Profile",
                 dirname=plots_dir,
                 filename=f"{filename_base}_plot.png",
                 show=True
             )
 
-    # 📊 Compile Clean Global Statistics
-    print("📊 Compiling MIMO macro-dataset statistics...")
+    # 🚨 FINAL BOUNDS VIOLATION & FILTERING SUMMARY
+    violation_percentage = (violated_sequences_count / total_sequences) * 100
+    valid_sequences_count = total_sequences - violated_sequences_count
+
+    print("\n" + "="*60)
+    print("📊 BOUNDS CHECK SUMMARY REPORT (y & u)")
+    print(f"Total Raw Sequences Evaluated : {total_sequences}")
+    if violated_sequences_count > 0:
+        print(f"\033[91m\033[1m❌ Out-of-Bounds Curves Found : {violated_sequences_count} curves ({violation_percentage:.2f}%)\033[0m")
+        print(f"\033[32m\033[1m✓ Clean Saved Dataset Curves   : {valid_sequences_count} curves accepted\033[0m")
+    else:
+        print("\033[92m\033[1m   All generated curves are within the defined hard boundaries! (100% accepted)\033[0m")
+    print("="*60 + "\n")
+
+    # Handle case where the entire batch is rejected to prevent PyTorch stack crashes
+    if valid_sequences_count == 0:
+        print("\033[91m\033[1mCRITICAL ERROR: 100% of generated data curves violated bounds. No files exported.\033[0m")
+        return
+
+    # Stack only valid tensors back together 
+    final_x_tensor = torch.stack(valid_x_list, dim=0).to(device)
+    final_y_target = torch.stack(valid_y_list, dim=0).to(device)
+    
+    x_np_filtered = final_x_tensor.cpu().numpy()
+    y_np_filtered = final_y_target.cpu().numpy()
+
+    # 📊 Compile Clean Filtered Dataset Statistics
+    print("📊 Compiling CLEAN (filtered) MIMO macro-dataset statistics...")
     stats_data = {"Metric": ["Mean", "Std_Dev", "Min", "25%", "50%", "75%", "Max"]}
 
     for i in range(input_dim):
-        slice_y_t = x_np[:, :, i]
+        slice_y_t = x_np_filtered[:, :, i]
         stats_data[f"y_{i+1}_t"] = [
             np.mean(slice_y_t), np.std(slice_y_t), np.min(slice_y_t),
             np.percentile(slice_y_t, 25), np.percentile(slice_y_t, 50),
@@ -208,7 +348,7 @@ def generate_and_save_dataset(
         ]
         
     for i in range(input_dim):
-        slice_y_next = x_np[:, :, input_dim + i]
+        slice_y_next = x_np_filtered[:, :, input_dim + i]
         stats_data[f"y_{i+1}_next"] = [
             np.mean(slice_y_next), np.std(slice_y_next), np.min(slice_y_next),
             np.percentile(slice_y_next, 25), np.percentile(slice_y_next, 50),
@@ -216,7 +356,7 @@ def generate_and_save_dataset(
         ]
 
     for i in range(output_dim):
-        slice_u = y_np[:, :, i]
+        slice_u = y_np_filtered[:, :, i]
         stats_data[f"u_{i+1}"] = [
             np.mean(slice_u), np.std(slice_u), np.min(slice_u),
             np.percentile(slice_u, 25), np.percentile(slice_u, 50),
@@ -226,10 +366,10 @@ def generate_and_save_dataset(
     stats_df = pd.DataFrame(stats_data)
     save_df_to_csv(stats_df, dirname=dirname, filename="mimo_dataset_global_statistics.csv")
 
-    # Package unified training dataset structures
+    # Package verified training dataset structures
     data_to_save = {
-        "x": x_tensor.cpu(),
-        "y": y_target.cpu()
+        "x": final_x_tensor.cpu(),
+        "y": final_y_target.cpu()
     }
     save_training_dataset(data_to_save, dirname=dirname)
-    print(f"🎉 Clean tracking MIMO dataset generated successfully without historical delays.")
+    print(f"🎉 Clean tracking MIMO dataset generated successfully ({valid_sequences_count} valid traces preserved).")

@@ -13,11 +13,15 @@ import torch
 
 from src.sample.config import *
 
-from src.sample.classes.ChemostatPlant import ChemostatPlant
-from src.sample.classes.MassSpringDamperPlant import MassSpringDamperPlant
-from src.sample.classes.TrophophasePlant import TrophophasePlant
-from src.sample.classes.IdiophasePlant import IdiophasePlant
-from src.sample.classes.MambaInverseController import *
+from src.sample.classes.plants.ChemostatPlant import ChemostatPlant
+from src.sample.classes.plants.MassSpringDamperPlant import MassSpringDamperPlant
+from src.sample.classes.plants.TrophophasePlant import TrophophasePlant
+from src.sample.classes.plants.IdiophasePlant import IdiophasePlant
+
+from src.sample.classes.plants.YeastFermentation import FedBatchYeastPlant
+
+
+from src.sample.classes.controllers.MambaInverseController import *
 
 from src.hyperparam_config import *
 
@@ -31,13 +35,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 if __name__ == "__main__":
     # Instantiate plant using shared hyperparameters.
-    hyperparam_config = hyperparam_config_ChemostatPlant
+    hyperparam_config = hyperparam_config_FedBatchYeastPlant
     
-    plant = ChemostatPlant(hyperparam_config=hyperparam_config)
-    #plant = TrophophasePlant(hyperparam_config=hyperparam_config_TrophophasePlant)
+    plant = FedBatchYeastPlant(hyperparam_config=hyperparam_config)
+    
 
     dataset_path = (
-       "results/2026-06-01/2026-06-01_12-58-27/ChemostatPlant_training_data/dataset/2026-06-01_12-58-27_training_data.pt"
+       "results/2026-06-08/2026-06-08_15-13-45/FedBatchYeastPlant_training_data/dataset/2026-06-08_15-13-45_training_data.pt"
     )
 
 

@@ -8,12 +8,14 @@ Usage: run this script from the project root (or ensure PYTHONPATH
 includes the project) so imports resolve correctly.
 """
 
-from sample.utils.data_generation_utils import generate_and_save_dataset_mimo
+from src.sample.utils.data_generation_utils import generate_and_save_dataset
 from src.sample.utils.data_generation_utils import *
-from src.sample.classes.ChemostatPlant import ChemostatPlant
-from src.sample.classes.IdiophasePlant import IdiophasePlant
-from src.sample.classes.MassSpringDamperPlant import MassSpringDamperPlant
-from src.sample.classes.TrophophasePlant import TrophophasePlant
+from src.sample.classes.plants.ChemostatPlant import ChemostatPlant
+from src.sample.classes.plants.IdiophasePlant import IdiophasePlant
+from src.sample.classes.plants.MassSpringDamperPlant import MassSpringDamperPlant
+
+from src.sample.classes.plants.YeastFermentation import FedBatchYeastPlant
+from src.sample.classes.plants.TrophophasePlant import TrophophasePlant
 from src.hyperparam_config import *
 import matplotlib.pyplot as plt
 
@@ -28,12 +30,13 @@ def main() -> None:
 	option below. The dataset folder is named after the plant class.
 	"""
 
-	hyperparam_config = hyperparam_config_ChemostatPlant
-	#hyperparam_config = hyperparam_config_MassSpringDamperPlant
+	#hyperparam_config = hyperparam_config_IdiophasePlant
+	# hyperparam_config = hyperparam_config_TrophophasePlant
+	hyperparam_config = hyperparam_config_FedBatchYeastPlant
 
 	# Choose plant model and corresponding hyperparameters
-	plant = ChemostatPlant(hyperparam_config=hyperparam_config)
-	#plant = MassSpringDamperPlant(hyperparam_config=hyperparam_config)
+	plant = FedBatchYeastPlant(hyperparam_config=hyperparam_config)
+	# plant = ChemostatPlant(hyperparam_config=hyperparam_config)
 
 	# Directory name will be e.g. 'ChemostatPlant_training_data'
 
@@ -51,7 +54,7 @@ def main() -> None:
         plant,
         hyperparam_config,
         dirname=dirname,
-        show_plots=False,
+        show_plots=True,
         save_logs=False
     )
 

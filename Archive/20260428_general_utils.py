@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 # import machine learning modules
-from sample.classes.MambaInverseController import MambaInverseController
+from sample.classes.controllers.MambaInverseController import MambaInverseController
 from src.sample.decorators.general_decorators import *
 from src.sample.utils.saving_utils import *
 from src.sample.config import *

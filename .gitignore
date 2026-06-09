@@ -24,5 +24,6 @@ dwsim_bin/
 *.dll
 *.exe
 *.so
+*.json
 
 Archive/

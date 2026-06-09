@@ -114,6 +114,7 @@ def save_to_json(data, dirname, filename, max_path_length=255):
     automatically. Float columns in DataFrames are rounded to two decimal places before saving.
     If the full path exceeds max_path_length, the filename is automatically truncated.
     """
+    
     # 1. Handle the input type
     # If it's a DataFrame, convert to a list of dicts (records)
     if isinstance(data, pd.DataFrame):
@@ -140,10 +141,22 @@ def save_to_json(data, dirname, filename, max_path_length=255):
     final_path = os.path.join(dirname, filename)
 
     # 4. Write the file
+    # Custom encoder to catch hidden numpy arrays or types automatically
+    class NpEncoder(json.JSONEncoder):
+        def default(self, obj):
+            import numpy as np
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            if isinstance(obj, np.integer):
+                return int(obj)
+            if isinstance(obj, np.floating):
+                return float(obj)
+            return super(NpEncoder, self).default(obj)
+
+    # 4. Write the file
     with open(final_path, 'w', encoding='utf-8') as f:
-        # indent=4 makes the JSON readable (pretty-print)
-        # ensure_ascii=False handles special characters correctly
-        json.dump(data_to_save, f, indent=4, ensure_ascii=False)
+        # Added cls=NpEncoder to intercept and convert ndarrays safely
+        json.dump(data_to_save, f, indent=4, ensure_ascii=False, cls=NpEncoder)
     
     print(f"✅ JSON saved: {final_path}")
 

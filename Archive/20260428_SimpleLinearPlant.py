@@ -1,5 +1,5 @@
 import numpy as np
-from src.sample.classes.BasePlant import BasePlant
+from sample.classes.plants.BasePlant import BasePlant
 import torch
 
 

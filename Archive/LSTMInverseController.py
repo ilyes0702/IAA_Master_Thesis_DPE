@@ -1,7 +1,7 @@
 # Import necessary libraries for PyTorch neural network functionality
 import torch
 import torch.nn as nn
-from src.sample.classes.BaseInverseController import BaseInverseController
+from sample.classes.controllers.BaseInverseController import BaseInverseController
 
 # Define an LSTM-based controller class that inherits from the base controller interface
 class LSTMInverseController(BaseInverseController):
