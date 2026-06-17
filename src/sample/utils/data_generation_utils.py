@@ -81,7 +81,7 @@ def generate_canaday_signal_single(hyperparam_config, channel_idx=1):
     u_buffer = torch.clamp(u_buffer, u_hard_min, u_hard_max)
     
     return u_buffer, u_center
-
+from torchdiffeq import odeint
 
 def generate_canaday_signals(hyperparam_config):
     """Generate independent MIMO control vectors using index-aware tracking."""
@@ -108,10 +108,94 @@ def generate_canaday_signals(hyperparam_config):
 # =====================================================================
 # 2. FIXED: Fully Clean MIMO Training Batch (No Delays)
 # =====================================================================
+
+class TorchDiffeqPlantWrapper(torch.nn.Module):
+    def __init__(self, plant):
+        super().__init__()
+        self.plant = plant
+        self.current_u = None  # We will update this dynamically at every macro step
+
+    def forward(self, t, state):
+        # state shape: [batch_size, 2]
+        x1, x2 = state[:, 0:1], state[:, 1:2]
+        
+        # Pull the constant control input for this specific macro interval
+        u1 = self.current_u 
+        # print(f"DEBUG -> t: {t}, dtype: {t.dtype}, device: {t.device}")
+        # print(f"DEBUG -> state dtype: {state.dtype}, device: {state.device}")
+        # Use your plant's native PyTorch dynamics equations
+        dx1dt, dx2dt = self.plant.dynamics(x1, x2, u1, t)
+        
+        # Concatenate back to [batch_size, 2]
+        return torch.cat([dx1dt, dx2dt], dim=1)
+
+def generate_training_batch_gpu(plant, hyperparam_config):
+    sig_cfg = hyperparam_config["signal"]
+    train_cfg = hyperparam_config["train"]
+
+    seq_len = int(sig_cfg["seq_len"])
+    dt = sig_cfg["dt"]
+    batch_size = int(train_cfg["batch_size"])
+    delta_steps = int(train_cfg.get("delay_steps", 1)) 
+    device = train_cfg["device"]
+
+    # Initialize states directly on the GPU
+    state = plant.get_initial_state(batch_size).to(device)
+
+    extended_config = copy.deepcopy(hyperparam_config)
+    extended_config["signal"]["seq_len"] = seq_len + delta_steps
+    u_buffer, D_center = generate_canaday_signals(extended_config)
+
+    raw_y_history = []
+    raw_u_history = []
+    raw_state_history = []
+
+    # Initialize our torchdiffeq plant wrapper
+    gpu_solver = TorchDiffeqPlantWrapper(plant)
+
+    total_simulation_steps = seq_len + delta_steps
+    for t_idx in range(total_simulation_steps):
+        t_start = t_idx * dt
+        t_end = t_start + dt
+        
+        u_signal = u_buffer[:, t_idx, :].to(device)  # Shape: [batch_size, output_dim]
+        y_t = plant.get_y(state, t_start)
+
+        raw_y_history.append(y_t)
+        raw_u_history.append(u_signal)
+        raw_state_history.append(state.clone())
+
+        # Update the static control input for this interval inside the wrapper
+        gpu_solver.current_u = u_signal
+
+        # Define the local micro-time evaluation interval for the adaptive step
+        t_span = torch.tensor([t_start, t_end], device=device, dtype=torch.float32).float()
+
+        # Integrate the entire batch simultaneously on the GPU!
+        # 'dopri5' is the GPU equivalent to SciPy's 'RK45'
+        solution = odeint(gpu_solver, state, t_span, method='dopri5', rtol=1e-5, atol=1e-7)
+        
+        # odeint returns evaluations at [t_start, t_end], we grab the state at t_end
+        state = solution[1].detach()
+
+    # Slicing and tensor construction remains completely untouched:
+    all_y_t = raw_y_history[:seq_len]  
+    all_y_next = raw_y_history[delta_steps : seq_len + delta_steps]  
+    all_u = raw_u_history[:seq_len]  
+    all_states = raw_state_history[:seq_len]
+
+    x_tensor = torch.cat([torch.stack(all_y_t, dim=1), torch.stack(all_y_next, dim=1)], dim=-1)
+    y_target = torch.stack(all_u, dim=1)
+    state_tensor = torch.stack(all_states, dim=1)
+
+    return x_tensor, y_target, D_center, state_tensor
+
+
 def generate_training_batch(plant, hyperparam_config):
     """
     Generate a clean MIMO training batch without any look-back delay tensors.
-    Slices perfectly to match only y_t and y_next.
+    Slices perfectly to match only y_t and y_next. Also tracks and returns 
+    the raw plant continuous state history [x1, x2, x3, x4] for validation clipping.
     """
     sig_cfg = hyperparam_config["signal"]
     train_cfg = hyperparam_config["train"]
@@ -132,6 +216,7 @@ def generate_training_batch(plant, hyperparam_config):
 
     raw_y_history = []
     raw_u_history = []
+    raw_state_history = [] # 🛠️ NEW: Initialize state tracking history list
 
     total_simulation_steps = seq_len + delta_steps
     for t_idx in range(total_simulation_steps):
@@ -141,6 +226,7 @@ def generate_training_batch(plant, hyperparam_config):
 
         raw_y_history.append(y_t)
         raw_u_history.append(u_signal)
+        raw_state_history.append(state.clone()) # 🛠️ NEW: Store the current state tensor [batch_size, state_dim]
 
         state, _ = plant.step(state, u_signal, t, dt)
         state = state.detach()
@@ -149,6 +235,9 @@ def generate_training_batch(plant, hyperparam_config):
     all_y_t = raw_y_history[:seq_len]  
     all_y_next = raw_y_history[delta_steps : seq_len + delta_steps]  
     all_u = raw_u_history[:seq_len]  
+    
+    # 🛠️ NEW: Slice states matching your current time-step tracking window (0 to seq_len)
+    all_states = raw_state_history[:seq_len]
 
     # Construct the training matrix tensors
     # x_tensor shape: [batch_size, seq_len, input_dim * 2] (holding [y_t, y_next])
@@ -160,7 +249,12 @@ def generate_training_batch(plant, hyperparam_config):
     # y_target shape: [batch_size, seq_len, output_dim]
     y_target = torch.stack(all_u, dim=1).to(device)
 
-    return x_tensor, y_target, D_center
+    # 🛠️ NEW: Stack states to output a clean [batch_size, seq_len, state_dim] tensor
+    state_tensor = torch.stack(all_states, dim=1).to(device)
+
+    # Return exactly 4 values to resolve the ValueError unpack crash
+    return x_tensor, y_target, D_center, state_tensor
+
 
 
 # =====================================================================
@@ -177,7 +271,7 @@ def generate_and_save_dataset(
     Generate and save a clean MIMO dataset tracking only current and future plant outputs.
     Removes historical delayed state inputs entirely. Logs a console warning specifying 
     which sequence transcends hard bounds defined inside hyperparam_config['plant'] for 
-    BOTH outputs (y) and control inputs (u).
+    outputs (y), control inputs (u), and state variables (x_1, x_2, x_3, x_4).
     
     EXCLUDES any out-of-bounds curves from the final training dataset and stats.
     """
@@ -196,11 +290,14 @@ def generate_and_save_dataset(
     plots_dir = os.path.join(dirname, "dataset_plots")
 
     print(f"🚀 Running batch simulation for {total_sequences} sequences...")
-    x_tensor_raw, y_target_raw, batch_d_centers = generate_training_batch(plant, hyperparam_config)
+    
+    # Capturing the raw continuous state trajectory matrix from your generation engine
+    x_tensor_raw, y_target_raw, batch_d_centers, state_tensor_raw = generate_training_batch_gpu(plant, hyperparam_config)
 
     x_np = x_tensor_raw.cpu().numpy()  
     y_np = y_target_raw.cpu().numpy()  
     batch_d_centers_np = batch_d_centers.cpu().numpy()  
+    state_np = state_tensor_raw.cpu().numpy() # Shape expected: [Total_Seqs, Seq_Len, state_dim]
 
     violated_sequences_count = 0
     valid_x_list, valid_y_list, valid_dfs = [], [], []
@@ -210,6 +307,7 @@ def generate_and_save_dataset(
         y_t = x_np[s_idx, :, :input_dim]          
         y_next = x_np[s_idx, :, input_dim:]       
         u = y_np[s_idx]                           
+        states = state_np[s_idx]                  # Slices state history for this specific sequence
 
         seq_has_violation = False
 
@@ -245,6 +343,28 @@ def generate_and_save_dataset(
                       f"Bound: {h_max}, Max Found: {np.max(single_seq_u):.4f}\033[0m")
                 seq_has_violation = True
 
+        # 🛡️ 3. DYNAMIC STATE VARIABLES HARD BOUNDS CHECK
+        # Automatically detects the number of states from the array shape
+        state_dim = states.shape[-1] 
+
+        for i in range(state_dim):
+            single_state_seq = states[:, i]
+            
+            # Dynamically fetch configurations based on 1-indexed state names (x_1, x_2, ...)
+            x_min = plant_cfg.get(f"x_{i+1}_hard_min")
+            x_max = plant_cfg.get(f"x_{i+1}_hard_max")
+            
+            if x_min is not None and np.min(single_state_seq) < x_min:
+                print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] State variable x_{i+1} dropped below limit! "
+                      f"Bound: {x_min}, Min Found: {np.min(single_state_seq):.4f}\033[0m")
+                seq_has_violation = True
+                
+            if x_max is not None and np.max(single_state_seq) > x_max:
+                print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] State variable x_{i+1} exceeded limit! "
+                      f"Bound: {x_max}, Max Found: {np.max(single_state_seq):.4f}\033[0m")
+                seq_has_violation = True
+
+        # Rejection handling
         if seq_has_violation:
             violated_sequences_count += 1
             print(f"\033[91m🛑 Excluding [Seq {s_idx}] from final dataset structures.\033[0m")
@@ -268,6 +388,10 @@ def generate_and_save_dataset(
             columns.append(f"u_{i+1}")
             values.append(u[:, i])
 
+        for i in range(state_dim):
+            columns.append(f"x_{i+1}")
+            values.append(states[:, i])
+
         d_center = np.squeeze(batch_d_centers_np[s_idx])
         for i in range(output_dim):
             columns.append(f"D_center_u_{i+1}")
@@ -277,7 +401,8 @@ def generate_and_save_dataset(
         seq_df = pd.DataFrame({col: val for col, val in zip(columns, values)})
         valid_dfs.append(seq_df)
         
-        filename_base = f"sequence_{valid_idx_counter}.csv"
+        #filename_base = f"sequence_{valid_idx_counter}.csv"
+        filename_base = f"sequence.csv"
         valid_idx_counter += 1
         
         if save_logs:
@@ -296,6 +421,10 @@ def generate_and_save_dataset(
             for i in range(output_dim):
                 signals_to_plot.append(u[:, i])
                 labels_to_plot.append(f"u_{i+1}")
+            
+            # # Add all four states into the debugging plot list
+            # signals_to_plot.extend([x_1_seq, x_2_seq, x_3_seq, x_4_seq])
+            # labels_to_plot.extend(["x_1", "x_2", "x_3", "x_4"])
 
             plot_signals(
                 t=time_axis,
@@ -309,12 +438,14 @@ def generate_and_save_dataset(
                 show=True
             )
 
+            
+
     # 🚨 FINAL BOUNDS VIOLATION & FILTERING SUMMARY
     violation_percentage = (violated_sequences_count / total_sequences) * 100
     valid_sequences_count = total_sequences - violated_sequences_count
 
     print("\n" + "="*60)
-    print("📊 BOUNDS CHECK SUMMARY REPORT (y & u)")
+    print("📊 BOUNDS CHECK SUMMARY REPORT (y, u, & all states)")
     print(f"Total Raw Sequences Evaluated : {total_sequences}")
     if violated_sequences_count > 0:
         print(f"\033[91m\033[1m❌ Out-of-Bounds Curves Found : {violated_sequences_count} curves ({violation_percentage:.2f}%)\033[0m")
@@ -323,7 +454,6 @@ def generate_and_save_dataset(
         print("\033[92m\033[1m   All generated curves are within the defined hard boundaries! (100% accepted)\033[0m")
     print("="*60 + "\n")
 
-    # Handle case where the entire batch is rejected to prevent PyTorch stack crashes
     if valid_sequences_count == 0:
         print("\033[91m\033[1mCRITICAL ERROR: 100% of generated data curves violated bounds. No files exported.\033[0m")
         return
@@ -373,3 +503,4 @@ def generate_and_save_dataset(
     }
     save_training_dataset(data_to_save, dirname=dirname)
     print(f"🎉 Clean tracking MIMO dataset generated successfully ({valid_sequences_count} valid traces preserved).")
+

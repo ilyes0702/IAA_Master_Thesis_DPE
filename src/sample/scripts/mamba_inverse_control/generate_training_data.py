@@ -18,6 +18,7 @@ from src.sample.classes.plants.YeastFermentation import FedBatchYeastPlant
 from src.sample.classes.plants.TrophophasePlant import TrophophasePlant
 from src.hyperparam_config import *
 import matplotlib.pyplot as plt
+from src.sample.classes.plants.PenicillinPlantBirol2002 import PenicillinPlantBirol2002
 
 # Apply project style for plots (if plotting is enabled)
 plt.style.use("src/sample/style.mplstyle")
@@ -30,33 +31,26 @@ def main() -> None:
 	option below. The dataset folder is named after the plant class.
 	"""
 
-	#hyperparam_config = hyperparam_config_IdiophasePlant
-	# hyperparam_config = hyperparam_config_TrophophasePlant
-	hyperparam_config = hyperparam_config_FedBatchYeastPlant
-
+	hyperparam_config = hyperparam_config_TrophophasePlant
+	#hyperparam_config = hyperparam_config_ChemostatPlant
+	#hyperparam_config = hyperparam_config_PenicillinPlantBirol2002
+	#hyperparam_config = hyperparam_config_MassSpringDamperPlant
 	# Choose plant model and corresponding hyperparameters
-	plant = FedBatchYeastPlant(hyperparam_config=hyperparam_config)
-	# plant = ChemostatPlant(hyperparam_config=hyperparam_config)
+	# plant = PenicillinPlantBirol2002(hyperparam_config=hyperparam_config)
 
-	# Directory name will be e.g. 'ChemostatPlant_training_data'
-
-	#hyperparam_config = hyperparam_config_IdiophasePlant
+	plant = TrophophasePlant(hyperparam_config=hyperparam_config)
 
 	#plant = IdiophasePlant(hyperparam_config)
 	dirname = plant.__class__.__name__ + "_training_data"
-
-	# Generate and save a single batch of training data without showing 
-
-	
 
     # Generate and save MIMO dataset with delays
 	generate_and_save_dataset(
         plant,
         hyperparam_config,
         dirname=dirname,
-        show_plots=True,
+        show_plots=False,
         save_logs=False
-    )
+		)
 
 if __name__ == "__main__":
 	main()

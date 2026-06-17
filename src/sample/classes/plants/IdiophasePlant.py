@@ -15,6 +15,9 @@ class IdiophasePlant:
         self.p7 = torch.tensor(hyperparam_config["plant"]["p7"], device=self.device)         # e.g., 0.04
         self.q = torch.tensor(hyperparam_config["plant"]["q"], device=self.device)           # e.g., 2000
         self.mu_Pen = torch.tensor(hyperparam_config["plant"]["mu_Pen"], device=self.device) # e.g., 3
+        self.m_S = torch.tensor(hyperparam_config["plant"]["m_S"], device = self.device)
+
+        self.hyperparam_config = hyperparam_config
 
         # Fixed volume for Idiophase if specified as constant, or base initialization
         # Table 2 specifies V(t) = 170 for the idiophase phase
@@ -31,13 +34,14 @@ class IdiophasePlant:
 
     def get_initial_state(self, batch_size):
         """
-        Returns [batch_size, 4] tensor of [x1 (Biomass), x2 (Substrate), x3 (Precursor), x4 (Penicillin)].
-        Initialized with positive uniform distributions for robust inverse control convergence.
+        Returns [batch_size, 4] tensor initialized to identical constant values across the batch.
         """
-        x1_init = torch.rand((batch_size, 1), device=self.device) * 50.0 + 1500   # Biomass mass
-        x2_init = torch.rand((batch_size, 1), device=self.device) * 100.0 + 2000 # Substrate mass
-        x3_init = torch.rand((batch_size, 1), device=self.device) * 2.0 + 25.0 # Precursor mass
-        x4_init = torch.rand((batch_size, 1), device=self.device) * 50 + 1600    # Penicillin mass
+        # torch.full creates a 2D tensor of shape [batch_size, 1] filled with the scalar value
+        x1_init = torch.full((batch_size, 1), self.hyperparam_config["plant"]["x10"], device=self.device)
+        x2_init = torch.full((batch_size, 1), self.hyperparam_config["plant"]["x20"], device=self.device)
+        x3_init = torch.full((batch_size, 1), self.hyperparam_config["plant"]["x30"], device=self.device)
+        x4_init = torch.full((batch_size, 1), self.hyperparam_config["plant"]["x40"], device=self.device)
+
         return torch.cat([x1_init, x2_init, x3_init, x4_init], dim=1)
 
     def get_y(self, state, t):
@@ -72,16 +76,13 @@ class IdiophasePlant:
 
         # System differential state equations
         dx1dt = mu * x1
-        dx2dt = - (1.0 / self.p1) * mu * x1 - (1.0 / self.p5) * self.mu_Pen * x1 - self.m_S_functional(x1) + self.p2 * u1
+        dx2dt = - (1.0 / self.p1) * mu * x1 - (1.0 / self.p5) * self.mu_Pen * x1 - self.m_S * x1 + self.p2 * u1
         dx3dt = - (1.0 / self.q) * self.mu_Pen * x1 + self.p6 * u2
         dx4dt = self.mu_Pen * x1 - self.p7 * x4
 
         return dx1dt, dx2dt, dx3dt, dx4dt
 
-    def m_S_functional(self, x1):
-        """Maintenance energy loss functional term (m_S * x1)."""
-        # ms parameter value from Tab 1 is 23
-        return 23.0 * x1
+    
 
     def step(self, state, u, t, dt):
         """
@@ -122,7 +123,7 @@ class IdiophasePlant:
         return [
             {
                 "cols": ["x1", "x2"],
-                "labels": ["Biomass Mass (x1)", "Substrate Mass (x2)"],
+                "labels": ["Biomass [mg] (x1)", "Substrate Mass (x2)"],
                 "title": "Biomass & Substrate Evolution",
                 "ylabel": "Mass [g or mg]"
             },
@@ -159,3 +160,8 @@ class IdiophasePlant:
             "precursor_mass": state[2].item() if torch.is_tensor(state) else state[2],
             "penicillin_mass": state[3].item() if torch.is_tensor(state) else state[3]
         }
+    
+
+
+
+    

@@ -29,7 +29,7 @@ class ChemostatPlant:
         mu = (self.mu_max * s) / (self.Ks + s)
         return mu 
 
-    def dynamics(self, x, s, u):
+    def dynamics(self, x, s, u, t = None):
         """
         Calculates continuous derivative transformations for standard Chemostat vessels.
         """

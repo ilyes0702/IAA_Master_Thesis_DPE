@@ -1,0 +1,21 @@
+# Core ML Framework (CUDA 12.4 Aligned)
+--index-url https://download.pytorch.org/whl/cu124
+torch==2.4.1
+torchvision==0.19.1
+torchaudio==2.4.1
+
+# Mamba Ecosystem (Pre-compiled wheels bypass resolver conflicts)
+causal-conv1d
+mamba-ssm
+
+# Scientific & Simulation Toolkit
+numpy
+scipy
+scikit-learn
+pandas
+openpyxl
+matplotlib
+pytz
+
+# Monitoring & Logging
+tensorboard

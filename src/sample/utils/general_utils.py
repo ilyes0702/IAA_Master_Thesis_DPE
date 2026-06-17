@@ -3,6 +3,8 @@ import os
 import numpy as np
 import pandas as pd
 
+from src.sample.utils.plotting_utils import *
+
 # import machine learning modules
 from src.sample.decorators.general_decorators import *
 from src.sample.utils.saving_utils import *
@@ -40,6 +42,7 @@ def compute_and_save_tracking_metrics(
     dt,
     dirname,
     settle_tol=0.05, # Band for "tracking error"
+    suffix = None
 ):
     """
     Pure tracking metrics for curve comparison.
@@ -107,6 +110,9 @@ def compute_and_save_tracking_metrics(
     summary_df.columns = ['metric', 'mean', 'std', 'min', 'max']
 
     # --- Save ---
+
+    file_ext = f"_{suffix}" if suffix else ""
+    
     save_df_to_csv(df, dirname, "tracking_metrics_per_trajectory")
     save_df_to_csv(summary_df, dirname, "tracking_metrics_summary")
 
@@ -1168,6 +1174,262 @@ def load_model(model_class, checkpoint_path, device=None):
     return model
 
 
+# Local helper wrapper class for torchdiffeq execution inside the tracking loop
+class LocalTrackingSolverWrapper(torch.nn.Module):
+    def __init__(self, plant):
+        super().__init__()
+        self.plant = plant
+        self.current_u = None
+
+    def forward(self, t, state):
+        # Enforce float32 tracking to avoid nextafter_cuda Long errors
+        t = t.to(dtype=torch.float32, device=state.device)
+        state = state.to(dtype=torch.float32, device=state.device)
+        
+        x1, x2 = state[:, 0:1], state[:, 1:2]
+        u1 = self.current_u.to(dtype=torch.float32, device=state.device)
+        
+        dx1dt, dx2dt = self.plant.dynamics(x1, x2, u1, t)
+        return torch.cat([dx1dt, dx2dt], dim=1).to(dtype=torch.float32)
+
+
+def simulate_tracking_torchdiffeq(
+    model,
+    plant,
+    r_trajectories,  
+    hyperparam_config,
+    x_scaler,
+    y_scaler,
+    dirname,
+    plot_individual_plots=False
+):
+    """
+    Simulates a controlled MIMO plant using torchdiffeq adaptive-step integration 
+    over a specified time horizon while tracking separate reference trajectories.
+    """
+    train_cfg = hyperparam_config["train"]
+    sig_cfg = hyperparam_config["signal"]
+    sim_cfg = hyperparam_config["simulate"]
+    mamba_cfg = hyperparam_config.get("mamba", {})
+    plant_cfg = hyperparam_config["plant"]
+
+    model.core.return_bc = True  
+    steps = sim_cfg["seq_len"]
+    dt = sig_cfg["dt"]
+    batch_size = sim_cfg["batch_size"]
+    device = train_cfg["device"]
+    input_dim = mamba_cfg.get("input_dim", 2)    
+    output_dim = mamba_cfg.get("output_dim", 2)  
+
+    if len(r_trajectories) != input_dim:
+        raise ValueError(f"Expected {input_dim} reference trajectories, got {len(r_trajectories)}")
+
+    r_trajectory = torch.stack(r_trajectories, dim=1).to(device)  
+    r_np = r_trajectory.cpu().numpy()  
+
+    all_y = torch.zeros((steps, batch_size, input_dim), device=device)  
+    all_u = torch.zeros((steps, batch_size, output_dim), device=device)  
+    
+    sample_state = plant.get_initial_state(1)
+    state_dim = sample_state.shape[-1]
+    all_states = torch.zeros((steps, batch_size, state_dim), device=device)  
+
+    # Force initial state to be float32 to protect torchdiffeq execution graph
+    state = plant.get_initial_state(batch_size).to(device=device, dtype=torch.float32)
+
+    model.eval()
+    ssm_history = {
+        "step": [], "time": [],
+        "A_bar": [], "B_bar": [], "C": [], "dt": []
+    }
+    print(f"📈 Testing MIMO Trajectory Tracking via torchdiffeq: {batch_size} trajectories across {steps} steps...")
+
+    history_pairs = [[] for _ in range(batch_size)]
+
+    # Instantiate our localized adaptive step wrapper
+    gpu_solver = LocalTrackingSolverWrapper(plant)
+
+    with torch.no_grad():
+        for i in range(steps):
+            t_start = i * dt
+            t_end = t_start + dt
+            
+            # 1. Obtain current tracking performance observable
+            y_current = plant.get_y(state, t_start).to(dtype=torch.float32)  
+
+            target_r = r_trajectory[i].expand(batch_size, input_dim)  
+            y_curr_np = y_current.cpu().numpy()  
+            tgt_r_np = target_r.cpu().numpy()  
+
+            # 2. Sequential Normalization Processing
+            batch_y_t_norm = []
+            batch_y_next_norm = []
+
+            for b_idx in range(batch_size):
+                input_pair = np.hstack([y_curr_np[b_idx], tgt_r_np[b_idx]])  
+                input_normalized = x_scaler.transform([input_pair])[0] if x_scaler else input_pair
+                history_pairs[b_idx].append(input_normalized)
+
+                curr_history = np.array(history_pairs[b_idx])  
+                batch_y_t_norm.append(curr_history[:, :input_dim])  
+                batch_y_next_norm.append(curr_history[:, input_dim:])  
+
+            y_t_tensor = torch.tensor(np.array(batch_y_t_norm), dtype=torch.float32).to(device)
+            y_next_tensor = torch.tensor(np.array(batch_y_next_norm), dtype=torch.float32).to(device)
+
+            # 3. Model inference to isolate the next control sequence action block
+            u_seq_norm = model(y_t_tensor, y_next_tensor)  
+            
+            # Capture structural SSM variables for auditing
+            A_bar_all = model.A_bar  
+            B_bar_all = model.B_bar  
+            C_all = model.C  
+            dt_all = model.mamba_dt  
+            
+            A_bar_tau = A_bar_all[:, -1, :, :].cpu().numpy()  
+            B_bar_tau = B_bar_all[:, -1, :, :].cpu().numpy()  
+            C_tau = C_all[:, :, -1].cpu().numpy()    
+            dt_tau = dt_all[:, -1].cpu().numpy()     
+            D_tau = model.D.cpu().numpy()
+            
+            ssm_history["step"].append(i)
+            ssm_history["time"].append(t_start)
+            ssm_history["A_bar"].append(A_bar_tau.tolist())  
+            ssm_history["B_bar"].append(B_bar_tau.tolist())
+            ssm_history["C"].append(C_tau.tolist())
+            ssm_history["dt"].append(dt_tau.tolist())
+            
+            u_norm_np = u_seq_norm[:, -1, :].cpu().numpy()  
+
+            if y_scaler:
+                u_unscaled = y_scaler.inverse_transform(u_norm_np)  
+            else:
+                u_unscaled = u_norm_np
+
+            # 4. Enforce actuator hard clipping profiles 
+            u_unscaled = np.clip(u_unscaled, plant_cfg["u_1_hard_min"], plant_cfg["u_1_hard_max"])  
+            u = torch.tensor(u_unscaled, dtype=torch.float32, device=device)  
+
+            # 5. Logging current conditions BEFORE step integration update
+            all_y[i] = y_current  
+            all_u[i] = u  
+            all_states[i] = state  
+
+            # 6. INTEGRATION STEP VIA TORCHDIFFEQ
+            # Bind the static input profile decided for this interval window
+            gpu_solver.current_u = u
+            
+            # Construct floating point localized t_span matrix 
+            t_span = torch.tensor([float(t_start), float(t_end)], dtype=torch.float32, device=device)
+            
+            # Execute parallel batch adaptive step integration
+            solution = odeint(gpu_solver, state, t_span, method='dopri5', rtol=1e-5, atol=1e-7)
+            
+            # Extract end configuration state vector from index 1 [t_start, t_end]
+            state = solution[1].to(dtype=torch.float32)
+
+    # --- PLOTTING & EXPORT BLOCKS ---
+    # (The remainder of your generation/saving/plotting code remains fully untouched)
+    time_axis = np.arange(steps) * dt
+    trajectory_reports = []
+    total_stacked_blocks = input_dim + output_dim
+    
+    plot_metadata = plant.get_plot_config()
+    
+    save_to_json(data=ssm_history, dirname=dirname, filename="ssm_matrices_history")
+    
+    for b in range(batch_size):
+        state_dirname = os.path.join(dirname, f"initial_state_{b}")
+        os.makedirs(state_dirname, exist_ok=True)
+
+        y_traj = all_y[:, b, :].cpu().numpy()  
+        u_traj = all_u[:, b, :].cpu().numpy()  
+        states_traj = all_states[:, b, :].cpu().numpy()  
+
+        df_data = {
+            "time": np.tile(time_axis, total_stacked_blocks),
+            "signal_type": np.repeat(
+                [f"y_{i+1}" for i in range(input_dim)] + [f"u_{i+1}" for i in range(output_dim)],
+                steps
+            ),
+            "value": np.concatenate([y_traj[:, i] for i in range(input_dim)] + [u_traj[:, i] for i in range(output_dim)]),
+        }
+        
+        for i in range(states_traj.shape[1]):
+            df_data[f"state_{i+1}"] = np.tile(states_traj[:, i], total_stacked_blocks)
+
+        df_traj = pd.DataFrame(df_data)
+        save_df_to_csv(df_traj, dirname=state_dirname, filename="state_report")
+        trajectory_reports.append(df_traj)
+
+        if plot_individual_plots:
+            u_meta = plot_metadata[3] if len(plot_metadata) > 3 else {}
+            for i in range(output_dim):
+                label = u_meta.get("labels", [f"u_{i+1}"])[0] if i == 0 else f"Control Input (u_{i+1})"
+                title = u_meta.get("title", "Control Profile") if i == 0 else f"Control Input Profile (u_{i+1})"
+                plot_signals(t=time_axis, signals=[u_traj[:, i]], labels=[label], title=f"Trajectory {b}: {title}", xlabel="Time (h)", ylabel=u_meta.get("ylabel", "Action Value"), dirname=state_dirname, filename=f"plot_control_signal_u_{i+1}")
+
+            y_meta = plot_metadata[2] if len(plot_metadata) > 2 else {}
+            meta_labels_ind = y_meta.get("labels", [])
+            for i in range(input_dim):
+                title = y_meta.get("title", "Tracking Performance")
+                if len(meta_labels_ind) > (i * 2 + 1):
+                    ind_y_label = meta_labels_ind[i * 2]
+                    ind_r_label = meta_labels_ind[i * 2 + 1]
+                elif len(meta_labels_ind) > i:
+                    ind_y_label = meta_labels_ind[i]
+                    ind_r_label = f"Target (r_{i+1})"
+                else:
+                    ind_y_label = f"Output (y_{i+1})"
+                    ind_r_label = f"Target (r_{i+1})"
+                
+                plot_signals(t=time_axis, signals=[y_traj[:, i], r_np[:, i]], labels=[ind_y_label, ind_r_label], title=f"Trajectory {b}: {title} (y_{i+1})", xlabel="Time (h)", ylabel=y_meta.get("ylabel", "Signal Value"), dirname=state_dirname, filename=f"plot_output_tracking_y_{i+1}")
+
+            for i in range(states_traj.shape[1]):
+                x_meta = plot_metadata[i] if i < len(plot_metadata) else {}
+                label = x_meta.get("labels", [f"State x_{i+1}"])[0]
+                title = x_meta.get("title", f"Internal Plant State (x_{i+1})")
+                plot_signals(t=time_axis, signals=[states_traj[:, i]], labels=[label], title=f"Trajectory {b}: {title}", xlabel="Time (h)", ylabel=x_meta.get("ylabel", "State Magnitude"), dirname=state_dirname, filename=f"plot_plant_state_x_{i+1}")
+
+    y_np = all_y.cpu().numpy()       
+    u_np = all_u.cpu().numpy()       
+    s_np = all_states.cpu().numpy()  
+
+    y_meta = plot_metadata[2] if len(plot_metadata) > 2 else {}
+    meta_labels = y_meta.get("labels", [])
+    for i in range(input_dim):
+        summary_signals = [y_np[:, j, i] for j in range(batch_size)] + [r_np[:, i]]
+        base_y_label = meta_labels[0] if len(meta_labels) > 0 else f"y_{i+1}"
+        base_r_label = meta_labels[1] if len(meta_labels) > 1 else f"r_{i+1}"
+        plot_signals(t=time_axis, signals=summary_signals, labels=[f"Traj {j} ({base_y_label})" for j in range(batch_size)] + [f"Target ({base_r_label})"], title=f"Batch Convergence ({base_y_label}) - {batch_size} Trajectories Overview", xlabel="Time (h)", ylabel=y_meta.get("ylabel", "System Output"), dirname=dirname, filename=f"batch_summary_y_{i+1}")
+
+    u_meta = plot_metadata[3] if len(plot_metadata) > 3 else {}
+    for i in range(output_dim):
+        label_base = u_meta.get("labels", [f"u_{i+1}"])[0] if i == 0 else f"u_{i+1}"
+        title_base = u_meta.get("title", "Control Profile") if i == 0 else f"Control Input Profile (u_{i+1})"
+        summary_inputs = [u_np[:, j, i] for j in range(batch_size)]
+        plot_signals(t=time_axis, signals=summary_inputs, labels=[f"Traj {j} ({label_base})" for j in range(batch_size)], title=f"Batch Profile: {title_base} - Overlaid Actions", xlabel="Time (h)", ylabel=u_meta.get("ylabel", "Action Value"), dirname=dirname, filename=f"batch_summary_u_{i+1}")
+
+    for i in range(s_np.shape[2]):
+        x_meta = plot_metadata[i] if i < len(plot_metadata) else {}
+        label_base = x_meta.get("labels", [f"x_{i+1}"])[0]
+        title_base = x_meta.get("title", f"State x_{i+1}")
+        summary_states = [s_np[:, j, i] for j in range(batch_size)]
+        plot_signals(t=time_axis, signals=summary_states, labels=[f"Traj {j} ({label_base})" for j in range(batch_size)], title=f"Batch Trajectories: {title_base} Ensembles", xlabel="Time (h)", ylabel=x_meta.get("ylabel", "State Magnitude"), dirname=dirname, filename=f"batch_summary_x_{i+1}")
+
+    tracking_metrics = {}
+    for i in range(input_dim):
+        y_traj = y_np[:, :, i]  
+        r_traj = r_np[:, i]  
+        metrics = compute_and_save_tracking_metrics(y_traj, r_traj, dt, dirname, suffix=f"y_{i+1}")
+        tracking_metrics[f"y_{i+1}"] = metrics
+
+    return {
+        "trajectory_dataframes": trajectory_reports,
+        "metrics": tracking_metrics,
+        "simulated_outputs": y_np,
+        "simulated_controls": all_u.cpu().numpy()
+    }
 
 def simulate_tracking(
     model,
@@ -1190,14 +1452,14 @@ def simulate_tracking(
     mamba_cfg = hyperparam_config.get("mamba", {})
     plant_cfg = hyperparam_config["plant"]
 
-
+    model.core.return_bc = True  # Enable returning B and C
     # Unpack specific parameters
     steps = sim_cfg["seq_len"]
     dt = sig_cfg["dt"]
     batch_size = sim_cfg["batch_size"]
     device = train_cfg["device"]
-    input_dim = mamba_cfg.get("input_dim", 2)    # Number of plant outputs (y1, y2)
-    output_dim = mamba_cfg.get("output_dim", 2)  # Number of control inputs (u1, u2)
+    input_dim = mamba_cfg["input_dim"]    # Number of plant outputs (y1, y2)
+    output_dim = mamba_cfg["output_dim"]  # Number of control inputs (u1, u2)
 
     # Validate r_trajectories
     if len(r_trajectories) != input_dim:
@@ -1247,6 +1509,7 @@ def simulate_tracking(
             batch_y_next_norm = []
 
             for b_idx in range(batch_size):
+                
                 input_pair = np.hstack([y_curr_np[b_idx], tgt_r_np[b_idx]])  # Shape: [input_dim * 2]
                 input_normalized = x_scaler.transform([input_pair])[0] if x_scaler else input_pair
                 history_pairs[b_idx].append(input_normalized)
@@ -1262,7 +1525,28 @@ def simulate_tracking(
 
             # Model inference
             u_seq_norm = model(y_t_tensor, y_next_tensor)  # Shape: [batch_size, i+1, output_dim]
-
+            
+            A_bar_all = model.A_bar  # Shape: [batch_size, i+1, d_inner, d_state]
+            B_bar_all = model.B_bar  # Shape: [batch_size, i+1, d_inner, d_state]
+            C_all = model.C          # Shape: [batch_size, i+1, d_state]
+            dt_all = model.mamba_dt  # Shape: [batch_size, i+1]
+            mamba_dt = model.mamba_dt  # Shape: [batch_size, i+1]
+            # Now you can use B and C for logging, visualization, or analysis
+            # Slice the last sequence element to isolate the matrices operating at step \tau
+            A_bar_tau = A_bar_all[:, -1, :, :].cpu().numpy()  # Shape: [batch_size, d_inner, d_state]
+            B_bar_tau = B_bar_all[:, -1, :, :].cpu().numpy()  # Shape: [batch_size, d_inner, d_state]
+            C_tau = C_all[:, :, -1].cpu().numpy()            # Shape: [batch_size, d_state]
+            dt_tau = dt_all[:, -1].cpu().numpy()             # Shape: [batch_size]
+            # D is static across time, convert directly to numpy
+            D_tau = model.D.cpu().numpy()
+            # 3. Log values into your ssm_history dictionary for serialization
+            ssm_history["step"].append(i)
+            ssm_history["time"].append(t)
+            ssm_history["A_bar"].append(A_bar_tau.tolist())  # Nested lists for JSON compatibility
+            ssm_history["B_bar"].append(B_bar_tau.tolist())
+            ssm_history["C"].append(C_tau.tolist())
+            ssm_history["dt"].append(dt_tau.tolist())
+            #print(f"⚙️ Step {i} | Matrix Slices -> A_bar_tau shape: {A_bar_tau.shape}, B_bar_tau shape: {B_bar_tau.shape}, C shape : {C_tau.shape}, D shape: {D_tau.shape}")
             # Extract the normalized control signal for the CURRENT step (the last item)
             u_norm_np = u_seq_norm[:, -1, :].cpu().numpy()  
 

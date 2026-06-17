@@ -1,4 +1,5 @@
 import torch
+import torchode
 
 class TrophophasePlant:
     def __init__(self, hyperparam_config):
@@ -13,6 +14,8 @@ class TrophophasePlant:
         self.p1 = self.plant_cfg["p1"]      # [g TS/(mg S)]
         self.p2 = self.plant_cfg["p2"]     # [mg S/l]
 
+        self.hyperparam_config = hyperparam_config
+
     def get_volume(self, t):
         """
         Calculates the time-dependent reactor volume V(t) based on Table 1:
@@ -25,7 +28,8 @@ class TrophophasePlant:
         ramp1 = torch.clamp(t - 5.0, min=0.0)
         ramp2 = torch.clamp(t - 15.0, min=0.0)
         
-        return 150.0 + 2.0 * ramp1 - 2.0 * ramp2
+        #return 150.0 + 2.0 * ramp1 - 2.0 * ramp2
+        return 150
 
     def get_initial_state(self, batch_size):
         """
@@ -33,8 +37,8 @@ class TrophophasePlant:
         Initial values should be customized based on your initial culture mass.
         """
         # Example initialization for masses (in grams and milligrams respectively)
-        x1_init = torch.rand((batch_size, 1), device=self.device) * 50.0 + 1500.0 # Biomass mass between 100 and 150 g
-        x2_init = torch.rand((batch_size, 1), device=self.device) * 50 + 2000 # Substrate mass between 500 and 10500 mg
+        x1_init = torch.full((batch_size, 1), self.hyperparam_config["plant"]["x10"], device=self.device)  
+        x2_init = torch.full((batch_size, 1), self.hyperparam_config["plant"]["x20"], device=self.device)
         return torch.cat([x1_init, x2_init], dim=1)
 
     def get_y(self, state, t):

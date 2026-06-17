@@ -7,6 +7,7 @@ simulation routine.
 """
 
 import matplotlib.pyplot as plt
+from src.sample.classes.plants.PenicillinPlantBirol2002 import PenicillinPlantBirol2002
 from src.sample.config import get_run_description, log_message
 plt.style.use("src/sample/style.mplstyle")
 import torch
@@ -31,27 +32,26 @@ def main():
     # run_description = get_run_description()
     # log_message(f"RUN DESCRIPTION: {run_description}")
 
-    hyperparam_config = hyperparam_config_FedBatchYeastPlant   # Initialize the plant model using hyperparameters
-    plant = FedBatchYeastPlant(hyperparam_config=hyperparam_config)
+    hyperparam_config = hyperparam_config_TrophophasePlant   # Initialize the plant model using hyperparameters
+    plant = TrophophasePlant(hyperparam_config=hyperparam_config)
 
     #plant = TrophophasePlant(hyperparam_config_TrophophasePlant)
     
 
     # Path to the trained controller checkpoint (keep as configured)
     controller_path = (
-        "models/2026-06-08/2026-06-08_15-22-20/FedBatchYeastPlant_training/fold_2/2026-06-08_15-22-20_best_fold_model.pt"
+        "models/2026-06-17/2026-06-17_16-40-09/TrophophasePlant_training/fold_1/2026-06-17_16-40-09_best_fold_model.pt"
     )
 
     # Load the trained inverse controller
     loaded_controller = load_model(MambaInverseController, controller_path)
 
-    # Load input/output scalers from training run directory
     scaler_x = load_scaler(
-        "results/2026-06-08/2026-06-08_15-22-20/FedBatchYeastPlant_training/fold_2/scalers/2026-06-08_15-22-20_scaler_x.pkl"
+        "results/2026-06-17/2026-06-17_16-40-09/TrophophasePlant_training/fold_1/scalers/2026-06-17_16-40-09_scaler_x.pkl"
     )
 
     scaler_y = load_scaler(
-        "results/2026-06-08/2026-06-08_15-22-20/FedBatchYeastPlant_training/fold_2/scalers/2026-06-08_15-22-20_scaler_y.pkl"
+        "results/2026-06-17/2026-06-17_16-40-09/TrophophasePlant_training/fold_1/scalers/2026-06-17_16-40-09_scaler_y.pkl"
         )
     
     # Example: Separate sine and cosine trajectories for y1 and y2
@@ -66,19 +66,27 @@ def main():
         period=5.0    # period for cyclic dynamics
     )
 
-    r_static = generate_reference_trajectory(
+    r_static_y_1 = generate_reference_trajectory(
         steps=hyperparam_config["simulate"]["seq_len"],
         dt=hyperparam_config["signal"]["dt"],
         device=hyperparam_config["train"]["device"],
         mode="constant",
-        constant_val=40,
+        constant_val=0.05,
+    )
+
+    r_static_y_2 = generate_reference_trajectory(
+        steps=hyperparam_config["simulate"]["seq_len"],
+        dt=hyperparam_config["signal"]["dt"],
+        device=hyperparam_config["train"]["device"],
+        mode="constant",
+        constant_val=50,
     )
 
     r_smooth = generate_smooth_profile_trajectory(
         time_axis=torch.arange(hyperparam_config["simulate"]["seq_len"]) * hyperparam_config["signal"]["dt"],
         config={
             'y_floor': 0.25,
-            'y_peak': 0.025,
+            'y_peak': 0.15,
             't_rise_center': 10.0,
             'k_rise': 1.0,
             't_sink_center': 25.0,
@@ -86,10 +94,10 @@ def main():
         }
     )
 
-    simulate_tracking_sakura(
+    simulate_tracking(
         model=loaded_controller,
         plant=plant,
-        r_trajectories=[r_static.squeeze()],
+        r_trajectories=[r_static_y_1.squeeze()],
         hyperparam_config=hyperparam_config,
         x_scaler=scaler_x,
         y_scaler=scaler_y,
@@ -98,10 +106,7 @@ def main():
     )
     
 
-    # Generate a constant reference trajectory (steady target)
-    
-
-    
+    # Generate a constant reference trajectory (steady target)   
 
 
 if __name__ == "__main__":

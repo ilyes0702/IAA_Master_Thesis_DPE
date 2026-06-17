@@ -125,25 +125,26 @@ class MambaInverseController(nn.Module):
         super().__init__()
         
         # Read MIMO dimensions from configuration dynamically
-        self.input_dim = hyperparam_config["mamba"].get("input_dim", 2)   # Number of plant outputs to track (e.g., y1, y2)
-        self.output_dim = hyperparam_config["mamba"].get("output_dim", 2) # Number of plant control inputs (e.g., u1, u2)
+        self.input_dim = hyperparam_config["mamba"]["input_dim"]   # Number of plant outputs to track (e.g., y1, y2)
+        self.output_dim = hyperparam_config["mamba"]["output_dim"] # Number of plant control inputs (e.g., u1, u2)
         
-        self.d_model = hyperparam_config["mamba"]["d_model"]
+        #self.d_model = hyperparam_config["mamba"]["d_model"]
         self.d_state = hyperparam_config["mamba"]["d_state"]
 
         # Because we concatenate y_t and y_next, the total feature dimension 
         # entering the projection layer is always 2 * input_dim.
-        self.input_proj = nn.Linear(self.input_dim * 2, self.d_model)
+        #self.input_proj = nn.Linear(self.input_dim * 2, self.d_model)
+        self.expand = hyperparam_config["mamba"]["expand"]  # Default expansion factor if not specified
         
         self.core = Mamba(
-            d_model=self.d_model, 
+            d_model=self.input_dim * 2,  # The Mamba core will receive the concatenated features directly
             d_state=self.d_state, 
             d_conv=4, 
-            expand=2
-        )
-        
+            expand=self.expand
+            )
+                
         # Maps the latent space back to the multi-variable control inputs space
-        self.output_proj = nn.Linear(self.d_model, self.output_dim)
+        self.output_proj = nn.Linear(self.core.d_model, self.output_dim)
 
     def forward(self, y_t, y_next):
         """
@@ -157,6 +158,41 @@ class MambaInverseController(nn.Module):
         # Concatenate y_t and y_next along the feature dimension
         x = torch.cat([y_t, y_next], dim=-1)  # Shape: [Batch, Seq_len, input_dim * 2]
 
-        x = self.input_proj(x)  # Shape: [Batch, Seq_len, d_model]
+        #x = self.input_proj(x)  # Shape: [Batch, Seq_len, d_model]
         x = self.core(x)  # Shape: [Batch, Seq_len, d_model]
         return self.output_proj(x)  # Shape: [Batch, Seq_len, output_dim]
+    
+    @property
+    def A_bar(self):
+        """Access discretized A_bar from the Mamba core. Shape: [B, L, d_inner, d_state]"""
+        return getattr(self.core, "A_bar", None)
+
+    @property
+    def B_bar(self):
+        """Access discretized B_bar from the Mamba core. Shape: [B, L, d_inner, d_state]"""
+        return getattr(self.core, "B_bar", None)
+    
+    @property
+    def B(self):
+        """Access B from the Mamba core."""
+        return self.core.B
+
+    @property
+    def C(self):
+        """Access C from the Mamba core."""
+        return self.core.C
+    
+    @property
+    def A(self):
+        """Access A from the Mamba core."""
+        return self.core.A
+    
+    @property
+    def D(self):
+        """Access D from the Mamba core."""
+        return self.core.extracted_D
+
+    @property
+    def mamba_dt(self):
+        """Access dt from the Mamba core."""
+        return self.core.extracted_dt

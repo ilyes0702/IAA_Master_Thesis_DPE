@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from io import BytesIO
 
-
+import torch
 
 #=== FUNCTION TO PLOT SIGNALS ===#
 def plot_signals(
@@ -101,3 +101,90 @@ def plot_signals(
 
 
 
+from io import BytesIO
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
+from pathlib import Path
+
+def plot_heatmap(
+    matrix,
+    title=None,
+    xlabel="Timestep",
+    ylabel="State Dimension",
+    cmap="viridis",
+    figsize=(12, 6),
+    save_path=None,
+    show=False,
+    filename=None,
+    dirname=None,
+    vmin=None,
+    vmax=None,
+    colorbar_label=None,
+):
+    """
+    Generic plotting function for heatmaps of 2D matrices (e.g., B, C, or attention weights).
+
+    Parameters:
+    - matrix (numpy.ndarray or torch.Tensor): 2D matrix to plot as a heatmap (shape: [d_state, L] or [L, d_state]).
+    - title (str, optional): Title for the heatmap.
+    - xlabel (str): Label for the x-axis (default: "Timestep").
+    - ylabel (str): Label for the y-axis (default: "State Dimension").
+    - cmap (str): Colormap for the heatmap (default: "viridis").
+    - figsize (tuple): Figure size (default: (12, 6)).
+    - save_path (str, optional): Path to save the heatmap image.
+    - show (bool): Whether to display the plot (default: False).
+    - filename (str, optional): Filename for saving the heatmap.
+    - dirname (str, optional): Directory to save the heatmap.
+    - vmin (float, optional): Minimum value for the colormap.
+    - vmax (float, optional): Maximum value for the colormap.
+    - colorbar_label (str, optional): Label for the colorbar.
+
+    Returns:
+    - image (PIL.Image.Image): High-resolution raster image of the heatmap.
+    """
+
+    # Convert torch.Tensor to numpy if needed
+    if isinstance(matrix, torch.Tensor):
+        matrix = matrix.cpu().numpy()
+
+    # Create figure and axis
+    fig, ax = plt.subplots(figsize=figsize, layout="constrained")
+
+    # Plot heatmap
+    im = ax.imshow(matrix, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
+
+    # Add colorbar
+    cbar = fig.colorbar(im, ax=ax)
+    if colorbar_label:
+        cbar.set_label(colorbar_label)
+
+    # Set labels and title
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    if title:
+        ax.set_title(title)
+
+    # Handle saving to a custom path
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", pad_inches=0.05)
+
+    if show:
+        plt.show()
+
+    # Serialize the plot into a memory buffer
+    buf = BytesIO()
+    plt.savefig(buf, format="PNG", dpi=600)
+    buf.seek(0)
+    plt.close()
+
+    # Convert to PIL Image
+    image = Image.open(buf)
+
+    # Save to custom directory if specified
+    if filename and dirname:
+        save_path = Path(dirname) / filename
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        image.save(save_path)
+
+    return image

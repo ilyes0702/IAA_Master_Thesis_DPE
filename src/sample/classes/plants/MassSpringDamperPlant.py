@@ -55,7 +55,7 @@ class MassSpringDamperPlant:
         dx4, dv4 = self.dynamics(x + dt*dx3, v + dt*dv3, u)
         
         x_next = x + (dt/6.0) * (dx1 + 2*dx2 + 2*dx3 + dx4)
-        v_next = v + (dt/6.0) * (dv1 + 2*dv2 + 2*dv3 + dv2) # Fixed variable tracking mapping
+        v_next = v + (dt/6.0) * (dv1 + 2*dv2 + 2*dv3 + dv4) # Fixed variable tracking mapping
         
         state_next = torch.cat([x_next, v_next], dim=1)
         return state_next, self.get_y(state_next)

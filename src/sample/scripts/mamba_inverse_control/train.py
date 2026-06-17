@@ -11,6 +11,7 @@ Usage: run this file as a script. Adjust dataset_path below if needed.
 
 import torch
 
+from src.sample.classes.plants.PenicillinPlantBirol2002 import PenicillinPlantBirol2002
 from src.sample.config import *
 
 from src.sample.classes.plants.ChemostatPlant import ChemostatPlant
@@ -35,16 +36,14 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 if __name__ == "__main__":
     # Instantiate plant using shared hyperparameters.
-    hyperparam_config = hyperparam_config_FedBatchYeastPlant
+    hyperparam_config = hyperparam_config_TrophophasePlant
     
-    plant = FedBatchYeastPlant(hyperparam_config=hyperparam_config)
+    plant = TrophophasePlant(hyperparam_config=hyperparam_config)
     
-
     dataset_path = (
-       "results/2026-06-08/2026-06-08_15-13-45/FedBatchYeastPlant_training_data/dataset/2026-06-08_15-13-45_training_data.pt"
+       "results/2026-06-17/2026-06-17_16-29-57/TrophophasePlant_training_data/dataset/2026-06-17_16-29-57_training_data.pt"
     )
-
-
+    
     # Load the dataset from disk. The file is expected to be a dict-like object containing 'x' and 'y' keys. If loading fails, inspect the path first.
     dataset = torch.load(dataset_path, weights_only=True)
 
@@ -73,7 +72,7 @@ if __name__ == "__main__":
         Y,
         hyperparam_config,
         dirname=dirname,
-        show_plots=False,
+        show_plots=True,
     )
         
         
