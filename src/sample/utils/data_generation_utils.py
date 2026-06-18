@@ -109,25 +109,66 @@ def generate_canaday_signals(hyperparam_config):
 # 2. FIXED: Fully Clean MIMO Training Batch (No Delays)
 # =====================================================================
 
+import torch
+
 class TorchDiffeqPlantWrapper(torch.nn.Module):
-    def __init__(self, plant):
+    def __init__(self, plant, hyperparam_config):
         super().__init__()
         self.plant = plant
-        self.current_u = None  # We will update this dynamically at every macro step
+        self.current_u = None  # Updated dynamically at every macro step
+        
+        # 1. Dynamically read initial state to determine state dimensionality
+        initial_state = plant.get_initial_state(batch_size=1)
+        self.state_dim = initial_state.shape[-1]
+        
+        # 2. Parse the hyperparameter config for hard mins and maxes dynamically
+        plant_cfg = hyperparam_config.get("plant", {})
+        
+        mins = []
+        maxes = []
+        
+        for idx in range(1, self.state_dim + 1):
+            # Lookup key (e.g., "x_1_hard_min", "x_2_hard_min")
+            min_val = plant_cfg.get(f"x_{idx}_hard_min", 0.0)
+            max_val = plant_cfg.get(f"x_{idx}_hard_max", None)
+            
+            # Replace None with mathematical infinity
+            min_val = float(min_val) if min_val is not None else -float('inf')
+            max_val = float(max_val) if max_val is not None else float('inf')
+            
+            mins.append(min_val)
+            maxes.append(max_val)
+            
+        # 3. Register bounds as constant tensors on the correct device/dtype
+        # We shape them to [1, state_dim] for seamless broadcasting across any batch size
+        self.register_buffer("state_min_bounds", torch.tensor([mins], dtype=torch.float32))
+        self.register_buffer("state_max_bounds", torch.tensor([maxes], dtype=torch.float32))
 
     def forward(self, t, state):
-        # state shape: [batch_size, 2]
-        x1, x2 = state[:, 0:1], state[:, 1:2]
+        # state shape: [batch_size, state_dim]
         
-        # Pull the constant control input for this specific macro interval
+        # 🟢 DYNAMIC FIX: Clamp all states simultaneously using the registered boundary buffers
+        # Ensures correct clamping across any batch size without hardcoded indices
+        #state_clamped = torch.clamp(state, min=self.state_min_bounds, max=self.state_max_bounds)
+
+        
+        # Dynamically slice into separate state channels for your native plant dynamics method
+        # state_list will be a list of tensors: [x1, x2, ..., xN] each with shape [batch_size, 1]
+        #state_list = [state_clamped[:, idx : idx + 1] for idx in range(self.state_dim)]
+
+        state_list = [state[:, idx : idx + 1] for idx in range(self.state_dim)]
+        
+        
         u1 = self.current_u 
-        # print(f"DEBUG -> t: {t}, dtype: {t.dtype}, device: {t.device}")
-        # print(f"DEBUG -> state dtype: {state.dtype}, device: {state.device}")
-        # Use your plant's native PyTorch dynamics equations
-        dx1dt, dx2dt = self.plant.dynamics(x1, x2, u1, t)
         
-        # Concatenate back to [batch_size, 2]
-        return torch.cat([dx1dt, dx2dt], dim=1)
+        # Unpack the list directly into the dynamics function (*state_list spreads them out as arguments)
+        derivatives = self.plant.dynamics(*state_list, u1, t)
+        
+        # If your plant.dynamics returns a tuple (dx1dt, dx2dt, ...), concatenate them back
+        if isinstance(derivatives, tuple):
+            return torch.cat(derivatives, dim=1)
+        
+        return derivatives
 
 def generate_training_batch_gpu(plant, hyperparam_config):
     sig_cfg = hyperparam_config["signal"]
@@ -151,7 +192,7 @@ def generate_training_batch_gpu(plant, hyperparam_config):
     raw_state_history = []
 
     # Initialize our torchdiffeq plant wrapper
-    gpu_solver = TorchDiffeqPlantWrapper(plant)
+    gpu_solver = TorchDiffeqPlantWrapper(plant, hyperparam_config).to(device)
 
     total_simulation_steps = seq_len + delta_steps
     for t_idx in range(total_simulation_steps):
@@ -401,8 +442,8 @@ def generate_and_save_dataset(
         seq_df = pd.DataFrame({col: val for col, val in zip(columns, values)})
         valid_dfs.append(seq_df)
         
-        #filename_base = f"sequence_{valid_idx_counter}.csv"
-        filename_base = f"sequence.csv"
+        filename_base = f"sequence_{valid_idx_counter}.csv"
+        #filename_base = f"sequence.csv"
         valid_idx_counter += 1
         
         if save_logs:

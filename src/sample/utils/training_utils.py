@@ -3,6 +3,8 @@ import copy
 import os
 import pickle
 
+from src.sample.utils.data_generation_utils import TorchDiffeqPlantWrapper
+from torchdiffeq import odeint
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -320,6 +322,7 @@ def train_controller(
     X_raw,          # Clean Shape: [Total_Seqs, Seq_Len, input_dim * 2] (y_t and y_next)
     Y_raw,          # Clean Shape: [Total_Seqs, Seq_Len, output_dim]
     hyperparam_config,
+    plant,
     dirname="name_directory",
     show_plots=False
 ):
@@ -490,9 +493,10 @@ def train_controller(
             model.eval()
             epoch_val_loss_accum = 0.0
             epoch_val_channel_accum = {ch: 0.0 for ch in range(output_dim)}
-            # Variables to store a sample sequence for validation curve plotting
-            val_sample_pred = None
-            val_sample_true = None
+            
+            # 🟢 CHANGED: Storage to accumulate ALL predictions/trues for tracking at the final epoch
+            all_val_preds = []
+            all_val_trues = []
 
             with torch.no_grad():
                 for i in range(0, val_size, batch_size):
@@ -516,10 +520,13 @@ def train_controller(
                         ch_val_loss_val = raw_val_loss[:, :, ch].mean().item()
                         epoch_val_channel_accum[ch] += ch_val_loss_val * current_val_batch_size
 
-                    # Capture the first sequence of the first batch as our plotting sample
-                    if val_sample_pred is None:
-                        val_sample_pred = u_val_pred[0].cpu().numpy()  # Shape: [Seq_Len, output_dim]
-                        val_sample_true = batch_val_y[0].cpu().numpy() # Shape: [Seq_Len, output_dim]
+                    # 🟢 CHANGED: Collect all batch items into CPU numpy arrays
+                    all_val_preds.append(u_val_pred.cpu().numpy())
+                    all_val_trues.append(batch_val_y.cpu().numpy())
+
+            # 🟢 NEW: Concatenate list of batches into complete matrices of shape [N_val, Seq_Len, Dim]
+            val_all_preds_arr = np.concatenate(all_val_preds, axis=0)
+            val_all_trues_arr = np.concatenate(all_val_trues, axis=0)
 
             # Compute normalized averages
             mean_train_loss = epoch_train_loss_accum / train_size
@@ -581,46 +588,110 @@ def train_controller(
                      labels=["Avg Train Loss", "Avg Val Loss"], xlabel="Epochs", ylabel="Loss",
                      title=f"Fold {fold+1} Total Epoch Loss Progress", dirname=fold_dir, filename="epoch_validation_loss")
 
-        # --- 5. NEW: PLOT ACTUAL VS PREDICTED CONTROL SIGNALS (u) ---
-        if val_sample_pred is not None and val_sample_true is not None:
-            print(f"📊 Generating actual vs predicted validation profiles for Fold {fold + 1}...")
-            
-            # The scaler expects flat 2D arrays [N_steps, output_dim]
-            # Inverse transform to bring data back to physical units (e.g., Volts, kg/h, etc.)
-            val_sample_pred_unscaled = scaler_y.inverse_transform(val_sample_pred)
-            val_sample_true_unscaled = scaler_y.inverse_transform(val_sample_true)
+       # --- 5. PLANT SIMULATION ROLLOUT FOR ALL VALIDATION SEQUENCES ---
+        if 'val_all_preds_arr' in locals() and len(val_all_preds_arr) > 0:
+            print(f"📊 Simulating plant dynamics across ALL ({val_size}) validation profiles for Fold {fold + 1}...")
             
             t_axis_val = np.arange(seq_len) * dt
             pred_curves_dir = f"{fold_dir}/validation_tracking_curves"
+            
+            # Handle plant class vs instance instantiation
+            if isinstance(plant, type):
+                plant_instance = plant(hyperparam_config)
+            else:
+                plant_instance = plant
 
-            for ch in range(output_dim):
-                # Isolate the current tracking channel
-                true_signal = val_sample_true_unscaled[:, ch]
-                pred_signal = val_sample_pred_unscaled[:, ch]
+            # Loop through every single validation sequence index
+            for seq_idx in range(val_size):
+                
+                # 1. Isolate and unscale control signals for this specific sequence
+                seq_pred_scaled = val_all_preds_arr[seq_idx] # [Seq_Len, output_dim]
+                seq_true_scaled = val_all_trues_arr[seq_idx] # [Seq_Len, output_dim]
+                
+                seq_pred_unscaled = scaler_y.inverse_transform(seq_pred_scaled)
+                seq_true_unscaled = scaler_y.inverse_transform(seq_true_scaled)
+                
+                # Isolate and unscale inputs/targets (y_t, y_next) for this specific sequence
+                seq_x_scaled = val_x[seq_idx].cpu().numpy()
+                seq_x_unscaled = scaler_x.inverse_transform(seq_x_scaled)
+                
+                # 2. Reset the plant to its initial state for the new rollout sequence
+                current_sim_state = plant_instance.get_initial_state(batch_size=1)
+                state_dim = current_sim_state.shape[-1]
+                
+                simulated_states_history = {st: [] for st in range(state_dim)}
+                simulated_outputs_history = {out: [] for out in range(input_dim)}
 
-                plot_signals(
-                    t=t_axis_val,
-                    signals=[true_signal, pred_signal],
-                    labels=[f"Actual u_{ch+1}", f"Predicted u_{ch+1}"],
-                    xlabel="Time (s)",
-                    ylabel="Physical Units",
-                    title=f"Fold {fold+1} | Validation Tracking Profile: Control Input u_{ch+1}",
-                    dirname=pred_curves_dir,
-                    filename=f"val_tracking_u{ch+1}"
+                # --- 3. Step-by-step physical integration rollout loop ---
+                # Wrap your plant instance dynamically for this fold
+                gpu_solver = TorchDiffeqPlantWrapper(plant_instance, hyperparam_config).to(device)
+                
+                for step in range(seq_len):
+                    for st in range(state_dim):
+                        simulated_states_history[st].append(current_sim_state[0, st].item())
+                    
+                    u_pred_step = torch.from_numpy(seq_pred_unscaled[step:step+1]).to(device=device, dtype=torch.float32)
+                    t_start = t_axis_val[step]
+                    t_end = t_start + dt
+                    
+                    # Construct the micro-time interval for torchdiffeq
+                    t_span = torch.tensor([t_start, t_end], device=device, dtype=torch.float32)
+                    
+                    # Update the current control input in the wrapper
+                    gpu_solver.current_u = u_pred_step
+                    
+                    # 🟢 RUN TORCHDIFFEQ INSTEAD OF plant_instance.step
+                    solution = odeint(gpu_solver, current_sim_state, t_span, method='dopri5', rtol=1e-5, atol=1e-7)
+                    
+                    # Extract final state and apply dynamic boundary clamping
+                    current_sim_state = torch.clamp(
+                        solution[1].detach(),
+                        min=gpu_solver.state_min_bounds,
+                        max=gpu_solver.state_max_bounds
+                    )
+                    
+                    # Calculate output tracking (y_next) using your plant's native output equation
+                    y_next_pred = plant_instance.get_y(current_sim_state, t_end)
+                    
+                    for out in range(input_dim):
+                        simulated_outputs_history[out].append(y_next_pred[0, out].item())
+
+                # 4. Construct log dictionary dynamically for this specific sequence item
+                log_data = {"Time (s)": t_axis_val}
+                
+                for out_idx in range(input_dim):
+                    log_data[f"Target_y{out_idx+1}_t"] = seq_x_unscaled[:, out_idx]
+                    log_data[f"Target_y{out_idx+1}_next"] = seq_x_unscaled[:, input_dim + out_idx]
+                    log_data[f"Simulated_Output_y{out_idx+1}"] = simulated_outputs_history[out_idx]
+
+                for ch in range(output_dim):
+                    log_data[f"Actual_u{ch+1}"] = seq_true_unscaled[:, ch]
+                    log_data[f"Predicted_u{ch+1}"] = seq_pred_unscaled[:, ch]
+                    log_data[f"Control_Error_u{ch+1}"] = seq_true_unscaled[:, ch] - seq_pred_unscaled[:, ch]
+
+                for st in range(state_dim):
+                    log_data[f"Simulated_State_x{st+1}"] = simulated_states_history[st]
+                    
+                # 5. Convert to DataFrame and save with a unique identifier per sequence
+                val_profile_df = pd.DataFrame(log_data)
+                save_df_to_csv(
+                    val_profile_df, 
+                    dirname=pred_curves_dir, 
+                    filename=f"val_plant_simulation_fold_{fold+1}_seq_{seq_idx+1}"
                 )
                 
-        # NEW: Plot channel-specific sub-system metrics independently
-        for ch in range(output_dim):
-            plot_signals(
-                t=epoch_axis,
-                signals=[np.array(fold_train_channel_epoch_history[ch]), np.array(fold_val_channel_epoch_history[ch])],
-                labels=[f"u_{ch+1} Train Loss", f"u_{ch+1} Val Loss"],
-                xlabel="Epochs",
-                ylabel="Loss Value",
-                title=f"Fold {fold+1} | Channel u_{ch+1} Convergence Curve",
-                dirname=f"{fold_dir}/channel_losses",
-                filename=f"epoch_loss_channel_u{ch+1}"
-            )
+                # Optional: Only plot the very first sequence to keep folder clean of thousands of images
+                if seq_idx == 0:
+                    for ch in range(output_dim):
+                        plot_signals(
+                            t=t_axis_val, signals=[seq_true_unscaled[:, ch], seq_pred_unscaled[:, ch]],
+                            labels=[f"Actual u_{ch+1}", f"Predicted u_{ch+1}"],
+                            xlabel="Time (s)", ylabel="Physical Units",
+                            title=f"Fold {fold+1} | Control Input Profile u_{ch+1} (Seq 1)",
+                            dirname=pred_curves_dir, filename=f"val_tracking_u{ch+1}_sample"
+                        )
+                        
+            print(f"✅ All {val_size} validation trajectory logs safely dumped to CSV files for Fold {fold + 1}.")
 
     # --- FINAL CROSS VALIDATION SUMMARY ---
     print("\n💾 Complete Cross-Validation run finished. Packing overarching metadata curves...")
@@ -842,6 +913,11 @@ def train_controller_avg_loss(
             # --- 2. VALIDATION PASS ---
             model.eval()
             epoch_val_loss_accum = 0.0
+            epoch_val_channel_accum = {ch: 0.0 for ch in range(output_dim)}
+
+            # 🟢 FIX/CHANGED: Initialize lists to store ALL sequence profiles across all batches
+            all_val_preds = []
+            all_val_trues = []
 
             with torch.no_grad():
                 for i in range(0, val_size, batch_size):
@@ -857,9 +933,21 @@ def train_controller_avg_loss(
                         model.reset_memory(batch_size=current_val_batch_size, device=device)
 
                     u_val_pred = model(y_val_t_split, y_val_next_split)
+                    
+                    # 🟢 FIX: Keep the output element-wise ('none') reduction active for per-channel logs
                     val_loss = criterion(u_val_pred, batch_val_y)
 
-                    epoch_val_loss_accum += val_loss.item() * current_val_batch_size
+                    # Aggregate total validation scalar loss
+                    epoch_val_loss_accum += val_loss.mean().item() * current_val_batch_size
+
+                    for ch in range(output_dim):
+                        # 🟢 FIX: Changed 'raw_val_loss' to 'val_loss' to prevent NameError
+                        ch_val_loss_val = val_loss[:, :, ch].mean().item()
+                        epoch_val_channel_accum[ch] += ch_val_loss_val * current_val_batch_size
+
+                    # 🟢 NEW: Collect tracking targets and predictions into CPU storage arrays 
+                    all_val_preds.append(u_val_pred.cpu().numpy())
+                    all_val_trues.append(batch_val_y.cpu().numpy())
 
                     if i == 0 and show_plots:
                         u_v_p_np = u_val_pred[0].detach().cpu().numpy()
@@ -877,6 +965,10 @@ def train_controller_avg_loss(
                                 dirname=f"{fold_dir}/validation/epoch_{epoch+1}",
                                 filename=f"val_step_{i}_output_{out_dim+1}_plot"
                             )
+
+            # 🟢 NEW: Post-processing batch stack to form evaluation arrays of shape [val_size, Seq_Len, output_dim]
+            val_all_preds_arr = np.concatenate(all_val_preds, axis=0)
+            val_all_trues_arr = np.concatenate(all_val_trues, axis=0)
 
             mean_train_loss = epoch_train_loss_accum / train_size
             mean_val_loss = (epoch_val_loss_accum / val_size) if val_size > 0 else 0.0

@@ -3,6 +3,7 @@ import os
 import numpy as np
 import pandas as pd
 
+from torchdiffeq import odeint
 from src.sample.utils.plotting_utils import *
 
 # import machine learning modules
@@ -1152,7 +1153,7 @@ def load_model(model_class, checkpoint_path, device=None):
     into evaluation mode (`.eval()`) for reliable forward-pass inference.
     """
     # Load the serialized checkpoint dictionary from disk
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
     
     # Extract structural configurations and instantiate the network
     hyperparam_config = checkpoint['config']
@@ -1175,21 +1176,39 @@ def load_model(model_class, checkpoint_path, device=None):
 
 
 # Local helper wrapper class for torchdiffeq execution inside the tracking loop
+# Local helper wrapper class for torchdiffeq execution inside the tracking loop
 class LocalTrackingSolverWrapper(torch.nn.Module):
-    def __init__(self, plant):
+    def __init__(self, plant, hyperparam_config):
         super().__init__()
         self.plant = plant
         self.current_u = None
+        
+        # 🟢 FIX: Extract and register dynamic state bounds as buffers 
+        # This keeps them on the correct device automatically during runtime
+        plant_cfg = hyperparam_config["plant"]
+        
+        # Adjust these keys to match your exact configuration dictionary names
+        state_min = [plant_cfg.get("x1_min", -float('inf')), plant_cfg.get("x2_min", -float('inf'))]
+        state_max = [plant_cfg.get("x1_max", float('inf')), plant_cfg.get("x2_max", float('inf'))]
+        
+        self.register_buffer("state_min_bounds", torch.tensor(state_min, dtype=torch.float32))
+        self.register_buffer("state_max_bounds", torch.tensor(state_max, dtype=torch.float32))
 
     def forward(self, t, state):
-        # Enforce float32 tracking to avoid nextafter_cuda Long errors
+        # Ensure correct type/device casting to avoid graph execution mismatches
         t = t.to(dtype=torch.float32, device=state.device)
         state = state.to(dtype=torch.float32, device=state.device)
         
-        x1, x2 = state[:, 0:1], state[:, 1:2]
+        # 🟢 CRITICAL PERFORMANCE FIX: Clamp state values directly inside the forward pass 
+        # to stabilize the odeint adaptive solver (dopri5) guess-steps
+        state_clamped = torch.clamp(state, min=self.state_min_bounds, max=self.state_max_bounds)
+        
+        x1, x2 = state_clamped[:, 0:1], state_clamped[:, 1:2]
         u1 = self.current_u.to(dtype=torch.float32, device=state.device)
         
+        # Call native plant equations
         dx1dt, dx2dt = self.plant.dynamics(x1, x2, u1, t)
+        
         return torch.cat([dx1dt, dx2dt], dim=1).to(dtype=torch.float32)
 
 
@@ -1247,7 +1266,7 @@ def simulate_tracking_torchdiffeq(
     history_pairs = [[] for _ in range(batch_size)]
 
     # Instantiate our localized adaptive step wrapper
-    gpu_solver = LocalTrackingSolverWrapper(plant)
+    gpu_solver = LocalTrackingSolverWrapper(plant, hyperparam_config).to(device)
 
     with torch.no_grad():
         for i in range(steps):
@@ -1274,7 +1293,8 @@ def simulate_tracking_torchdiffeq(
                 batch_y_t_norm.append(curr_history[:, :input_dim])  
                 batch_y_next_norm.append(curr_history[:, input_dim:])  
 
-            y_t_tensor = torch.tensor(np.array(batch_y_t_norm), dtype=torch.float32).to(device)
+           # 🟢 Optimized Drop-in Replacement
+            y_t_tensor = torch.from_numpy(np.stack(batch_y_t_norm)).to(device=device, dtype=torch.float32)
             y_next_tensor = torch.tensor(np.array(batch_y_next_norm), dtype=torch.float32).to(device)
 
             # 3. Model inference to isolate the next control sequence action block
@@ -1324,9 +1344,15 @@ def simulate_tracking_torchdiffeq(
             
             # Execute parallel batch adaptive step integration
             solution = odeint(gpu_solver, state, t_span, method='dopri5', rtol=1e-5, atol=1e-7)
+
+            # Extract final integrated state array and apply dynamic clamping bounds
+            state = torch.clamp(
+                solution[1].detach(),
+                min=gpu_solver.state_min_bounds,
+                max=gpu_solver.state_max_bounds
+            ).to(dtype=torch.float32)
             
-            # Extract end configuration state vector from index 1 [t_start, t_end]
-            state = solution[1].to(dtype=torch.float32)
+            
 
     # --- PLOTTING & EXPORT BLOCKS ---
     # (The remainder of your generation/saving/plotting code remains fully untouched)

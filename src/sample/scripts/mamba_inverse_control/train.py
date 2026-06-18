@@ -36,12 +36,12 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 if __name__ == "__main__":
     # Instantiate plant using shared hyperparameters.
-    hyperparam_config = hyperparam_config_TrophophasePlant
+    hyperparam_config = hyperparam_config_ChemostatPlant
     
-    plant = TrophophasePlant(hyperparam_config=hyperparam_config)
+    plant = ChemostatPlant(hyperparam_config=hyperparam_config)
     
     dataset_path = (
-       "results/2026-06-17/2026-06-17_16-29-57/TrophophasePlant_training_data/dataset/2026-06-17_16-29-57_training_data.pt"
+       "results/2026-06-18/2026-06-18_15-41-12/ChemostatPlant_training_data/dataset/2026-06-18_15-41-12_training_data.pt"
     )
     
     # Load the dataset from disk. The file is expected to be a dict-like object containing 'x' and 'y' keys. If loading fails, inspect the path first.
@@ -71,6 +71,7 @@ if __name__ == "__main__":
         X,
         Y,
         hyperparam_config,
+        plant,
         dirname=dirname,
         show_plots=True,
     )
