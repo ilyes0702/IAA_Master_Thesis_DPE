@@ -1,3 +1,0 @@
-2026-04-28 07:22:18 - Image successfully saved as 'plot_0_fermentation_growth_rate'
-2026-04-28 07:22:19 - Image successfully saved as 'plot_1_control_action'
-2026-04-28 07:22:21 - Image successfully saved as 'plot_2_reactor_concentrations'

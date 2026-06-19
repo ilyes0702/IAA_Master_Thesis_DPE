@@ -1,3 +1,0 @@
-2026-04-23 13:58:54 - Image successfully saved as 'training_loss_plot'
-2026-04-23 13:59:04 - Image successfully saved as 'plot_0_linear_tracking'
-2026-04-23 13:59:06 - Image successfully saved as 'plot_1_control_action'

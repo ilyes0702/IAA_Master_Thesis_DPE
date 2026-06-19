@@ -1,1 +1,0 @@
-2026-04-14 07:51:52 - Image successfully saved as 'nonlinear_siso_inverse_closedloop_tracking'

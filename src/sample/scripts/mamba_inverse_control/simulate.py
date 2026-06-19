@@ -32,26 +32,26 @@ def main():
     # run_description = get_run_description()
     # log_message(f"RUN DESCRIPTION: {run_description}")
 
-    hyperparam_config = hyperparam_config_ChemostatPlant   # Initialize the plant model using hyperparameters
-    plant = ChemostatPlant(hyperparam_config=hyperparam_config)
+    hyperparam_config = hyperparam_config_TrophophasePlant   # Initialize the plant model using hyperparameters
+    plant = TrophophasePlant(hyperparam_config=hyperparam_config)
 
     #plant = TrophophasePlant(hyperparam_config_TrophophasePlant)
     
 
     # Path to the trained controller checkpoint (keep as configured)
     controller_path = (
-        "models/2026-06-18/2026-06-18_15-42-38/ChemostatPlant_training/fold_1/2026-06-18_15-42-38_best_fold_model.pt"
+        "models/2026-06-19/2026-06-19_12-27-24/TrophophasePlant_training/fold_5/2026-06-19_12-27-24_best_fold_model.pt"
     )
 
     # Load the trained inverse controller
     loaded_controller = load_model(MambaInverseController, controller_path)
 
     scaler_x = load_scaler(
-        "results/2026-06-18/2026-06-18_15-42-38/ChemostatPlant_training/fold_1/scalers/2026-06-18_15-42-38_scaler_x.pkl"
+        "results/2026-06-19/2026-06-19_12-27-24/TrophophasePlant_training/fold_5/scalers/2026-06-19_12-27-24_scaler_x.pkl"
     )
 
     scaler_y = load_scaler(
-        "results/2026-06-18/2026-06-18_15-42-38/ChemostatPlant_training/fold_1/scalers/2026-06-18_15-42-38_scaler_y.pkl"
+        "results/2026-06-19/2026-06-19_12-27-24/TrophophasePlant_training/fold_5/scalers/2026-06-19_12-27-24_scaler_y.pkl"
         )
     
     # Example: Separate sine and cosine trajectories for y1 and y2
@@ -71,7 +71,7 @@ def main():
         dt=hyperparam_config["signal"]["dt"],
         device=hyperparam_config["train"]["device"],
         mode="constant",
-        constant_val=0.25,
+        constant_val=0.03,
     )
 
     r_static_y_2 = generate_reference_trajectory(
@@ -97,7 +97,7 @@ def main():
     simulate_tracking_torchdiffeq(
         model=loaded_controller,
         plant=plant,
-        r_trajectories=[r_dynamic.squeeze()],
+        r_trajectories=[r_static_y_1.squeeze()],
         hyperparam_config=hyperparam_config,
         x_scaler=scaler_x,
         y_scaler=scaler_y,

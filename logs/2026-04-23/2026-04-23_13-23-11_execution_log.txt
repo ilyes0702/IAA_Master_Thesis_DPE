@@ -1,5 +1,0 @@
-2026-04-23 13:23:14 - Image successfully saved as 'mamba_training_loss_plot'
-2026-04-23 13:23:23 - Image successfully saved as 'plot_0_growth_rate'
-2026-04-23 13:23:25 - Image successfully saved as 'plot_1_glucose_feed_rate'
-2026-04-23 13:23:27 - Image successfully saved as 'plot_2_biomass'
-2026-04-23 13:23:28 - Image successfully saved as 'plot_3_substrate'

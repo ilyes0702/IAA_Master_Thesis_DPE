@@ -1,1 +1,0 @@
-2026-05-11 09:02:11 - RUN DESCRIPTION: Again trying with a model trained on 500 epochs, and with D_center = 0.4

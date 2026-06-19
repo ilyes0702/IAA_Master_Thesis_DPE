@@ -1,2 +1,0 @@
-2026-04-14 08:43:25 - Image successfully saved as 'sonnleitner_stabilization_biomass'
-2026-04-14 08:43:27 - Image successfully saved as 'sonnleitner_control_deviation'

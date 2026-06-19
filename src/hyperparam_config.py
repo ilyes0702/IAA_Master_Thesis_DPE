@@ -333,7 +333,7 @@ hyperparam_config_TrophophasePlant = {
     "train": {
         "k_folds": 5,
         "epochs": 100,
-        "batch_size": 5000,
+        "batch_size": 1000,
         "lr": 1e-3,
         "device": "cuda", # if torch.cuda.is_available() else "cpu",
         "delay_steps": 1,
@@ -348,7 +348,7 @@ hyperparam_config_TrophophasePlant = {
     },
     "simulate": {
         "batch_size": 10,
-        "seq_len": 201,
+        "seq_len": 251,
     }
 }
 

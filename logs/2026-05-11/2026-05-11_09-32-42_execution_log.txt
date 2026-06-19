@@ -1,1 +1,0 @@
-2026-05-11 07:33:17 - RUN DESCRIPTION: Now going back to stabilization, have to look again at why ttc fails later. Now trying different reference states

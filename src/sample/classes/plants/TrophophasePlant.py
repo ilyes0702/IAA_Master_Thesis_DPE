@@ -28,18 +28,24 @@ class TrophophasePlant:
         ramp1 = torch.clamp(t - 5.0, min=0.0)
         ramp2 = torch.clamp(t - 15.0, min=0.0)
         
-        #return 150.0 + 2.0 * ramp1 - 2.0 * ramp2
-        return 150
+        return 150.0 + 2.0 * ramp1 - 2.0 * ramp2
 
     def get_initial_state(self, batch_size):
         """
         Returns [batch_size, 2] tensor of [Biomass Mass (x1), Substrate Mass (x2)].
-        Initial values should be customized based on your initial culture mass.
+        Initial values are randomized within ±10% of the nominal configuration values.
         """
-        # Example initialization for masses (in grams and milligrams respectively)
-        x1_init = torch.full((batch_size, 1), self.hyperparam_config["plant"]["x10"], device=self.device)  
-        x2_init = torch.full((batch_size, 1), self.hyperparam_config["plant"]["x20"], device=self.device)
-        return torch.cat([x1_init, x2_init], dim=1)
+        # Fetch nominal values from config
+        x1_nominal = self.hyperparam_config["plant"]["x10"]
+        x2_nominal = self.hyperparam_config["plant"]["x20"]
+        
+        # Define ranges (nominal * 0.9 to nominal * 1.1)
+        # torch.rand outputs [0, 1). Scaling formula: min + (max - min) * rand
+        # Which simplifies to: nominal * (0.9 + 0.2 * rand)
+        x1_random = x1_nominal * (0.95 + 0.1 * torch.rand((batch_size, 1), device=self.device))
+        x2_random = x2_nominal * (0.95 + 0.1 * torch.rand((batch_size, 1), device=self.device))
+        
+        return torch.cat([x1_random, x2_random], dim=1)
 
     def get_y(self, state, t):
         """

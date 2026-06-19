@@ -1,2 +1,0 @@
-2026-04-28 11:56:13 - Image successfully saved as 'plot_0_system_tracking'
-2026-04-28 11:56:14 - Image successfully saved as 'plot_1_pump_input'

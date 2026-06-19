@@ -1,3 +1,0 @@
-2026-04-27 11:20:03 - Image successfully saved as 'training_loss_plot'
-2026-04-27 11:20:12 - Image successfully saved as 'plot_0_growth_rate'
-2026-04-27 11:20:14 - Image successfully saved as 'plot_1_control_action'

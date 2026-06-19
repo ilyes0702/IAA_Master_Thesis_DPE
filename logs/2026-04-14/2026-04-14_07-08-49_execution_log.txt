@@ -1,3 +1,0 @@
-2026-04-14 07:08:51 - Image successfully saved as 'desired_biomass'
-2026-04-14 07:08:52 - Image successfully saved as 'analytical_controlled_bio'
-2026-04-14 07:08:54 - Image successfully saved as 'esn_monod_tracking'

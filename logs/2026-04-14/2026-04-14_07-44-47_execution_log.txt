@@ -1,1 +1,0 @@
-2026-04-14 07:45:03 - Image successfully saved as 'linear_siso_inverse_closedloop_tracking'

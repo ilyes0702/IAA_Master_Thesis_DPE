@@ -1,4 +1,0 @@
-2026-04-21 10:01:07 - Image successfully saved as 'mamba_stabilization_mu'
-2026-04-21 10:01:09 - Image successfully saved as 'mamba_stabilization_u'
-2026-04-21 10:01:10 - Image successfully saved as 'mamba_stabilization_x1'
-2026-04-21 10:01:12 - Image successfully saved as 'mamba_stabilization_x2'

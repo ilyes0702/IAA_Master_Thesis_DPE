@@ -1,3 +1,0 @@
-2026-04-23 14:31:31 - Image successfully saved as 'training_loss_plot'
-2026-04-23 14:31:41 - Image successfully saved as 'plot_0_output_vs_reference'
-2026-04-23 14:31:42 - Image successfully saved as 'plot_1_control_signal'

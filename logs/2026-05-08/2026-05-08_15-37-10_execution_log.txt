@@ -1,1 +1,0 @@
-2026-05-08 13:39:40 - RUN DESCRIPTION: trying with RK instead of Euler, updated state, and higher dt (=0.1)

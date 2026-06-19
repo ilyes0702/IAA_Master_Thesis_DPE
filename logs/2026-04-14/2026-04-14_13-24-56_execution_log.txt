@@ -1,1 +1,0 @@
-2026-04-14 13:24:57 - Image successfully saved as 'sonnleitner_open_loop_state_plot.png'

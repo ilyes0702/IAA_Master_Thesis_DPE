@@ -1,1 +1,0 @@
-2026-05-11 08:46:18 - RUN DESCRIPTION: Training anew with seq_len reduced from 10000 to 1000

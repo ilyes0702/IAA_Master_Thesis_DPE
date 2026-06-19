@@ -1,2 +1,0 @@
-2026-04-14 09:15:23 - Image successfully saved as 'biomass_stabilization_all'
-2026-04-14 09:15:25 - Image successfully saved as 'control_deviation_all'

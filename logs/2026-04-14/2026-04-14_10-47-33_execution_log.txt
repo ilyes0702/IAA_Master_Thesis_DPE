@@ -1,1 +1,0 @@
-2026-04-14 10:47:37 - Image successfully saved as 'sonnleitner_inverse_closedloop_tracking'

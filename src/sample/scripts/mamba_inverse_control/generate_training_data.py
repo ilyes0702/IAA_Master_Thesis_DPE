@@ -31,14 +31,14 @@ def main() -> None:
 	option below. The dataset folder is named after the plant class.
 	"""
 
-	hyperparam_config = hyperparam_config_ChemostatPlant
+	hyperparam_config = hyperparam_config_TrophophasePlant
 	#hyperparam_config = hyperparam_config_ChemostatPlant
 	#hyperparam_config = hyperparam_config_PenicillinPlantBirol2002
 	#hyperparam_config = hyperparam_config_MassSpringDamperPlant
 	# Choose plant model and corresponding hyperparameters
 	# plant = PenicillinPlantBirol2002(hyperparam_config=hyperparam_config)
 
-	plant = ChemostatPlant(hyperparam_config=hyperparam_config)
+	plant = TrophophasePlant(hyperparam_config=hyperparam_config)
 
 	#plant = IdiophasePlant(hyperparam_config)
 	dirname = plant.__class__.__name__ + "_training_data"

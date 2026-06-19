@@ -1,4 +1,0 @@
-2026-04-28 16:34:01 - RUN DESCRIPTION: l
-2026-04-28 16:34:03 - RUN DESCRIPTION: l
-2026-04-28 16:34:07 - Image successfully saved as 'entropy_q_0'
-2026-04-28 16:34:11 - Image successfully saved as 'entropy_q_1'

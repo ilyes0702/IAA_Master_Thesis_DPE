@@ -1,1 +1,0 @@
-2026-05-11 09:34:52 - RUN DESCRIPTION: now fixed D_center to be a number, training on 200 epochs with randomized D_center

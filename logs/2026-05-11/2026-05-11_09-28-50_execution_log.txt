@@ -1,1 +1,0 @@
-2026-05-11 07:29:21 - RUN DESCRIPTION: In the first tries of TTC with a sine wave, there was a lot of deviation. Now trying a larger time interval
