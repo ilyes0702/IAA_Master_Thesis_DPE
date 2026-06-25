@@ -13,6 +13,7 @@ from src.sample.utils.data_generation_utils import *
 from src.sample.classes.plants.ChemostatPlant import ChemostatPlant
 from src.sample.classes.plants.IdiophasePlant import IdiophasePlant
 from src.sample.classes.plants.MassSpringDamperPlant import MassSpringDamperPlant
+from src.sample.classes.plants.BajpaiReussPlant import BajpaiReussPlant
 
 from src.sample.classes.plants.YeastFermentation import FedBatchYeastPlant
 from src.sample.classes.plants.TrophophasePlant import TrophophasePlant
@@ -31,12 +32,8 @@ def main() -> None:
 	option below. The dataset folder is named after the plant class.
 	"""
 
+	#hyperparam_config = hyperparam_config_BajpaiReussPlant
 	hyperparam_config = hyperparam_config_TrophophasePlant
-	#hyperparam_config = hyperparam_config_ChemostatPlant
-	#hyperparam_config = hyperparam_config_PenicillinPlantBirol2002
-	#hyperparam_config = hyperparam_config_MassSpringDamperPlant
-	# Choose plant model and corresponding hyperparameters
-	# plant = PenicillinPlantBirol2002(hyperparam_config=hyperparam_config)
 
 	plant = TrophophasePlant(hyperparam_config=hyperparam_config)
 
@@ -51,6 +48,8 @@ def main() -> None:
         show_plots=False,
         save_logs=True
 		)
+
+	print()
 
 if __name__ == "__main__":
 	main()

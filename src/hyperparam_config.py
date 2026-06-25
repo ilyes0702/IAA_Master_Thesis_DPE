@@ -1,13 +1,13 @@
 
 hyperparam_config_ChemostatPlant = {
     "plant" :{
-        "mu-max": 0.5,
-        "Ks": 0.2,
-        "Y": 0.6,
+        "mu-max": 0.5,      # Maximum growth rate [1/h]
+        "Ks": 0.2,          # Half-saturation constant 
+        "Y": 0.6,           # Yield coefficient
         "sR": 1.0,
 
-        "u_1_D_center_min": 0.25,
-        "u_1_D_center_max": 0.3,
+        "u_1_D_center_min": 0.15,
+        "u_1_D_center_max": 0.8,
 
         "u_1_hard_min": 0.0,
         "u_1_hard_max": 1.0,
@@ -16,9 +16,9 @@ hyperparam_config_ChemostatPlant = {
         "x_2_hard_min" : None,
 
         "x_1_hard_min" : 0,
-        "x_2_hard_min" : None
+        "x_2_hard_min" : None,
 
-        
+        "y_1_hard_min": 0 
 
     },
     "signal": {
@@ -45,10 +45,91 @@ hyperparam_config_ChemostatPlant = {
     },
     "simulate": {
         "batch_size": 10,
-        "seq_len": 201,
+        "seq_len": 401,
     }
 }
 
+hyperparam_config_BajpaiReussPlant = {
+    "plant": {
+        # --- Kinematic & Yield Parameters ---
+        "mu_x": 0.092,     # Maximum specific growth rate [1/h] (Contois)
+        "K_x": 0.015,       # Contois saturation constant [g substrate / g biomass]
+        "mu_p": 0.005,       # Maximum specific rate of product formation ( g product / (g dry wt cells)* h)
+        
+
+        
+        "Y_xs": 0.45,       # Yield of biomass on substrate [g dry wt cells/g substrate]
+        "Y_ps": 0.9,        # Xield of product on substrate [g product/ g substrate]
+
+        "m_x" : 0.014,      # Maintenance requirement of substrate [g substrate/ (g dry wet cell)*h]  
+        "F": 0.33,          # [g glucose/(dm^3)*h]
+
+        "S_0": 0.1,         # [g/dm^3]                
+        
+        "pi_max": 0.004,    # Maximum specific product formation rate [1/h]
+        "K_p": 0.0002,      # Monod saturation constants for substrate limitation of product formation [g/dm^3]
+        "K_I": 0.10,        # Substrate inhibition constant for product [g/dm^3]
+        "Y_ps": 1.2,        # Yield factor: penicillin produced per substrate consumed [g/g]
+
+        "S_F": 400,       #Substrate concentration in feed stream [g/dm^3] ##NOT SURE
+        
+        "K": 0.04,          # First-order decay rate constant for product [1/h]
+
+        "K_La": 60,         #[1/h]
+
+        "C_L_star": 0.27,   # solubility of oxygen in broth [mmol/dm^3]
+
+
+        "m_x": 0.029,       # Maintenance energy coefficient [g substrate / g biomass / h]
+        "K_ox": 0.00111,    # Contois saturation constant for oxygen limitation of product formation [(mmol/ g dry wt cells)]
+        "K_op": 3e-5,       # Contois saturation constant for oxygen limitation of product formation [(mmol/g dry wt cells)^1/p]
+        "p": 2.74,          # Exponent of CL in oxygen limitation of product formation
+        "m_o": 0.467,       # Maintenance requirement of oxygen [mmol O2/(g dry wt cells)*h]
+        "Y_xo": 0.04,       # Yield of biomass on oxygen [g dry wt cells/ mmol O2]
+        "Y_po": 0.2,        # Yield of product on oxygen [g product/mmol O2]
+
+        # --- Volumetric Flow Rate Control Bounds (u_1 = F) ---
+        "u_1_D_center_min": 0.024,  # Typical optimal feeding profile floor [L/h]
+        "u_1_D_center_max": 0.024,  # Typical optimal feeding profile ceiling [L/h]
+
+        "u_1_hard_min": 0.0,       # Pump fully off [L/h]
+        "u_1_hard_max": 2.0,       # Maximum physical actuator saturation pump limit [L/h]
+
+        # --- Hard State Lower/Upper Bounds ---
+        "x_1_hard_min": 0.0,       # Biomass (X) cannot be negative
+        "x_2_hard_min": 0.0,       # Substrate (S) cannot be negative
+        "x_3_hard_min": 0.0,       # Penicillin (P) cannot be negative
+        "x_4_hard_min": 0.0,       # C_L cannot be negative
+        "x_5_hard_min": 0.1,       # Volume (V) must maintain a physical minimum heel (e.g. 0.1L)
+        "x_5_hard_max": 15.0,      # Maximum structural capacity limit of the vessel tank [L]
+    },
+    "signal": {
+        "lambd": 10,
+        "p": 0.15,
+        "seq_len": 1001,
+        "dt": 0.01                 # Fermentations evolve slower than chemostats; a slightly higher dt is normal
+    },
+    "train": {
+        "k_folds": 5,
+        "epochs": 100,
+        "batch_size": 20,
+        "lr": 1e-3,
+        "device": "cuda",
+        "delay_steps": 1,
+        "loss_function": "MSELoss()", 
+        "lr_decay_rate": 1,
+    },
+    "mamba": {
+        "d_state": 16,
+        "input_dim": 1,            # Tracking 1 observable output (e.g., pi or mu)
+        "output_dim": 1,           # Regulating 1 physical control output (Feed Rate F)
+        "expand": 32               # Expansion factor maps core dimension (input_dim * 2) -> 64 internal tracking lines
+    },
+    "simulate": {
+        "batch_size": 10,
+        "seq_len": 2001,            # Fed-batch runs span much longer horizons (e.g., 200 hours total at dt=0.25)
+    }
+}
 
 hyperparam_config_FedBatchYeastPlant = {
     "plant": {
@@ -309,8 +390,8 @@ hyperparam_config_TrophophasePlant = {
         "p1": 0.00047,
         "p2": 200000.0,
         
-        "u_1_D_center_min": 0.3,
-        "u_1_D_center_max": 0.7,
+        "u_1_D_center_min": 0.6,
+        "u_1_D_center_max": 0.9,
 
         "u_1_hard_min": 0.0,
         "u_1_hard_max": 1,
@@ -319,21 +400,24 @@ hyperparam_config_TrophophasePlant = {
         "x_1_hard_max": None,
 
         "y_1_hard_min": 0,
-        "y_1_hard_max": 0.12,
+        #"y_1_hard_max": 0.12,
 
-        "x10": 1000.0,
-        "x20": 2000.0
+        "x10": 1500.0,
+        "x20": 2000.0,
+
+        "input_dim": 1,  # y
+        "output_dim": 1  # u
     },
     "signal": {
-        "lambd": 15,
-        "p": 0.15,
-        "seq_len": 201,
-        "dt": 0.1
+        "lambd": 0.1,
+        "p": 0.5,
+        "seq_len": 2001,
+        "dt": 0.01
     },
     "train": {
         "k_folds": 5,
         "epochs": 100,
-        "batch_size": 1000,
+        "batch_size": 2000,
         "lr": 1e-3,
         "device": "cuda", # if torch.cuda.is_available() else "cpu",
         "delay_steps": 1,
@@ -348,7 +432,7 @@ hyperparam_config_TrophophasePlant = {
     },
     "simulate": {
         "batch_size": 10,
-        "seq_len": 251,
+        "seq_len": 2001,
     }
 }
 

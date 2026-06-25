@@ -1133,7 +1133,7 @@ def seed_everything(seed=42):
 
 
 #=== FUNCTION TO LOAD TRAINED MODEL ===#
-def load_model(model_class, checkpoint_path, device=None):
+def load_model(model_class, checkpoint_path, device="cuda"):
     """
     Loads a trained PyTorch model state dictionary and configuration from a checkpoint file.
 
@@ -1154,16 +1154,13 @@ def load_model(model_class, checkpoint_path, device=None):
     maps the recovered parameters to the model structure, and locks the model layer states 
     into evaluation mode (`.eval()`) for reliable forward-pass inference.
     """
+    
     # Load the serialized checkpoint dictionary from disk
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    checkpoint = torch.load(checkpoint_path, map_location="cuda", weights_only=False)
     
     # Extract structural configurations and instantiate the network
     hyperparam_config = checkpoint['config']
     model = model_class(hyperparam_config)
-
-    # Determine default execution hardware if none was provided
-    if device is None:
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     
     # Transfer the model parameters to the target processing device
     model = model.to(device)
@@ -1176,6 +1173,42 @@ def load_model(model_class, checkpoint_path, device=None):
     
     return model
 
+
+import pickle
+import torch
+
+def load_model_esn(model_class, checkpoint_path, device=None):
+    """
+    Loads a trained ESN model and configuration from a serialized pickle checkpoint file.
+
+    Parameters:
+    - model_class (class): The class of the ESN model to be instantiated (e.g., ESNInverseController).
+    - checkpoint_path (str): The system file path pointing to the saved pickle checkpoint file (.pkl or .pt).
+    - device (str or torch.device, optional): Ignored for the ESN itself (which runs on CPU/NumPy),
+      but kept in the signature for pipeline compatibility.
+
+    Returns:
+    - model (ESNInverseController): The instantiated ESN model restored to its trained state.
+    """
+    # Load the serialized checkpoint dictionary using pickle
+    with open(checkpoint_path, 'rb') as f:
+        checkpoint = pickle.load(f)
+    
+    # Extract the embedded hyperparameter configuration dictionary
+    hyperparam_config = checkpoint['config']
+    
+    # Instantiate a fresh, uninitialized ESN network structure
+    model = model_class(hyperparam_config)
+    
+    # Restore the underlying trained ReservoirPy Model object instance directly
+    # This recovers the analytically derived Ridge readout weight matrix
+    model.model = checkpoint['model_state_dict']
+    
+    # Safe state boundary check reset
+    if hasattr(model, "load_state_dict"):
+        model.load_state_dict(None)
+        
+    return model
 
 # Local helper wrapper class for torchdiffeq execution inside the tracking loop
 # Local helper wrapper class for torchdiffeq execution inside the tracking loop
@@ -1215,6 +1248,245 @@ class LocalTrackingSolverWrapper(torch.nn.Module):
 
 
 def simulate_tracking_torchdiffeq(
+    model,
+    plant,
+    r_trajectories,  
+    hyperparam_config,
+    x_scaler,
+    y_scaler,
+    dirname,
+    plot_individual_plots=False
+):
+    """
+    Simulates a controlled MIMO plant using torchdiffeq adaptive-step integration 
+    over a specified time horizon while tracking separate reference trajectories.
+    Uses a 2-point input structure: [y(t), y(t+Δ)] (Current Output and Future Target).
+    """
+    train_cfg = hyperparam_config["train"]
+    sig_cfg = hyperparam_config["signal"]
+    sim_cfg = hyperparam_config["simulate"]
+    mamba_cfg = hyperparam_config.get("mamba", {})
+    plant_cfg = hyperparam_config["plant"]
+
+    model.core.return_bc = True  
+    steps = sim_cfg["seq_len"]
+    dt = sig_cfg["dt"]
+    batch_size = sim_cfg["batch_size"]
+    device = train_cfg["device"]
+    input_dim = mamba_cfg.get("input_dim", 2)    
+    output_dim = mamba_cfg.get("output_dim", 2)  
+
+    if len(r_trajectories) != input_dim:
+        raise ValueError(f"Expected {input_dim} reference trajectories, got {len(r_trajectories)}")
+
+    r_trajectory = torch.stack(r_trajectories, dim=1).to(device)  
+    r_np = r_trajectory.cpu().numpy()  
+
+    all_y = torch.zeros((steps, batch_size, input_dim), device=device)  
+    all_u = torch.zeros((steps, batch_size, output_dim), device=device)  
+    
+    sample_state = plant.get_initial_state(1)
+    state_dim = sample_state.shape[-1]
+    all_states = torch.zeros((steps, batch_size, state_dim), device=device)  
+
+    # Force initial state to be float32 to protect torchdiffeq execution graph
+    state = plant.get_initial_state(batch_size).to(device=device, dtype=torch.float32)
+
+    model.eval()
+    ssm_history = {
+        "step": [], "time": [],
+        "A_bar": [], "B_bar": [], "C": [], "dt": []
+    }
+    print(f"📈 Testing MIMO Trajectory Tracking via torchdiffeq: {batch_size} trajectories across {steps} steps...")
+
+    # Instantiate our localized adaptive step wrapper
+    gpu_solver = LocalTrackingSolverWrapper(plant, hyperparam_config).to(device)
+
+    with torch.no_grad():
+        for i in range(steps):
+            t_start = i * dt
+            t_end = t_start + dt
+            
+            # 1. Obtain current tracking performance observable
+            y_current = plant.get_y(state, t_start).to(dtype=torch.float32)  
+
+            target_r = r_trajectory[i].expand(batch_size, input_dim)  
+            y_curr_np = y_current.cpu().numpy()  
+            tgt_r_np = target_r.cpu().numpy()  
+
+            # 2. Sequential Normalization Processing (2-Point Configuration)
+            batch_y_t_norm = []
+            batch_y_next_norm = []
+
+            for b_idx in range(batch_size):
+                # Construct pairs mapping directly to the features the model was trained on
+                # [y_current, y_ref]
+                input_pair = np.hstack([y_curr_np[b_idx], tgt_r_np[b_idx]])
+                
+                if x_scaler:
+                    input_pair = x_scaler.transform([input_pair])[0]
+                
+                # Unpack features matching the model's expected 2-point projection mapping layout
+                batch_y_t_norm.append(input_pair[:input_dim])
+                batch_y_next_norm.append(input_pair[input_dim:])
+
+            # Assemble clean tensors matching the expectation of your model's forward pass
+            y_t_tensor    = torch.tensor(np.array(batch_y_t_norm), dtype=torch.float32).to(device).unsqueeze(1)
+            y_next_tensor = torch.tensor(np.array(batch_y_next_norm), dtype=torch.float32).to(device).unsqueeze(1)
+
+            # 3. Model inference using lookahead pairs directly
+            u_seq_norm = model(y_t_tensor, y_next_tensor)  
+            
+            # Capture structural SSM variables for auditing
+            A_bar_all = model.A_bar  
+            B_bar_all = model.B_bar  
+            C_all = model.C  
+            dt_all = model.mamba_dt  
+            
+            A_bar_tau = A_bar_all[:, -1, :, :].cpu().numpy()  
+            B_bar_tau = B_bar_all[:, -1, :, :].cpu().numpy()  
+            C_tau = C_all[:, :, -1].cpu().numpy()    
+            dt_tau = dt_all[:, -1].cpu().numpy()     
+            D_tau = model.D.cpu().numpy()
+            
+            ssm_history["step"].append(i)
+            ssm_history["time"].append(t_start)
+            ssm_history["A_bar"].append(A_bar_tau.tolist())  
+            ssm_history["B_bar"].append(B_bar_tau.tolist())
+            ssm_history["C"].append(C_tau.tolist())
+            ssm_history["dt"].append(dt_tau.tolist())
+            
+            u_norm_np = u_seq_norm[:, -1, :].cpu().numpy()  
+
+            if y_scaler:
+                u_unscaled = y_scaler.inverse_transform(u_norm_np)  
+            else:
+                u_unscaled = u_norm_np
+
+            # 4. Enforce actuator hard clipping profiles 
+            u_unscaled = np.clip(u_unscaled, plant_cfg["u_1_hard_min"], plant_cfg["u_1_hard_max"])  
+            u = torch.tensor(u_unscaled, dtype=torch.float32, device=device)  
+
+            # 5. Logging current conditions BEFORE step integration update
+            all_y[i] = y_current  
+            all_u[i] = u  
+            all_states[i] = state  
+
+            # 6. INTEGRATION STEP VIA TORCHDIFFEQ
+            gpu_solver.current_u = u
+            t_span = torch.tensor([float(t_start), float(t_end)], dtype=torch.float32, device=device)
+            
+            solution = odeint(gpu_solver, state, t_span, method='dopri5', rtol=1e-5, atol=1e-7)
+
+            state = torch.clamp(
+                solution[1].detach(),
+                min=gpu_solver.state_min_bounds,
+                max=gpu_solver.state_max_bounds
+            ).to(dtype=torch.float32)
+
+    # --- PLOTTING & EXPORT BLOCKS (UNCHANGED) ---
+    time_axis = np.arange(steps) * dt
+    trajectory_reports = []
+    total_stacked_blocks = input_dim + output_dim
+    
+    plot_metadata = plant.get_plot_config()
+    save_to_json(data=ssm_history, dirname=dirname, filename="ssm_matrices_history")
+    
+    for b in range(batch_size):
+        state_dirname = os.path.join(dirname, f"initial_state_{b}")
+        os.makedirs(state_dirname, exist_ok=True)
+
+        y_traj = all_y[:, b, :].cpu().numpy()  
+        u_traj = all_u[:, b, :].cpu().numpy()  
+        states_traj = all_states[:, b, :].cpu().numpy()  
+
+        df_data = {
+            "time": np.tile(time_axis, total_stacked_blocks),
+            "signal_type": np.repeat(
+                [f"y_{i+1}" for i in range(input_dim)] + [f"u_{i+1}" for i in range(output_dim)],
+                steps
+            ),
+            "value": np.concatenate([y_traj[:, i] for i in range(input_dim)] + [u_traj[:, i] for i in range(output_dim)]),
+        }
+        
+        for i in range(states_traj.shape[1]):
+            df_data[f"state_{i+1}"] = np.tile(states_traj[:, i], total_stacked_blocks)
+
+        df_traj = pd.DataFrame(df_data)
+        save_df_to_csv(df_traj, dirname=state_dirname, filename="state_report")
+        trajectory_reports.append(df_traj)
+
+        if plot_individual_plots:
+            u_meta = plot_metadata[3] if len(plot_metadata) > 3 else {}
+            for i in range(output_dim):
+                label = u_meta.get("labels", [f"u_{i+1}"])[0] if i == 0 else f"Control Input (u_{i+1})"
+                title = u_meta.get("title", "Control Profile") if i == 0 else f"Control Input Profile (u_{i+1})"
+                plot_signals(t=time_axis, signals=[u_traj[:, i]], labels=[label], title=f"Trajectory {b}: {title}", xlabel="Time (h)", ylabel=u_meta.get("ylabel", "Action Value"), dirname=state_dirname, filename=f"plot_control_signal_u_{i+1}")
+
+            y_meta = plot_metadata[2] if len(plot_metadata) > 2 else {}
+            meta_labels_ind = y_meta.get("labels", [])
+            for i in range(input_dim):
+                title = y_meta.get("title", "Tracking Performance")
+                if len(meta_labels_ind) > (i * 2 + 1):
+                    ind_y_label = meta_labels_ind[i * 2]
+                    ind_r_label = meta_labels_ind[i * 2 + 1]
+                elif len(meta_labels_ind) > i:
+                    ind_y_label = meta_labels_ind[i]
+                    ind_r_label = f"Target (r_{i+1})"
+                else:
+                    ind_y_label = f"Output (y_{i+1})"
+                    ind_r_label = f"Target (r_{i+1})"
+                
+                plot_signals(t=time_axis, signals=[y_traj[:, i], r_np[:, i]], labels=[ind_y_label, ind_r_label], title=f"Trajectory {b}: {title} (y_{i+1})", xlabel="Time (h)", ylabel=y_meta.get("ylabel", "Signal Value"), dirname=state_dirname, filename=f"plot_output_tracking_y_{i+1}")
+
+            for i in range(states_traj.shape[1]):
+                x_meta = plot_metadata[i] if i < len(plot_metadata) else {}
+                label = x_meta.get("labels", [f"State x_{i+1}"])[0]
+                title = x_meta.get("title", f"Internal Plant State (x_{i+1})")
+                plot_signals(t=time_axis, signals=[states_traj[:, i]], labels=[label], title=f"Trajectory {b}: {title}", xlabel="Time (h)", ylabel=x_meta.get("ylabel", "State Magnitude"), dirname=state_dirname, filename=f"plot_plant_state_x_{i+1}")
+
+    y_np = all_y.cpu().numpy()       
+    u_np = all_u.cpu().numpy()       
+    s_np = all_states.cpu().numpy()  
+
+    y_meta = plot_metadata[2] if len(plot_metadata) > 2 else {}
+    meta_labels = y_meta.get("labels", [])
+    for i in range(input_dim):
+        summary_signals = [y_np[:, j, i] for j in range(batch_size)] + [r_np[:, i]]
+        base_y_label = meta_labels[0] if len(meta_labels) > 0 else f"y_{i+1}"
+        base_r_label = meta_labels[1] if len(meta_labels) > 1 else f"r_{i+1}"
+        plot_signals(t=time_axis, signals=summary_signals, labels=[f"Traj {j} ({base_y_label})" for j in range(batch_size)] + [f"Target ({base_r_label})"], title=f"Batch Convergence ({base_y_label}) - {batch_size} Trajectories Overview", xlabel="Time (h)", ylabel=y_meta.get("ylabel", "System Output"), dirname=dirname, filename=f"batch_summary_y_{i+1}")
+
+    u_meta = plot_metadata[3] if len(plot_metadata) > 3 else {}
+    for i in range(output_dim):
+        label_base = u_meta.get("labels", [f"u_{i+1}"])[0] if i == 0 else f"u_{i+1}"
+        title_base = u_meta.get("title", "Control Profile") if i == 0 else f"Control Input Profile (u_{i+1})"
+        summary_inputs = [u_np[:, j, i] for j in range(batch_size)]
+        plot_signals(t=time_axis, signals=summary_inputs, labels=[f"Traj {j} ({label_base})" for j in range(batch_size)], title=f"Batch Profile: {title_base} - Overlaid Actions", xlabel="Time (h)", ylabel=u_meta.get("ylabel", "Action Value"), dirname=dirname, filename=f"batch_summary_u_{i+1}")
+
+    for i in range(s_np.shape[2]):
+        x_meta = plot_metadata[i] if i < len(plot_metadata) else {}
+        label_base = x_meta.get("labels", [f"x_{i+1}"])[0]
+        title_base = x_meta.get("title", f"State x_{i+1}")
+        summary_states = [s_np[:, j, i] for j in range(batch_size)]
+        plot_signals(t=time_axis, signals=summary_states, labels=[f"Traj {j} ({label_base})" for j in range(batch_size)], title=f"Batch Trajectories: {title_base} Ensembles", xlabel="Time (h)", ylabel=x_meta.get("ylabel", "State Magnitude"), dirname=dirname, filename=f"batch_summary_x_{i+1}")
+
+    tracking_metrics = {}
+    for i in range(input_dim):
+        y_traj = y_np[:, :, i]  
+        r_traj = r_np[:, i]  
+        metrics = compute_and_save_tracking_metrics(y_traj, r_traj, dt, dirname, suffix=f"y_{i+1}")
+        tracking_metrics[f"y_{i+1}"] = metrics
+
+    return {
+        "trajectory_dataframes": trajectory_reports,
+        "metrics": tracking_metrics,
+        "simulated_outputs": y_np,
+        "simulated_controls": all_u.cpu().numpy()
+    }
+
+
+def simulate_tracking_torchdiffeq_entire_history_fed(
     model,
     plant,
     r_trajectories,  
@@ -1365,6 +1637,227 @@ def simulate_tracking_torchdiffeq(
     plot_metadata = plant.get_plot_config()
     
     save_to_json(data=ssm_history, dirname=dirname, filename="ssm_matrices_history")
+    
+    for b in range(batch_size):
+        state_dirname = os.path.join(dirname, f"initial_state_{b}")
+        os.makedirs(state_dirname, exist_ok=True)
+
+        y_traj = all_y[:, b, :].cpu().numpy()  
+        u_traj = all_u[:, b, :].cpu().numpy()  
+        states_traj = all_states[:, b, :].cpu().numpy()  
+
+        df_data = {
+            "time": np.tile(time_axis, total_stacked_blocks),
+            "signal_type": np.repeat(
+                [f"y_{i+1}" for i in range(input_dim)] + [f"u_{i+1}" for i in range(output_dim)],
+                steps
+            ),
+            "value": np.concatenate([y_traj[:, i] for i in range(input_dim)] + [u_traj[:, i] for i in range(output_dim)]),
+        }
+        
+        for i in range(states_traj.shape[1]):
+            df_data[f"state_{i+1}"] = np.tile(states_traj[:, i], total_stacked_blocks)
+
+        df_traj = pd.DataFrame(df_data)
+        save_df_to_csv(df_traj, dirname=state_dirname, filename="state_report")
+        trajectory_reports.append(df_traj)
+
+        if plot_individual_plots:
+            u_meta = plot_metadata[3] if len(plot_metadata) > 3 else {}
+            for i in range(output_dim):
+                label = u_meta.get("labels", [f"u_{i+1}"])[0] if i == 0 else f"Control Input (u_{i+1})"
+                title = u_meta.get("title", "Control Profile") if i == 0 else f"Control Input Profile (u_{i+1})"
+                plot_signals(t=time_axis, signals=[u_traj[:, i]], labels=[label], title=f"Trajectory {b}: {title}", xlabel="Time (h)", ylabel=u_meta.get("ylabel", "Action Value"), dirname=state_dirname, filename=f"plot_control_signal_u_{i+1}")
+
+            y_meta = plot_metadata[2] if len(plot_metadata) > 2 else {}
+            meta_labels_ind = y_meta.get("labels", [])
+            for i in range(input_dim):
+                title = y_meta.get("title", "Tracking Performance")
+                if len(meta_labels_ind) > (i * 2 + 1):
+                    ind_y_label = meta_labels_ind[i * 2]
+                    ind_r_label = meta_labels_ind[i * 2 + 1]
+                elif len(meta_labels_ind) > i:
+                    ind_y_label = meta_labels_ind[i]
+                    ind_r_label = f"Target (r_{i+1})"
+                else:
+                    ind_y_label = f"Output (y_{i+1})"
+                    ind_r_label = f"Target (r_{i+1})"
+                
+                plot_signals(t=time_axis, signals=[y_traj[:, i], r_np[:, i]], labels=[ind_y_label, ind_r_label], title=f"Trajectory {b}: {title} (y_{i+1})", xlabel="Time (h)", ylabel=y_meta.get("ylabel", "Signal Value"), dirname=state_dirname, filename=f"plot_output_tracking_y_{i+1}")
+
+            for i in range(states_traj.shape[1]):
+                x_meta = plot_metadata[i] if i < len(plot_metadata) else {}
+                label = x_meta.get("labels", [f"State x_{i+1}"])[0]
+                title = x_meta.get("title", f"Internal Plant State (x_{i+1})")
+                plot_signals(t=time_axis, signals=[states_traj[:, i]], labels=[label], title=f"Trajectory {b}: {title}", xlabel="Time (h)", ylabel=x_meta.get("ylabel", "State Magnitude"), dirname=state_dirname, filename=f"plot_plant_state_x_{i+1}")
+
+    y_np = all_y.cpu().numpy()       
+    u_np = all_u.cpu().numpy()       
+    s_np = all_states.cpu().numpy()  
+
+    y_meta = plot_metadata[2] if len(plot_metadata) > 2 else {}
+    meta_labels = y_meta.get("labels", [])
+    for i in range(input_dim):
+        summary_signals = [y_np[:, j, i] for j in range(batch_size)] + [r_np[:, i]]
+        base_y_label = meta_labels[0] if len(meta_labels) > 0 else f"y_{i+1}"
+        base_r_label = meta_labels[1] if len(meta_labels) > 1 else f"r_{i+1}"
+        plot_signals(t=time_axis, signals=summary_signals, labels=[f"Traj {j} ({base_y_label})" for j in range(batch_size)] + [f"Target ({base_r_label})"], title=f"Batch Convergence ({base_y_label}) - {batch_size} Trajectories Overview", xlabel="Time (h)", ylabel=y_meta.get("ylabel", "System Output"), dirname=dirname, filename=f"batch_summary_y_{i+1}")
+
+    u_meta = plot_metadata[3] if len(plot_metadata) > 3 else {}
+    for i in range(output_dim):
+        label_base = u_meta.get("labels", [f"u_{i+1}"])[0] if i == 0 else f"u_{i+1}"
+        title_base = u_meta.get("title", "Control Profile") if i == 0 else f"Control Input Profile (u_{i+1})"
+        summary_inputs = [u_np[:, j, i] for j in range(batch_size)]
+        plot_signals(t=time_axis, signals=summary_inputs, labels=[f"Traj {j} ({label_base})" for j in range(batch_size)], title=f"Batch Profile: {title_base} - Overlaid Actions", xlabel="Time (h)", ylabel=u_meta.get("ylabel", "Action Value"), dirname=dirname, filename=f"batch_summary_u_{i+1}")
+
+    for i in range(s_np.shape[2]):
+        x_meta = plot_metadata[i] if i < len(plot_metadata) else {}
+        label_base = x_meta.get("labels", [f"x_{i+1}"])[0]
+        title_base = x_meta.get("title", f"State x_{i+1}")
+        summary_states = [s_np[:, j, i] for j in range(batch_size)]
+        plot_signals(t=time_axis, signals=summary_states, labels=[f"Traj {j} ({label_base})" for j in range(batch_size)], title=f"Batch Trajectories: {title_base} Ensembles", xlabel="Time (h)", ylabel=x_meta.get("ylabel", "State Magnitude"), dirname=dirname, filename=f"batch_summary_x_{i+1}")
+
+    tracking_metrics = {}
+    for i in range(input_dim):
+        y_traj = y_np[:, :, i]  
+        r_traj = r_np[:, i]  
+        metrics = compute_and_save_tracking_metrics(y_traj, r_traj, dt, dirname, suffix=f"y_{i+1}")
+        tracking_metrics[f"y_{i+1}"] = metrics
+
+    return {
+        "trajectory_dataframes": trajectory_reports,
+        "metrics": tracking_metrics,
+        "simulated_outputs": y_np,
+        "simulated_controls": all_u.cpu().numpy()
+    }
+
+
+import os
+import numpy as np
+import torch
+import pandas as pd
+from torchdiffeq import odeint
+
+def simulate_tracking_torchdiffeq_esn(
+    model,
+    plant,
+    r_trajectories,  
+    hyperparam_config,
+    x_scaler,
+    y_scaler,
+    dirname,
+    plot_individual_plots=False
+):
+    """
+    Simulates a controlled MIMO plant using torchdiffeq adaptive-step integration 
+    over a specified time horizon while tracking separate reference trajectories using an ESN.
+    """
+    sig_cfg = hyperparam_config["signal"]
+    sim_cfg = hyperparam_config["simulate"]
+    esn_cfg = hyperparam_config.get("esn", hyperparam_config.get("plant", {}))
+    plant_cfg = hyperparam_config["plant"]
+
+    steps = sim_cfg["seq_len"]
+    dt = sig_cfg["dt"]
+    batch_size = sim_cfg["batch_size"]
+    
+    # ESN runs on CPU via NumPy, but torchdiffeq can still use your configured device
+    device = hyperparam_config["train"].get("device", "cpu")
+    
+    input_dim = esn_cfg.get("input_dim", 2)    
+    output_dim = esn_cfg.get("output_dim", 2)  
+
+    if len(r_trajectories) != input_dim:
+        raise ValueError(f"Expected {input_dim} reference trajectories, got {len(r_trajectories)}")
+
+    r_trajectory = torch.stack(r_trajectories, dim=1).to(device)  
+    r_np = r_trajectory.cpu().numpy()  
+
+    all_y = torch.zeros((steps, batch_size, input_dim), device=device)  
+    all_u = torch.zeros((steps, batch_size, output_dim), device=device)  
+    
+    sample_state = plant.get_initial_state(1)
+    state_dim = sample_state.shape[-1]
+    all_states = torch.zeros((steps, batch_size, state_dim), device=device)  
+
+    # Force initial state to float32 to protect torchdiffeq execution graph
+    state = plant.get_initial_state(batch_size).to(device=device, dtype=torch.float32)
+
+    print(f"📈 Testing ESN MIMO Trajectory Tracking via torchdiffeq: {batch_size} trajectories across {steps} steps...")
+
+    # ReservoirPy processes historical feedback paths step-by-step per batch index
+    history_pairs = [[] for _ in range(batch_size)]
+
+    # Instantiate our localized adaptive step wrapper
+    gpu_solver = LocalTrackingSolverWrapper(plant, hyperparam_config).to(device)
+
+    # --- 🌀 STEP-BY-STEP CLOSED-LOOP ROLLOUT LOOP ---
+    for i in range(steps):
+        t_start = i * dt
+        t_end = t_start + dt
+        
+        # 1. Obtain current tracking performance observable
+        with torch.no_grad():
+            y_current = plant.get_y(state, t_start).to(dtype=torch.float32)  
+
+        target_r = r_trajectory[i].expand(batch_size, input_dim)  
+        y_curr_np = y_current.cpu().numpy()  
+        tgt_r_np = target_r.cpu().numpy()  
+
+        # 2. Sequential Normalization Processing
+        u_unscaled_batch = []
+        for b_idx in range(batch_size):
+            input_pair = np.hstack([y_curr_np[b_idx], tgt_r_np[b_idx]])  
+            input_normalized = x_scaler.transform([input_pair])[0] if x_scaler else input_pair
+            
+            # ESN expects the historical trajectory up to this time step
+            history_pairs[b_idx].append(input_normalized)
+            curr_history = np.array(history_pairs[b_idx])  
+
+            # 3. Model inference through ESN forward interface
+            # Pass the complete historical trace for this index; take the final output step
+            u_seq_norm = model.forward(curr_history)
+            u_norm_step = u_seq_norm[-1, :]  # Shape: [output_dim]
+
+            if y_scaler:
+                u_unscaled = y_scaler.inverse_transform([u_norm_step])[0]
+            else:
+                u_unscaled = u_norm_step
+                
+            u_unscaled_batch.append(u_unscaled)
+
+        # Convert back to array for hard-clipping and tensor conversion
+        u_unscaled_arr = np.array(u_unscaled_batch)
+
+        # 4. Enforce actuator hard clipping profiles 
+        u_unscaled_arr = np.clip(u_unscaled_arr, plant_cfg["u_1_hard_min"], plant_cfg["u_1_hard_max"])  
+        u = torch.tensor(u_unscaled_arr, dtype=torch.float32, device=device)  
+
+        # 5. Logging current conditions BEFORE step integration update
+        all_y[i] = y_current  
+        all_u[i] = u  
+        all_states[i] = state  
+
+        # 6. INTEGRATION STEP VIA TORCHDIFFEQ
+        gpu_solver.current_u = u
+        t_span = torch.tensor([float(t_start), float(t_end)], dtype=torch.float32, device=device)
+        
+        with torch.no_grad():
+            solution = odeint(gpu_solver, state, t_span, method='dopri5', rtol=1e-5, atol=1e-7)
+
+            # Extract final integrated state array and apply dynamic clamping bounds
+            state = torch.clamp(
+                solution[1].detach(),
+                min=gpu_solver.state_min_bounds,
+                max=gpu_solver.state_max_bounds
+            ).to(dtype=torch.float32)
+
+    # --- PLOTTING & EXPORT BLOCKS (Fully Untouched) ---
+    time_axis = np.arange(steps) * dt
+    trajectory_reports = []
+    total_stacked_blocks = input_dim + output_dim
+    
+    plot_metadata = plant.get_plot_config()
     
     for b in range(batch_size):
         state_dirname = os.path.join(dirname, f"initial_state_{b}")
@@ -1783,6 +2276,649 @@ def simulate_tracking(
         "simulated_outputs": y_np,
         "simulated_controls": all_u.cpu().numpy()
     }
+
+
+def simulate_tracking_stateful(
+    model,
+    plant,
+    r_trajectories,  # List of reference trajectories, one for each output dimension. Shape: [steps] for each trajectory.
+    hyperparam_config,
+    x_scaler,
+    y_scaler,
+    dirname,
+    plot_individual_plots=False
+):
+    """
+    Simulates a controlled MIMO plant over a specified time horizon using stateful,
+    step-by-step inference (carrying forward Mamba hidden states) while tracking a
+    separate reference trajectory for each output dimension.
+    """
+    # Extract configuration sub-dictionaries
+    train_cfg = hyperparam_config["train"]
+    sig_cfg = hyperparam_config["signal"]
+    sim_cfg = hyperparam_config["simulate"]
+    mamba_cfg = hyperparam_config.get("mamba", {})
+    plant_cfg = hyperparam_config["plant"]
+
+    model.core.return_bc = True  # Enable returning B and C
+    
+    # Unpack specific parameters
+    steps = sim_cfg["seq_len"]
+    dt = sig_cfg["dt"]
+    batch_size = sim_cfg["batch_size"]
+    device = train_cfg["device"]
+    input_dim = mamba_cfg["input_dim"]    # Number of plant outputs (y1, y2, ...)
+    output_dim = mamba_cfg["output_dim"]  # Number of control inputs (u1, u2, ...)
+
+    # Validate r_trajectories
+    if len(r_trajectories) != input_dim:
+        raise ValueError(f"Expected {input_dim} reference trajectories, got {len(r_trajectories)}")
+
+    # Convert r_trajectories to a tensor of shape [steps, input_dim]
+    r_trajectory = torch.stack(r_trajectories, dim=1)  # Shape: [steps, input_dim]
+    r_np = r_trajectory.cpu().numpy()  # Shape: [steps, input_dim]
+
+    # Initialize GPU tensor buffers
+    all_y = torch.zeros((steps, batch_size, input_dim), device=device)  
+    all_u = torch.zeros((steps, batch_size, output_dim), device=device)  
+    
+    # Dynamically query plant state dimensions to avoid hardcoding
+    sample_state = plant.get_initial_state(1)
+    state_dim = sample_state.shape[-1]
+    all_states = torch.zeros((steps, batch_size, state_dim), device=device)  
+
+    state = plant.get_initial_state(batch_size)
+
+    # Prepare model for evaluation mode
+    model.eval()
+    ssm_history = {
+        "step": [], "time": [],
+        "A_bar": [], "B_bar": [], "C": [], "dt": []
+    }
+    print(f"📈 Testing Stateful MIMO Trajectory Tracking: {batch_size} trajectories across {steps} steps...")
+
+    # 🌟 ALLOCATE INFERENCE STATES (Carried forward dynamically across steps)
+    conv_state, ssm_state = model.allocate_inference_states(batch_size=batch_size, device=device)
+
+    # Execute forward tracking simulation
+    with torch.no_grad():
+        for i in range(steps):
+            t = i * dt
+            y_current = plant.get_y(state, t)  # Shape: [batch_size, input_dim]
+
+            # CLEAN LOOK-AHEAD: target reference at the current timestep
+            target_r = r_trajectory[i].expand(batch_size, input_dim)  # Shape: [batch_size, input_dim]
+
+            # Convert to CPU NumPy for scikit-learn transformation
+            y_curr_np = y_current.cpu().numpy()  
+            tgt_r_np = target_r.cpu().numpy()  
+
+            # Normalization per batch item
+            input_hex = np.hstack([y_curr_np, tgt_r_np])  # Shape: [batch_size, input_dim * 2]
+            
+            input_hex = x_scaler.transform(input_hex)
+                
+            # Split out y_t and y_next slices for the current step
+            y_t_norm = torch.tensor(input_hex[:, :input_dim], dtype=torch.float32, device=device)
+            y_next_norm = torch.tensor(input_hex[:, input_dim:], dtype=torch.float32, device=device)
+
+            # 🌟 STATEFUL INFERENCE: Run step forward passing recurrent memory states
+            u_norm_tensor, conv_state, ssm_state = model.step(
+                y_t_norm, y_next_norm, conv_state, ssm_state
+            )
+            
+            # --- EXTRACT SSM MATRICES FROM THE STEP FOR METADATA LOGGING ---
+            # A_bar_tau = model.A_bar[:, -1, :, :].cpu().numpy()  # Shape: [batch_size, d_inner, d_state]
+            # B_bar_tau = model.B_bar[:, -1, :, :].cpu().numpy()  # Shape: [batch_size, d_inner, d_state]
+            # C_tau = model.C[:, :, -1].cpu().numpy() if model.C.dim() == 3 else model.C.cpu().numpy()
+            # dt_tau = model.mamba_dt[:, -1].cpu().numpy()
+            
+            # ssm_history["step"].append(i)
+            # ssm_history["time"].append(t)
+            # ssm_history["A_bar"].append(A_bar_tau.tolist())  
+            # ssm_history["B_bar"].append(B_bar_tau.tolist())
+            # ssm_history["C"].append(C_tau.tolist())
+            # ssm_history["dt"].append(dt_tau.tolist())
+
+            # Convert unscaling step
+            u_norm_np = u_norm_tensor.cpu().numpy() 
+            
+            u_unscaled = y_scaler.inverse_transform(u_norm_np)
+
+
+            # --- FORCE PHYSICAL ACTUATOR LIMITS ---
+            u_unscaled = np.clip(u_unscaled, plant_cfg["u_1_hard_min"], plant_cfg["u_1_hard_max"])  
+            u = torch.tensor(u_unscaled, dtype=torch.float32, device=device)  
+
+            # Step the physical plant forward
+            state, _ = plant.step(state, u, t, dt)
+
+            # Logging metrics
+            all_y[i] = y_current  
+            all_u[i] = u  
+            all_states[i] = state  
+
+    # --- PLOTTING & EXPORT ---
+    time_axis = np.arange(steps) * dt
+    trajectory_reports = []
+    total_stacked_blocks = input_dim + output_dim
+    
+    # Retrieve the metadata configuration blocks from the plant
+    plot_metadata = plant.get_plot_config()
+    
+    # Extract metadata blocks safely with explicit fallbacks
+    state_meta  = plot_metadata[0] if len(plot_metadata) > 0 else {}
+    output_meta = plot_metadata[1] if len(plot_metadata) > 1 else {}
+    control_meta = plot_metadata[2] if len(plot_metadata) > 2 else {}
+    
+    save_to_json(
+        data=ssm_history,
+        dirname=dirname,          
+        filename="ssm_matrices_history"
+    )
+    
+    # Parse and save individual trajectory records
+    for b in range(batch_size):
+        state_dirname = os.path.join(dirname, f"initial_state_{b}")
+        os.makedirs(state_dirname, exist_ok=True)
+
+        y_traj = all_y[:, b, :].cpu().numpy()            # Shape: [steps, input_dim]
+        u_traj = all_u[:, b, :].cpu().numpy()            # Shape: [steps, output_dim]
+        states_traj = all_states[:, b, :].cpu().numpy()  # Shape: [steps, state_dim]
+
+        # Save DataFrame for this trajectory
+        df_data = {
+            "time": np.tile(time_axis, total_stacked_blocks),
+            "signal_type": np.repeat(
+                [f"y_{i+1}" for i in range(input_dim)] + [f"u_{i+1}" for i in range(output_dim)],
+                steps
+            ),
+            "value": np.concatenate([
+                y_traj[:, i] for i in range(input_dim)
+            ] + [
+                u_traj[:, i] for i in range(output_dim)
+            ]),
+        }
+        
+        for i in range(states_traj.shape[1]):
+            df_data[f"state_{i+1}"] = np.tile(states_traj[:, i], total_stacked_blocks)
+
+        df_traj = pd.DataFrame(df_data)
+        save_df_to_csv(df_traj, dirname=state_dirname, filename="state_report")
+        trajectory_reports.append(df_traj)
+
+        if plot_individual_plots:
+            # 1. Individual Plot: Control Signals
+            for i in range(output_dim):
+                labels_list = control_meta.get("labels", [])
+                label = labels_list[i] if i < len(labels_list) else f"Control Input (u_{i+1})"
+                title = control_meta.get("title", "Control Profile")
+                
+                plot_signals(
+                    t=time_axis,
+                    signals=[u_traj[:, i]],
+                    labels=[label],
+                    title=f"Trajectory {b}: {title}",
+                    xlabel="Time (h)",
+                    ylabel=control_meta.get("ylabel", "Action Value"),
+                    dirname=state_dirname,
+                    filename=f"plot_control_signal_u_{i+1}"
+                )
+
+            # 2. Individual Plot: Output tracking performance
+            for i in range(input_dim):
+                labels_list = output_meta.get("labels", [])
+                # Expecting layout: ["Actual μ", "Target μ_ref"]
+                ind_y_label = labels_list[0] if len(labels_list) > 0 else f"Output (y_{i+1})"
+                ind_r_label = labels_list[1] if len(labels_list) > 1 else f"Target (r_{i+1})"
+                title = output_meta.get("title", "Tracking Performance")
+                
+                plot_signals(
+                    t=time_axis,
+                    signals=[y_traj[:, i], r_np[:, i]],  
+                    labels=[ind_y_label, ind_r_label],   
+                    title=f"Trajectory {b}: {title}",
+                    xlabel="Time (h)",
+                    ylabel=output_meta.get("ylabel", "Signal Value"),
+                    dirname=state_dirname,
+                    filename=f"plot_output_tracking_y_{i+1}"
+                )
+                
+            # 3. Individual Plot: Internal plant states
+            for i in range(states_traj.shape[1]):
+                labels_list = state_meta.get("labels", [])
+                label = labels_list[i] if i < len(labels_list) else f"State x_{i+1}"
+                title = state_meta.get("title", "Internal Plant States")
+                
+                plot_signals(
+                    t=time_axis,
+                    signals=[states_traj[:, i]],
+                    labels=[label],
+                    title=f"Trajectory {b}: {title} - {label}",
+                    xlabel="Time (h)",
+                    ylabel=state_meta.get("ylabel", "State Magnitude"),
+                    dirname=state_dirname,
+                    filename=f"plot_plant_state_x_{i+1}"
+                )
+
+    # --- GLOBAL BATCH OVERLAY PLOT GENERATION ---
+    y_np = all_y.cpu().numpy()       # Shape: [steps, batch_size, input_dim]
+    u_np = all_u.cpu().numpy()       # Shape: [steps, batch_size, output_dim]
+    s_np = all_states.cpu().numpy()  # Shape: [steps, batch_size, state_dim]
+
+    # Global Summary 1: System Outputs Convergence Overlay
+    for i in range(input_dim):
+        summary_signals = [y_np[:, j, i] for j in range(batch_size)] + [r_np[:, i]]
+        labels_list = output_meta.get("labels", [])
+        base_y_label = labels_list[0] if len(labels_list) > 0 else f"y_{i+1}"
+        base_r_label = labels_list[1] if len(labels_list) > 1 else f"r_{i+1}"
+        
+        plot_signals(
+            t=time_axis,
+            signals=summary_signals,
+            labels=[f"Traj {j} ({base_y_label})" for j in range(batch_size)] + [f"Target ({base_r_label})"],
+            title=f"Batch Convergence ({base_y_label}) - {batch_size} Trajectories Overview",
+            xlabel="Time (h)",
+            ylabel=output_meta.get("ylabel", "System Output"),
+            dirname=dirname,
+            filename=f"batch_summary_y_{i+1}"
+        )
+
+    # Global Summary 2: Control Action Profiles Overlay
+    for i in range(output_dim):
+        labels_list = control_meta.get("labels", [])
+        label_base = labels_list[i] if i < len(labels_list) else f"u_{i+1}"
+        title_base = control_meta.get("title", "Control Profile")
+        summary_inputs = [u_np[:, j, i] for j in range(batch_size)]
+        
+        plot_signals(
+            t=time_axis,
+            signals=summary_inputs,
+            labels=[f"Traj {j} ({label_base})" for j in range(batch_size)],
+            title=f"Batch Profile: {title_base} - Overlaid Actions",
+            xlabel="Time (h)",
+            ylabel=control_meta.get("ylabel", "Action Value"),
+            dirname=dirname,
+            filename=f"batch_summary_u_{i+1}"
+        )
+
+    # Global Summary 3: State Trajectories Overlay
+    for i in range(s_np.shape[2]):
+        labels_list = state_meta.get("labels", [])
+        label_base = labels_list[i] if i < len(labels_list) else f"x_{i+1}"
+        title_base = state_meta.get("title", "State Evolution")
+        summary_states = [s_np[:, j, i] for j in range(batch_size)]
+        
+        plot_signals(
+            t=time_axis,
+            signals=summary_states,
+            labels=[f"Traj {j} ({label_base})" for j in range(batch_size)],
+            title=f"Batch Trajectories: {title_base} ({label_base}) Ensembles",
+            xlabel="Time (h)",
+            ylabel=state_meta.get("ylabel", "State Magnitude"),
+            dirname=dirname,
+            filename=f"batch_summary_x_{i+1}"
+        )
+
+    # --- METRICS COMPILATION ---
+    tracking_metrics = {}
+    for i in range(input_dim):
+        y_traj = y_np[:, :, i]  # Shape: [steps, batch_size]
+        r_traj = r_np[:, i]     # Shape: [steps]
+        metrics = compute_and_save_tracking_metrics(y_traj, r_traj, dt, dirname, suffix=f"y_{i+1}")
+        tracking_metrics[f"y_{i+1}"] = metrics
+
+    return {
+        "trajectory_dataframes": trajectory_reports,
+        "metrics": tracking_metrics,
+        "simulated_outputs": y_np,
+        "simulated_controls": all_u.cpu().numpy()
+    }
+import torch.nn as nn
+
+# 🌟 ADD THIS WRAPPER CLASS OUTSIDE / BEFORE THE FUNCTION 🌟
+class TorchDiffeqPlantWrapper(nn.Module):
+    def __init__(self, physical_plant):
+        super().__init__()
+        self.plant = physical_plant
+        self.current_u = None  # Holds the fixed ZOH control command [batch_size, output_dim]
+
+    def set_control_action(self, u):
+        """Fixes the control action (ZOH) for the integration step."""
+        self.current_u = u
+
+    def forward(self, t, state):
+        """
+        Calculates dx/dt.
+        torchdiffeq passes:
+          t: scalar or tensor time
+          state: tensor of shape [batch_size, 2] containing [x1, x2]
+        """
+        if self.current_u is None:
+            raise ValueError("Control action 'u' must be set before executing solver integration.")
+        
+        # 1. Unpack the states exactly how your plant's dynamics method expects them
+        x1 = state[:, 0:1]  # Shape: [batch_size, 1]
+        x2 = state[:, 1:2]  # Shape: [batch_size, 1]
+        
+        # 2. Call your plant's specific dynamics method
+        dx1dt, dx2dt = self.plant.dynamics(x1, x2, self.current_u, t)
+        
+        # 3. Concatenate the derivatives back into a single tensor matching state shape
+        dx_dt = torch.cat([dx1dt, dx2dt], dim=1)  # Shape: [batch_size, 2]
+        return dx_dt
+    
+
+
+def simulate_tracking_stateful_torchdiffeq(
+    model,
+    plant,
+    r_trajectories,  # List of reference trajectories, one for each output dimension. Shape: [steps] for each trajectory.
+    hyperparam_config,
+    x_scaler,
+    y_scaler,
+    dirname,
+    plot_individual_plots=False
+):
+    """
+    Simulates a controlled MIMO plant over a specified time horizon using stateful,
+    step-by-step inference (carrying forward Mamba hidden states) while tracking a
+    separate reference trajectory for each output dimension.
+    """
+    # Extract configuration sub-dictionaries
+    train_cfg = hyperparam_config["train"]
+    sig_cfg = hyperparam_config["signal"]
+    sim_cfg = hyperparam_config["simulate"]
+    mamba_cfg = hyperparam_config.get("mamba", {})
+    plant_cfg = hyperparam_config["plant"]
+
+    model.core.return_bc = True  # Enable returning B and C
+    
+    # Unpack specific parameters
+    steps = sim_cfg["seq_len"]
+    dt = sig_cfg["dt"]
+    batch_size = sim_cfg["batch_size"]
+    device = train_cfg["device"]
+    input_dim = mamba_cfg["input_dim"]    # Number of plant outputs (y1, y2, ...)
+    output_dim = mamba_cfg["output_dim"]  # Number of control inputs (u1, u2, ...)
+
+    # Validate r_trajectories
+    if len(r_trajectories) != input_dim:
+        raise ValueError(f"Expected {input_dim} reference trajectories, got {len(r_trajectories)}")
+
+    # Convert r_trajectories to a tensor of shape [steps, input_dim]
+    r_trajectory = torch.stack(r_trajectories, dim=1)  # Shape: [steps, input_dim]
+    r_np = r_trajectory.cpu().numpy()  # Shape: [steps, input_dim]
+
+    # Initialize GPU tensor buffers
+    all_y = torch.zeros((steps, batch_size, input_dim), device=device)  
+    all_u = torch.zeros((steps, batch_size, output_dim), device=device)  
+    
+    # Dynamically query plant state dimensions to avoid hardcoding
+    sample_state = plant.get_initial_state(1)
+    state_dim = sample_state.shape[-1]
+    all_states = torch.zeros((steps, batch_size, state_dim), device=device)  
+
+    state = plant.get_initial_state(batch_size)
+
+    # Prepare model for evaluation mode
+    model.eval()
+    ssm_history = {
+        "step": [], "time": [],
+        "A_bar": [], "B_bar": [], "C": [], "dt": []
+    }
+    print(f"📈 Testing Stateful MIMO Trajectory Tracking: {batch_size} trajectories across {steps} steps...")
+
+    # 🌟 INSERTION 1: Instantiate the torchdiffeq wrapper before the forward loop starts
+    diffeq_plant = TorchDiffeqPlantWrapper(plant)
+
+    # 🌟 ALLOCATE INFERENCE STATES (Carried forward dynamically across steps)
+    conv_state, ssm_state = model.allocate_inference_states(batch_size=batch_size, device=device)
+
+    # Execute forward tracking simulation
+    with torch.no_grad():
+        for i in range(steps):
+            t = i * dt
+            y_current = plant.get_y(state, t)  # Shape: [batch_size, input_dim]
+
+            # CLEAN LOOK-AHEAD: target reference at the current timestep
+            target_r = r_trajectory[i].expand(batch_size, input_dim)  # Shape: [batch_size, input_dim]
+
+            # Convert to CPU NumPy for scikit-learn transformation
+            y_curr_np = y_current.cpu().numpy()  
+            tgt_r_np = target_r.cpu().numpy()  
+
+            # Normalization per batch item
+            input_hex = np.hstack([y_curr_np, tgt_r_np])  # Shape: [batch_size, input_dim * 2]
+            
+            input_hex = x_scaler.transform(input_hex)
+                
+            # Split out y_t and y_next slices for the current step
+            y_t_norm = torch.tensor(input_hex[:, :input_dim], dtype=torch.float32, device=device)
+            y_next_norm = torch.tensor(input_hex[:, input_dim:], dtype=torch.float32, device=device)
+
+            # 🌟 STATEFUL INFERENCE: Run step forward passing recurrent memory states
+            u_norm_tensor, conv_state, ssm_state = model.step(
+                y_t_norm, y_next_norm, conv_state, ssm_state
+            )
+            
+            # --- EXTRACT SSM MATRICES FROM THE STEP FOR METADATA LOGGING ---
+            # A_bar_tau = model.A_bar[:, -1, :, :].cpu().numpy()  # Shape: [batch_size, d_inner, d_state]
+            # B_bar_tau = model.B_bar[:, -1, :, :].cpu().numpy()  # Shape: [batch_size, d_inner, d_state]
+            # C_tau = model.C[:, :, -1].cpu().numpy() if model.C.dim() == 3 else model.C.cpu().numpy()
+            # dt_tau = model.mamba_dt[:, -1].cpu().numpy()
+            
+            # ssm_history["step"].append(i)
+            # ssm_history["time"].append(t)
+            # ssm_history["A_bar"].append(A_bar_tau.tolist())  
+            # ssm_history["B_bar"].append(B_bar_tau.tolist())
+            # ssm_history["C"].append(C_tau.tolist())
+            # ssm_history["dt"].append(dt_tau.tolist())
+
+            # Convert unscaling step
+            u_norm_np = u_norm_tensor.cpu().numpy() 
+            
+            u_unscaled = y_scaler.inverse_transform(u_norm_np)
+
+
+            # --- FORCE PHYSICAL ACTUATOR LIMITS ---
+            u_unscaled = np.clip(u_unscaled, plant_cfg["u_1_hard_min"], plant_cfg["u_1_hard_max"])  
+            u = torch.tensor(u_unscaled, dtype=torch.float32, device=device)
+
+            # 1. Bind the current constant control vector to the wrapper (Zero-Order Hold)
+            diffeq_plant.set_control_action(u)  
+
+            # 2. Define the evaluation timeframe for this single discrete slot
+            t_span = torch.tensor([t, t + dt], dtype=torch.float32, device=device)
+            
+            # 3. Mathematically integrate the system state forward to the next step
+            integrated_states = odeint(diffeq_plant, state, t_span, method='rk4')
+            
+            # 4. Extract and keep only the final evaluation state target at t + dt
+            state = integrated_states[1]
+
+            # Logging metrics
+            all_y[i] = y_current  
+            all_u[i] = u  
+            all_states[i] = state  
+
+    # --- PLOTTING & EXPORT ---
+    time_axis = np.arange(steps) * dt
+    trajectory_reports = []
+    total_stacked_blocks = input_dim + output_dim
+    
+    # Retrieve the metadata configuration blocks from the plant
+    plot_metadata = plant.get_plot_config()
+    
+    # Extract metadata blocks safely with explicit fallbacks
+    state_meta  = plot_metadata[0] if len(plot_metadata) > 0 else {}
+    output_meta = plot_metadata[1] if len(plot_metadata) > 1 else {}
+    control_meta = plot_metadata[2] if len(plot_metadata) > 2 else {}
+    
+    save_to_json(
+        data=ssm_history,
+        dirname=dirname,          
+        filename="ssm_matrices_history"
+    )
+    
+    # Parse and save individual trajectory records
+    for b in range(batch_size):
+        state_dirname = os.path.join(dirname, f"initial_state_{b}")
+        os.makedirs(state_dirname, exist_ok=True)
+
+        y_traj = all_y[:, b, :].cpu().numpy()            # Shape: [steps, input_dim]
+        u_traj = all_u[:, b, :].cpu().numpy()            # Shape: [steps, output_dim]
+        states_traj = all_states[:, b, :].cpu().numpy()  # Shape: [steps, state_dim]
+
+        # Save DataFrame for this trajectory
+        df_data = {
+            "time": np.tile(time_axis, total_stacked_blocks),
+            "signal_type": np.repeat(
+                [f"y_{i+1}" for i in range(input_dim)] + [f"u_{i+1}" for i in range(output_dim)],
+                steps
+            ),
+            "value": np.concatenate([
+                y_traj[:, i] for i in range(input_dim)
+            ] + [
+                u_traj[:, i] for i in range(output_dim)
+            ]),
+        }
+        
+        for i in range(states_traj.shape[1]):
+            df_data[f"state_{i+1}"] = np.tile(states_traj[:, i], total_stacked_blocks)
+
+        df_traj = pd.DataFrame(df_data)
+        save_df_to_csv(df_traj, dirname=state_dirname, filename="state_report")
+        trajectory_reports.append(df_traj)
+
+        if plot_individual_plots:
+            # 1. Individual Plot: Control Signals
+            for i in range(output_dim):
+                labels_list = control_meta.get("labels", [])
+                label = labels_list[i] if i < len(labels_list) else f"Control Input (u_{i+1})"
+                title = control_meta.get("title", "Control Profile")
+                
+                plot_signals(
+                    t=time_axis,
+                    signals=[u_traj[:, i]],
+                    labels=[label],
+                    title=f"Trajectory {b}: {title}",
+                    xlabel="Time (h)",
+                    ylabel=control_meta.get("ylabel", "Action Value"),
+                    dirname=state_dirname,
+                    filename=f"plot_control_signal_u_{i+1}"
+                )
+
+            # 2. Individual Plot: Output tracking performance
+            for i in range(input_dim):
+                labels_list = output_meta.get("labels", [])
+                # Expecting layout: ["Actual μ", "Target μ_ref"]
+                ind_y_label = labels_list[0] if len(labels_list) > 0 else f"Output (y_{i+1})"
+                ind_r_label = labels_list[1] if len(labels_list) > 1 else f"Target (r_{i+1})"
+                title = output_meta.get("title", "Tracking Performance")
+                
+                plot_signals(
+                    t=time_axis,
+                    signals=[y_traj[:, i], r_np[:, i]],  
+                    labels=[ind_y_label, ind_r_label],   
+                    title=f"Trajectory {b}: {title}",
+                    xlabel="Time (h)",
+                    ylabel=output_meta.get("ylabel", "Signal Value"),
+                    dirname=state_dirname,
+                    filename=f"plot_output_tracking_y_{i+1}"
+                )
+                
+            # 3. Individual Plot: Internal plant states
+            for i in range(states_traj.shape[1]):
+                labels_list = state_meta.get("labels", [])
+                label = labels_list[i] if i < len(labels_list) else f"State x_{i+1}"
+                title = state_meta.get("title", "Internal Plant States")
+                
+                plot_signals(
+                    t=time_axis,
+                    signals=[states_traj[:, i]],
+                    labels=[label],
+                    title=f"Trajectory {b}: {title} - {label}",
+                    xlabel="Time (h)",
+                    ylabel=state_meta.get("ylabel", "State Magnitude"),
+                    dirname=state_dirname,
+                    filename=f"plot_plant_state_x_{i+1}"
+                )
+
+    # --- GLOBAL BATCH OVERLAY PLOT GENERATION ---
+    y_np = all_y.cpu().numpy()       # Shape: [steps, batch_size, input_dim]
+    u_np = all_u.cpu().numpy()       # Shape: [steps, batch_size, output_dim]
+    s_np = all_states.cpu().numpy()  # Shape: [steps, batch_size, state_dim]
+
+    # Global Summary 1: System Outputs Convergence Overlay
+    for i in range(input_dim):
+        summary_signals = [y_np[:, j, i] for j in range(batch_size)] + [r_np[:, i]]
+        labels_list = output_meta.get("labels", [])
+        base_y_label = labels_list[0] if len(labels_list) > 0 else f"y_{i+1}"
+        base_r_label = labels_list[1] if len(labels_list) > 1 else f"r_{i+1}"
+        
+        plot_signals(
+            t=time_axis,
+            signals=summary_signals,
+            labels=[f"Traj {j} ({base_y_label})" for j in range(batch_size)] + [f"Target ({base_r_label})"],
+            title=f"Batch Convergence ({base_y_label}) - {batch_size} Trajectories Overview",
+            xlabel="Time (h)",
+            ylabel=output_meta.get("ylabel", "System Output"),
+            dirname=dirname,
+            filename=f"batch_summary_y_{i+1}"
+        )
+
+    # Global Summary 2: Control Action Profiles Overlay
+    for i in range(output_dim):
+        labels_list = control_meta.get("labels", [])
+        label_base = labels_list[i] if i < len(labels_list) else f"u_{i+1}"
+        title_base = control_meta.get("title", "Control Profile")
+        summary_inputs = [u_np[:, j, i] for j in range(batch_size)]
+        
+        plot_signals(
+            t=time_axis,
+            signals=summary_inputs,
+            labels=[f"Traj {j} ({label_base})" for j in range(batch_size)],
+            title=f"Batch Profile: {title_base} - Overlaid Actions",
+            xlabel="Time (h)",
+            ylabel=control_meta.get("ylabel", "Action Value"),
+            dirname=dirname,
+            filename=f"batch_summary_u_{i+1}"
+        )
+
+    # Global Summary 3: State Trajectories Overlay
+    for i in range(s_np.shape[2]):
+        labels_list = state_meta.get("labels", [])
+        label_base = labels_list[i] if i < len(labels_list) else f"x_{i+1}"
+        title_base = state_meta.get("title", "State Evolution")
+        summary_states = [s_np[:, j, i] for j in range(batch_size)]
+        
+        plot_signals(
+            t=time_axis,
+            signals=summary_states,
+            labels=[f"Traj {j} ({label_base})" for j in range(batch_size)],
+            title=f"Batch Trajectories: {title_base} ({label_base}) Ensembles",
+            xlabel="Time (h)",
+            ylabel=state_meta.get("ylabel", "State Magnitude"),
+            dirname=dirname,
+            filename=f"batch_summary_x_{i+1}"
+        )
+
+    # --- METRICS COMPILATION ---
+    tracking_metrics = {}
+    for i in range(input_dim):
+        y_traj = y_np[:, :, i]  # Shape: [steps, batch_size]
+        r_traj = r_np[:, i]     # Shape: [steps]
+        metrics = compute_and_save_tracking_metrics(y_traj, r_traj, dt, dirname, suffix=f"y_{i+1}")
+        tracking_metrics[f"y_{i+1}"] = metrics
+
+    return {
+        "trajectory_dataframes": trajectory_reports,
+        "metrics": tracking_metrics,
+        "simulated_outputs": y_np,
+        "simulated_controls": all_u.cpu().numpy()
+    }
+
 
 
 import torch

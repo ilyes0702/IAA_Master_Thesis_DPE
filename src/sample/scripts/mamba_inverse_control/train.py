@@ -21,13 +21,14 @@ from src.sample.classes.plants.IdiophasePlant import IdiophasePlant
 
 from src.sample.classes.plants.YeastFermentation import FedBatchYeastPlant
 
-
 from src.sample.classes.controllers.MambaInverseController import *
+from src.sample.classes.controllers.ESNInverseController import *
+
+
 
 from src.hyperparam_config import *
 
-from src.sample.utils.training_utils import *  # train_controller, etc.
-
+from src.sample.utils.training_utils import * 
 from src.sample.utils.saving_utils import *
 
 # Device configuration: use GPU if available, otherwise fallback to CPU.
@@ -41,7 +42,7 @@ if __name__ == "__main__":
     plant = TrophophasePlant(hyperparam_config=hyperparam_config)
     
     dataset_path = (
-       "results/2026-06-19/2026-06-19_14-59-17/TrophophasePlant_training_data/dataset/2026-06-19_14-59-17_training_data.pt"
+       "results/2026-06-25/2026-06-25_18-55-42/TrophophasePlant_training_data/dataset/2026-06-25_18-55-42_training_data.pt"
     )
     
     # Load the dataset from disk. The file is expected to be a dict-like object containing 'x' and 'y' keys. If loading fails, inspect the path first.
@@ -60,7 +61,9 @@ if __name__ == "__main__":
 
 
     # Initialize the inverse controller and move it to the selected device.
-    controller = MambaInverseController(hyperparam_config=hyperparam_config).to(device)
+    #controller = MambaInverseController(hyperparam_config=hyperparam_config).to(device)
+
+    controller = MambaInverseController_stateful(hyperparam_config=hyperparam_config)
 
     # Directory name to store training artifacts (models, plots, logs).
     dirname = f"{plant.__class__.__name__}_training"
@@ -72,8 +75,7 @@ if __name__ == "__main__":
         Y,
         hyperparam_config,
         plant,
-        dirname=dirname,
-        show_plots=False
+        dirname=dirname
     )
         
         

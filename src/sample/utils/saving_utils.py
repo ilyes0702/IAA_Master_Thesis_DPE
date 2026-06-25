@@ -11,6 +11,23 @@ from src.sample.config import date_and_time as default_date_and_time
 
 import pickle
 
+import pickle
+import os
+
+def save_model_esn(model, dirname, hyperparam_config, filename="best_fold_model"):
+    """Saves the ESN model state and configuration to disk using pickle."""
+    os.makedirs(dirname, exist_ok=True)
+    checkpoint_path = os.path.join(dirname, f"{filename}.pkl")
+    
+    checkpoint = {
+        'config': hyperparam_config,
+        'model_state_dict': model.model  # Saves the ReservoirPy pipeline layout + trained readout
+    }
+    
+    with open(checkpoint_path, 'wb') as f:
+        pickle.dump(checkpoint, f)
+    print(f"💾 ESN Model successfully saved to: {checkpoint_path}")
+
 #=== FUNCTION TO SAVE TRAINED MODEL ===#
 def save_model(model, dirname, hyperparam_config, filename="trained_controller"):
     """

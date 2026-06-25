@@ -5,7 +5,7 @@ This script initializes the plant, loads a trained controller and scalers,
 generates reference trajectories (dynamic and constant), and runs the
 simulation routine.
 """
-
+import torch.nn as nn
 import matplotlib.pyplot as plt
 from src.sample.classes.plants.PenicillinPlantBirol2002 import PenicillinPlantBirol2002
 from src.sample.config import get_run_description, log_message
@@ -21,6 +21,10 @@ from src.sample.classes.plants.TrophophasePlant import TrophophasePlant
 from src.sample.classes.plants.ChemostatPlant import ChemostatPlant
 from src.sample.classes.plants.YeastFermentation import FedBatchYeastPlant
 from src.sample.classes.controllers.MambaInverseController import *
+from src.sample.classes.controllers.ESNInverseController import *
+
+# Tell PyTorch this class is safe to unpickle
+torch.serialization.add_safe_globals([MambaInverseController])
 
 # Device configuration (printed for visibility)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -38,21 +42,33 @@ def main():
     #plant = TrophophasePlant(hyperparam_config_TrophophasePlant)
     
 
-    # Path to the trained controller checkpoint (keep as configured)
-    controller_path = (
-        "models/2026-06-19/2026-06-19_12-27-24/TrophophasePlant_training/fold_5/2026-06-19_12-27-24_best_fold_model.pt"
-    )
+   
+    #print(torch.load(controller_path, map_location='cuda'))
 
+    controller_path = "models/2026-06-25/2026-06-25_18-53-32/TrophophasePlant_training/fold_1/2026-06-25_18-53-32_best_fold_model.pt"
     # Load the trained inverse controller
-    loaded_controller = load_model(MambaInverseController, controller_path)
+    loaded_controller = load_model(MambaInverseController_stateful, controller_path)
 
     scaler_x = load_scaler(
-        "results/2026-06-19/2026-06-19_12-27-24/TrophophasePlant_training/fold_5/scalers/2026-06-19_12-27-24_scaler_x.pkl"
+        "results/2026-06-25/2026-06-25_18-53-32/TrophophasePlant_training/fold_1/scalers/2026-06-25_18-53-32_scaler_x.pkl"
     )
 
     scaler_y = load_scaler(
-        "results/2026-06-19/2026-06-19_12-27-24/TrophophasePlant_training/fold_5/scalers/2026-06-19_12-27-24_scaler_y.pkl"
+        "results/2026-06-25/2026-06-25_18-53-32/TrophophasePlant_training/fold_1/scalers/2026-06-25_18-53-32_scaler_y.pkl"
         )
+    
+
+    means_x = scaler_x.mean_
+    stds_x = scaler_x.scale_
+
+    print(f"Means x: {means_x}")
+    print(f"Standard Deviations x: {stds_x}")
+
+    means_y = scaler_y.mean_
+    stds_y = scaler_y.scale_
+
+    print(f"Means y: {means_y}")
+    print(f"Standard Deviations y: {stds_y}")
     
     # Example: Separate sine and cosine trajectories for y1 and y2
 
@@ -71,7 +87,7 @@ def main():
         dt=hyperparam_config["signal"]["dt"],
         device=hyperparam_config["train"]["device"],
         mode="constant",
-        constant_val=0.03,
+        constant_val=0.4,
     )
 
     r_static_y_2 = generate_reference_trajectory(
@@ -94,7 +110,7 @@ def main():
         }
     )
 
-    simulate_tracking_torchdiffeq(
+    simulate_tracking_stateful(
         model=loaded_controller,
         plant=plant,
         r_trajectories=[r_static_y_1.squeeze()],

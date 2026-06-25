@@ -61,7 +61,7 @@ class TrophophasePlant:
         # Monod growth kinetics: mu(x2) = (mu_max * x2) / (Ks * V + x2)
         # Separated into concentration components: (mu_max * c2) / (Ks + c2)
         mu = (self.mu_max * c2) / (self.Ks + c2)
-        return mu 
+        return mu*20 
 
     def dynamics(self, x1, x2, u1, t):
         """

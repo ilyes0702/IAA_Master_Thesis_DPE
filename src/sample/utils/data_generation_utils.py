@@ -81,6 +81,54 @@ def generate_canaday_signal_single(hyperparam_config, channel_idx=1):
     u_buffer = torch.clamp(u_buffer, u_hard_min, u_hard_max)
     
     return u_buffer, u_center
+
+
+# def generate_canaday_signal_single(hyperparam_config, channel_idx=1):
+#     """
+#     Generate smooth, band-limited control signals matching the scaling logic
+#     of generate_data_parallel, using global configuration parameters.
+#     Scales the final output to a flat [0, p] unipolar range.
+#     """
+#     sig_cfg = hyperparam_config["signal"]
+#     train_cfg = hyperparam_config["train"]
+    
+#     batch_size = train_cfg["batch_size"]
+#     seq_len = sig_cfg["seq_len"]
+#     device = train_cfg["device"]
+    
+#     # 🌍 GLOBAL PARAMETERS (No channel-specific lookups)
+#     lambd = sig_cfg["lambd"]
+#     configured_p = sig_cfg["p"]
+
+    
+#     # Step 1: Sample values from a uniform distribution [-1, 1]
+#     raw = torch.rand((batch_size, seq_len), device=device) * 2 - 1
+    
+#     # Step 2: Fourier-transform to frequency domain
+#     fft_sig = torch.fft.rfft(raw, dim=1)
+#     freqs = torch.fft.rfftfreq(seq_len, d=sig_cfg["dt"], device=device)
+    
+#     # Step 3: Drop frequencies above 1/lambda
+#     cutoff = 1.0 / lambd
+#     fft_sig[:, freqs > cutoff] = 0
+    
+#     # Step 4: Inverse-Fourier-transform
+#     v_train = torch.fft.irfft(fft_sig, n=seq_len, dim=1)
+    
+#     # Step 5: Global Min-Max Normalization to [0, 1] (Matching generate_data_parallel)
+#     v_min = v_train.min(dim=1, keepdim=True)[0]
+#     v_max = v_train.max(dim=1, keepdim=True)[0]
+#     v_norm = (v_train - v_min) / (v_max - v_min + 1e-8)
+    
+#     # Step 6: Scale by the global amplitude 'p' to bound within [0, p]
+#     u_buffer = v_norm * configured_p
+    
+#     # Since there are no centers or offsets in this logic, we return 
+#     # a tensor of zeros for the center matrix to maintain signature compatibility.
+#     u_center = torch.zeros((batch_size, 1), device=device)
+    
+#     return u_buffer, u_center
+
 from torchdiffeq import odeint
 
 def generate_canaday_signals(hyperparam_config):
@@ -101,6 +149,55 @@ def generate_canaday_signals(hyperparam_config):
         D_center_list.append(D_center)
 
     u_buffer = torch.cat(u_buffer, dim=-1)  
+    D_center = torch.stack(D_center_list, dim=-1) 
+
+    return u_buffer, D_center
+
+
+def generate_signals_mix(hyperparam_config):
+    """Generate independent MIMO control vectors mixing Canaday signals with constant signals."""
+    train_cfg = hyperparam_config["train"]
+    mamba_cfg = hyperparam_config["mamba"]
+    sig_cfg = hyperparam_config["signal"]
+
+    batch_size = train_cfg["batch_size"]
+    output_dim = mamba_cfg["output_dim"] 
+    seq_len = int(sig_cfg["seq_len"])
+    
+    # Probability of a batch item being a constant signal (e.g., 0.3 = 30%)
+    # Default to 0.0 if not specified in config to remain backward compatible
+    constant_prob = train_cfg.get("constant_signal_probability", 0.3)
+
+    u_buffer = []
+    D_center_list = []
+
+    for i in range(output_dim):
+        # 1. Generate the standard baseline Canaday signal for the channel
+        u_single, D_center = generate_canaday_signal_single(hyperparam_config, channel_idx=i+1)
+        
+        # u_single shape: [batch_size, seq_len]
+        # 2. Determine which batch items will be replaced with constants
+        # We perform this independently per channel or globally per batch element
+        for b in range(batch_size):
+            if np.random.rand() < constant_prob:
+                # Pick a random constant value within your physical input range
+                # For the Trophophase plant, u1 bounds are [0.0, 1.0]
+                u_min = hyperparam_config["plant"].get(f"u_{i+1}_min", 0.0)
+                u_max = hyperparam_config["plant"].get(f"u_{i+1}_max", 1.0)
+                
+                # Sample a random continuous step value
+                constant_val = u_min + (u_max - u_min) * np.random.rand()
+                
+                # Overwrite this specific batch sequence index with a flat line
+                u_single[b, :] = constant_val
+                
+                # (Optional) If D_center tracking matters for the constant, zero it out or preserve it
+                D_center[b, :] = 0.0 
+
+        u_buffer.append(u_single.unsqueeze(-1))
+        D_center_list.append(D_center)
+
+    u_buffer = torch.cat(u_buffer, dim=-1)  # Shape: [batch_size, seq_len, output_dim]
     D_center = torch.stack(D_center_list, dim=-1) 
 
     return u_buffer, D_center
@@ -170,7 +267,7 @@ class TorchDiffeqPlantWrapper(torch.nn.Module):
         
         return derivatives
 
-def generate_training_batch_gpu(plant, hyperparam_config):
+def generate_training_batch_torchdiffeq(plant, hyperparam_config):
     sig_cfg = hyperparam_config["signal"]
     train_cfg = hyperparam_config["train"]
 
@@ -333,7 +430,7 @@ def generate_and_save_dataset(
     print(f"🚀 Running batch simulation for {total_sequences} sequences...")
     
     # Capturing the raw continuous state trajectory matrix from your generation engine
-    x_tensor_raw, y_target_raw, batch_d_centers, state_tensor_raw = generate_training_batch_gpu(plant, hyperparam_config)
+    x_tensor_raw, y_target_raw, batch_d_centers, state_tensor_raw = generate_training_batch_torchdiffeq(plant, hyperparam_config)
 
     x_np = x_tensor_raw.cpu().numpy()  
     y_np = y_target_raw.cpu().numpy()  
@@ -543,5 +640,7 @@ def generate_and_save_dataset(
         "y": final_y_target.cpu()
     }
     save_training_dataset(data_to_save, dirname=dirname)
+    print("Shape x (y, y_next): ", final_x_tensor.shape)
+    print("Shape y (u): ", final_y_target.shape)
     print(f"🎉 Clean tracking MIMO dataset generated successfully ({valid_sequences_count} valid traces preserved).")
 

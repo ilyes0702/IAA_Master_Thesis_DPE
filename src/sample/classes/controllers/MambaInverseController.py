@@ -196,3 +196,114 @@ class MambaInverseController(nn.Module):
     def mamba_dt(self):
         """Access dt from the Mamba core."""
         return self.core.extracted_dt
+    
+
+
+
+
+import torch
+import torch.nn as nn
+
+class MambaInverseController_stateful(nn.Module):
+    def __init__(self, hyperparam_config):
+        super().__init__()
+        
+        # Extract MIMO configuration dimensions dynamically
+        self.input_dim = hyperparam_config["mamba"]["input_dim"]   # e.g., 1 for your working example
+        self.output_dim = hyperparam_config["mamba"]["output_dim"] # e.g., 1
+        self.d_state = hyperparam_config["mamba"]["d_state"]       # e.g., 16
+        self.expand = hyperparam_config["mamba"]["expand"]         # e.g., 2
+        
+        # 🌟 CRITICAL: Without input_proj, d_model IS exactly the raw concatenated features
+        self.d_model = self.input_dim * 2  # e.g., 1 * 2 = 2
+        
+        self.core = Mamba(
+            d_model=self.d_model,
+            d_state=self.d_state,
+            d_conv=4,
+            expand=self.expand
+        )
+        
+        # Maps from Mamba's core dimension back to your multi-variable control inputs
+        self.output_proj = nn.Linear(self.d_model, self.output_dim)
+
+    def forward(self, y_t, y_next):
+        """
+        Sequence/Batch training forward pass.
+        y_t/y_next shapes: [Batch, Seq_len, input_dim]
+        """
+        x = torch.cat([y_t, y_next], dim=-1)  # Shape: [Batch, Seq_len, d_model]
+        x = self.core(x)                      # Shape: [Batch, Seq_len, d_model]
+        return self.output_proj(x)            # Shape: [Batch, Seq_len, output_dim]
+
+    def allocate_inference_states(self, batch_size=1, device="cuda"):
+        """
+        Allocates zero-filled tracking tensors matching mamba_ssm dimensions.
+        Internal state size tracks (d_model * expand).
+        """
+        d_inner = self.d_model * self.expand
+        conv_state = torch.zeros(batch_size, d_inner, self.core.d_conv, device=device)
+        ssm_state = torch.zeros(batch_size, d_inner, self.core.d_state, device=device)
+        return conv_state, ssm_state
+
+    def step(self, y_t_single, y_next_single, conv_state, ssm_state):
+        """
+        Stateful decoding step using structural layout logic from your reference code.
+        """
+        # Maintain batch structure when flattening multi-channel slices
+        # Shapes transform from [Batch, input_dim] -> [Batch * input_dim]
+        y_t_flat = y_t_single.reshape(-1)
+        y_next_flat = y_next_single.reshape(-1)
+
+        # Re-stack into a single batch structure [Batch, d_model]
+        # For a batch of 10 and 1-channel inputs: stacks two [10] vectors into [10, 2]
+        x = torch.stack([y_t_flat, y_next_flat], dim=-1) 
+        
+        # 3D Sequence layout adapter required by mamba_ssm.step: [Batch, 1, d_model]
+        x_3d = x.unsqueeze(1)
+        
+        # Feed the 3D raw feature token step to Mamba
+        x_out_3d, conv_state, ssm_state = self.core.step(x_3d, conv_state, ssm_state)
+        
+        # Remove sequence dimension: [Batch, 1, d_model] -> [Batch, d_model]
+        x_out = x_out_3d.squeeze(1)
+        
+        # Linearly map back to plant actuator dimensions
+        u_out = self.output_proj(x_out) # Shape: [Batch, output_dim]
+        
+        return u_out, conv_state, ssm_state
+
+    # Add this inside your MambaInverseController_stateful class
+    def reset_hooks_storage(self):
+        self.captured_V_sigma = []
+
+    # --- PROPERTIES FOR METADATA LOGGING ---
+    @property
+    def A_bar(self):
+        """Access discretized A_bar from the Mamba core. Shape: [B, L, d_inner, d_state]"""
+        return getattr(self.core, "A_bar", None)
+
+    @property
+    def B_bar(self):
+        """Access discretized B_bar from the Mamba core. Shape: [B, L, d_inner, d_state]"""
+        return getattr(self.core, "B_bar", None)
+    
+    @property
+    def B(self):
+        return self.core.B
+
+    @property
+    def C(self):
+        return self.core.C
+    
+    @property
+    def A(self):
+        return self.core.A
+    
+    @property
+    def D(self):
+        return getattr(self.core, "extracted_D", getattr(self.core, "D", None))
+    
+    @property
+    def mamba_dt(self):
+        return getattr(self.core, "extracted_dt", getattr(self.core, "dt", None))
