@@ -154,6 +154,21 @@ def generate_smooth_profile_trajectory(time_axis, config):
     
     return r_t
 
+
+def generate_exponential_decay_trajectory(steps, dt, y_start, y_target, tau, device="cpu"):
+    """
+    Generates a smooth reference trajectory that starts at y_start and 
+    exponentially transitions down to y_target governed by time constant tau.
+    """
+    # Create the time axis
+    t_axis = torch.arange(steps, device=device, dtype=torch.float32) * dt
+    
+    # Compute the exponential curve
+    r = y_target + (y_start - y_target) * torch.exp(-t_axis / tau)
+    
+    # Return with shape [steps, 1] to keep consistency with your other generators
+    return r.unsqueeze(-1)
+
 #=== FUNCTION TO GENERATE REFERENCE TRAJECTORY ===#
 def generate_reference_trajectory(steps, dt, device, mode="constant", constant_val=0.3, gain=1.0, period=20.0):
     """
@@ -191,9 +206,9 @@ def generate_reference_trajectory(steps, dt, device, mode="constant", constant_v
 
         noise = np.random.uniform(-0.005, 0.005, size=time_axis.shape)
 
-        #r_trajectory_np = 0.25 + 0.09 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism
+        #r_trajectory_np = 0.25 + 0.09 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism #chemostat
 
-        r_trajectory_np = 0.03 + 0.005 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism
+        r_trajectory_np = 0.8 + 0.05 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism
         
         # Convert the structural numpy baseline into a target PyTorch tensor array
         r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)

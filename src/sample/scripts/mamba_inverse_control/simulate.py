@@ -45,16 +45,16 @@ def main():
    
     #print(torch.load(controller_path, map_location='cuda'))
 
-    controller_path = "models/2026-06-25/2026-06-25_18-53-32/TrophophasePlant_training/fold_1/2026-06-25_18-53-32_best_fold_model.pt"
+    controller_path = "models/2026-06-26/2026-06-26_14-44-34/TrophophasePlant_training/fold_1/2026-06-26_14-44-34_best_fold_model.pt"
     # Load the trained inverse controller
     loaded_controller = load_model(MambaInverseController_stateful, controller_path)
 
     scaler_x = load_scaler(
-        "results/2026-06-25/2026-06-25_18-53-32/TrophophasePlant_training/fold_1/scalers/2026-06-25_18-53-32_scaler_x.pkl"
+        "results/2026-06-26/2026-06-26_14-44-34/TrophophasePlant_training/fold_1/scalers/2026-06-26_14-44-34_scaler_x.pkl"
     )
 
     scaler_y = load_scaler(
-        "results/2026-06-25/2026-06-25_18-53-32/TrophophasePlant_training/fold_1/scalers/2026-06-25_18-53-32_scaler_y.pkl"
+        "results/2026-06-26/2026-06-26_14-44-34/TrophophasePlant_training/fold_1/scalers/2026-06-26_14-44-34_scaler_y.pkl"
         )
     
 
@@ -87,7 +87,7 @@ def main():
         dt=hyperparam_config["signal"]["dt"],
         device=hyperparam_config["train"]["device"],
         mode="constant",
-        constant_val=0.4,
+        constant_val=0.015,
     )
 
     r_static_y_2 = generate_reference_trajectory(
@@ -109,11 +109,24 @@ def main():
             'k_sink': 1.0
         }
     )
+    # Define parameters for the smooth decay profile
+    seq_len = hyperparam_config["simulate"]["seq_len"]
+    dt = hyperparam_config["signal"]["dt"]
+    sim_device = hyperparam_config["train"]["device"]
+
+    r_smooth_decay = generate_exponential_decay_trajectory(
+        steps=seq_len,
+        dt=dt,
+        y_start=0.12,       # Starts here
+        y_target=0.015,     # Smoothly descends and turns to this constant value
+        tau=0.1,            # Governs speed (lower = faster drop)
+        device=sim_device
+    )
 
     simulate_tracking_stateful(
         model=loaded_controller,
         plant=plant,
-        r_trajectories=[r_static_y_1.squeeze()],
+        r_trajectories=[r_smooth_decay.squeeze()],
         hyperparam_config=hyperparam_config,
         x_scaler=scaler_x,
         y_scaler=scaler_y,

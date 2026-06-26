@@ -42,7 +42,7 @@ if __name__ == "__main__":
     plant = TrophophasePlant(hyperparam_config=hyperparam_config)
     
     dataset_path = (
-       "results/2026-06-25/2026-06-25_18-55-42/TrophophasePlant_training_data/dataset/2026-06-25_18-55-42_training_data.pt"
+       "results/2026-06-26/2026-06-26_14-43-08/TrophophasePlant_training_data/dataset/2026-06-26_14-43-08_training_data.pt"
     )
     
     # Load the dataset from disk. The file is expected to be a dict-like object containing 'x' and 'y' keys. If loading fails, inspect the path first.
@@ -68,6 +68,8 @@ if __name__ == "__main__":
     # Directory name to store training artifacts (models, plots, logs).
     dirname = f"{plant.__class__.__name__}_training"
 
+    save_to_json(hyperparam_config, dirname, "traingin_data_path")
+    save_to_json(hyperparam_config, dirname,"hyperparam_config")
     # Run the training routine. show_plots can be toggled for interactive use.
     train_controller(
         controller,
@@ -77,5 +79,5 @@ if __name__ == "__main__":
         plant,
         dirname=dirname
     )
-        
+
         

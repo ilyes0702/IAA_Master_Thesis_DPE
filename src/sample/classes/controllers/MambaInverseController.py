@@ -307,3 +307,83 @@ class MambaInverseController_stateful(nn.Module):
     @property
     def mamba_dt(self):
         return getattr(self.core, "extracted_dt", getattr(self.core, "dt", None))
+    
+
+
+import torch
+import torch.nn as nn
+
+class MambaInverseController_stateful_w_der(nn.Module):
+    def __init__(self, hyperparam_config):
+        super().__init__()
+        
+        # Extract MIMO configuration dimensions dynamically
+        self.input_dim = hyperparam_config["mamba"]["input_dim"]   # e.g., 1
+        self.output_dim = hyperparam_config["mamba"]["output_dim"] # e.g., 1
+        self.d_state = hyperparam_config["mamba"]["d_state"]       # e.g., 16
+        self.expand = hyperparam_config["mamba"]["expand"]         # e.g., 2
+        
+        # 🌟 UPDATED: d_model now holds 4 components per input channel:
+        # [y_t, y_next, y_dot, y_ddot] -> input_dim * 4
+        self.d_model = self.input_dim * 2  # e.g., 1 * 4 = 4
+        
+        # Using standard Mamba core configuration from mamba_ssm
+        from mamba_ssm import Mamba
+        self.core = Mamba(
+            d_model=self.d_model,
+            d_state=self.d_state,
+            d_conv=4,
+            expand=self.expand
+        )
+        
+        # Maps from Mamba's core dimension back to your multi-variable control inputs
+        self.output_proj = nn.Linear(self.d_model, self.output_dim)
+
+    def forward(self, y_t, y_next):
+        x = torch.cat([y_t, y_next], dim=-1)  # Shape: [Batch, Seq_len, d_model]
+        x = self.core(x)                      
+        return self.output_proj(x)
+
+    def allocate_inference_states(self, batch_size=1, device="cuda"):
+        """Allocates zero-filled tracking tensors matching mamba_ssm dimensions."""
+        d_inner = self.d_model * self.expand
+        conv_state = torch.zeros(batch_size, d_inner, self.core.d_conv, device=device)
+        ssm_state = torch.zeros(batch_size, d_inner, self.core.d_state, device=device)
+        return conv_state, ssm_state
+
+    def step(self, y_t_single, y_next_single, conv_state, ssm_state):
+        y_t_flat = y_t_single.reshape(-1)
+        y_next_flat = y_next_single.reshape(-1)
+
+        x = torch.stack([y_t_flat, y_next_flat], dim=-1) 
+        x_3d = x.unsqueeze(1)
+        x_out_3d, conv_state, ssm_state = self.core.step(x_3d, conv_state, ssm_state)
+        x_out = x_out_3d.squeeze(1)
+        
+        # 🌟 UPDATED INFERENCE STEP: Splitting predictions
+        preds_out = self.output_proj(x_out) # Shape: [Batch, total_predictions_dim]
+        
+        u_out = preds_out[:, :self.output_dim]
+        y_dot_pred = preds_out[:, self.output_dim : self.output_dim + self.input_dim]
+        y_ddot_pred = preds_out[:, self.output_dim + self.input_dim:]
+        
+        return u_out, y_dot_pred, y_ddot_pred, conv_state, ssm_state
+
+    def reset_hooks_storage(self):
+        self.captured_V_sigma = []
+
+    # --- PROPERTIES FOR METADATA LOGGING ---
+    @property
+    def A_bar(self): return getattr(self.core, "A_bar", None)
+    @property
+    def B_bar(self): return getattr(self.core, "B_bar", None)
+    @property
+    def B(self): return self.core.B
+    @property
+    def C(self): return self.core.C
+    @property
+    def A(self): return self.core.A
+    @property
+    def D(self): return getattr(self.core, "extracted_D", getattr(self.core, "D", None))
+    @property
+    def mamba_dt(self): return getattr(self.core, "extracted_dt", getattr(self.core, "dt", None))

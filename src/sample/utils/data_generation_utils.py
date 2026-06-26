@@ -393,7 +393,101 @@ def generate_training_batch(plant, hyperparam_config):
     # Return exactly 4 values to resolve the ValueError unpack crash
     return x_tensor, y_target, D_center, state_tensor
 
+# now with derivatives
 
+def generate_training_batch_w_der(plant, hyperparam_config):
+    """
+    Generate a clean MIMO training batch including y, y_dot, and y_ddot.
+    Slices perfectly to match only steps from t to t+seq_len.
+    """
+    import copy
+    sig_cfg = hyperparam_config["signal"]
+    train_cfg = hyperparam_config["train"]
+
+    seq_len = int(sig_cfg["seq_len"])
+    dt = sig_cfg["dt"]
+    batch_size = int(train_cfg["batch_size"])
+    delta_steps = int(train_cfg.get("delay_steps", 1)) # Step lookahead window length
+    device = train_cfg["device"]
+
+    # Initialize plant state
+    state = plant.get_initial_state(batch_size)
+
+    # Extend seq_len long enough to pull clean future states (y_next)
+    extended_config = copy.deepcopy(hyperparam_config)
+    extended_config["signal"]["seq_len"] = seq_len + delta_steps
+    u_buffer, D_center = generate_canaday_signals(extended_config)
+
+    raw_y_history = []
+    raw_ydot_history = []   # 🛠️ NEW: Track y_dot
+    raw_yddot_history = []  # 🛠️ NEW: Track y_ddot
+    raw_u_history = []
+    raw_state_history = [] 
+
+    total_simulation_steps = seq_len + delta_steps
+    for t_idx in range(total_simulation_steps):
+        t = t_idx * dt
+        u_signal = u_buffer[:, t_idx, :]  # Shape: [batch_size, 1]
+        
+        # Calculate u_dot using a forward/backward difference from the buffer
+        if t_idx < total_simulation_steps - 1:
+            u_dot = (u_buffer[:, t_idx + 1, :] - u_signal) / dt
+        else:
+            u_dot = (u_signal - u_buffer[:, t_idx - 1, :]) / dt
+
+        # 1. Compute current metrics
+        y_t = plant.get_y(state, t) 
+        y_dot_t = plant.get_y_dot(state, u_signal, t)
+        y_ddot_t = plant.get_y_ddot(state, u_signal, t, u1_dot=u_dot)
+
+        # 2. Append to histories
+        raw_y_history.append(y_t)
+        raw_ydot_history.append(y_dot_t)
+        raw_yddot_history.append(y_ddot_t)
+        raw_u_history.append(u_signal)
+        raw_state_history.append(state.clone())
+
+        # 3. Transition system forward
+        state, _ = plant.step(state, u_signal, t, dt)
+        state = state.detach()
+
+    # Slice out exact pairs matching current vs future lookup windows
+    all_y_t = raw_y_history[:seq_len]  
+    all_y_next = raw_y_history[delta_steps : seq_len + delta_steps]  
+    
+    # 🛠️ NEW: Slice derivatives matching current window (0 to seq_len)
+    all_ydot = raw_ydot_history[:seq_len]
+    all_yddot = raw_yddot_history[:seq_len]
+    
+    all_u = raw_u_history[:seq_len]  
+    all_states = raw_state_history[:seq_len]
+
+    # Stack components sequentially along the time dimension (dim=1)
+    y_t_stacked = torch.stack(all_y_t, dim=1)         # [batch_size, seq_len, 1]
+    y_next_stacked = torch.stack(all_y_next, dim=1)   # [batch_size, seq_len, 1]
+    ydot_stacked = torch.stack(all_ydot, dim=1)       # [batch_size, seq_len, 1]
+    yddot_stacked = torch.stack(all_yddot, dim=1)     # [batch_size, seq_len, 1]
+
+    # Construct the training matrix tensors
+    # New x_tensor shape: [batch_size, seq_len, 5] holding [y_t, y_next, y_dot, y_ddot]
+    x_tensor = torch.cat([
+        y_t_stacked,  
+        y_next_stacked
+    ], dim=-1).to(device)
+
+    # y_target shape: [batch_size, seq_len, output_dim]
+    # 🌟 UPDATED TARGETS: Concatenate u, y_dot, and y_ddot along the feature dimension
+    # New y_target shape: [batch_size, seq_len, output_dim + input_dim + input_dim]
+    y_target = torch.cat([
+        torch.stack(all_u, dim=1),
+        torch.stack(all_ydot, dim=1),
+        torch.stack(all_yddot, dim=1)
+    ], dim=-1).to(device)
+
+    # state_tensor shape: [batch_size, seq_len, state_dim]
+    state_tensor = torch.stack(all_states, dim=1).to(device)
+
+    return x_tensor, y_target, D_center, state_tensor
 
 # =====================================================================
 # 3. Clean Dataset Compilation and Disk Exporter
@@ -430,7 +524,7 @@ def generate_and_save_dataset(
     print(f"🚀 Running batch simulation for {total_sequences} sequences...")
     
     # Capturing the raw continuous state trajectory matrix from your generation engine
-    x_tensor_raw, y_target_raw, batch_d_centers, state_tensor_raw = generate_training_batch_torchdiffeq(plant, hyperparam_config)
+    x_tensor_raw, y_target_raw, batch_d_centers, state_tensor_raw = generate_training_batch(plant, hyperparam_config)
 
     x_np = x_tensor_raw.cpu().numpy()  
     y_np = y_target_raw.cpu().numpy()  

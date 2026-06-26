@@ -400,16 +400,16 @@ hyperparam_config_TrophophasePlant = {
         "x_1_hard_max": None,
 
         "y_1_hard_min": 0,
-        #"y_1_hard_max": 0.12,
+        "y_1_hard_max": 0.12,
 
-        "x10": 1500.0,
+        "x10": 1600.0,   #wenn trainiert mit 1500 aber getesttet mit 1600, gute performnce
         "x20": 2000.0,
 
         "input_dim": 1,  # y
         "output_dim": 1  # u
     },
     "signal": {
-        "lambd": 0.1,
+        "lambd": 4,
         "p": 0.5,
         "seq_len": 2001,
         "dt": 0.01
@@ -417,7 +417,7 @@ hyperparam_config_TrophophasePlant = {
     "train": {
         "k_folds": 5,
         "epochs": 100,
-        "batch_size": 2000,
+        "batch_size": 1000,
         "lr": 1e-3,
         "device": "cuda", # if torch.cuda.is_available() else "cpu",
         "delay_steps": 1,
