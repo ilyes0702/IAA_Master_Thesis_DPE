@@ -2,67 +2,91 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import os
+import numpy as np
+import torch
+from tslearn.clustering import TimeSeriesKMeans
+from tslearn.preprocessing import TimeSeriesScalerMeanVariance
+from src.sample.utils.plotting_utils import plot_signals
 
 plt.style.use("src/sample/style.mplstyle")
 
-# 1. Load Data - Hardcoded to skip the first 2 rows of headers/units
-def load_csv_fixed(path):
-    # skiprows=2 ignores the text headers and unit definitions
-    # names=[...] provides clean internal headers for the numeric columns
-    return pd.read_csv(path, skiprows=2, header=None)
+dataset_path = "results/2026-07-03/2026-07-03_17-01-29/TrophophasePlant_training_data/dataset/2026-07-03_17-01-29_training_data.pt"
 
-df_hcf = load_csv_fixed('src/hcf.csv')
-df_neopentane = load_csv_fixed('src/neopentane.csv')
-df_hfco = load_csv_fixed('src/hfco.csv')
+# 1. Load the dictionary (Safe loading)
+data_dict = torch.load(dataset_path, weights_only=True)
 
-output_dir = "reports/thermodynamics"
+# 2. Extract and push ONLY the tensor to GPU if needed for calculations
+y_tensor = data_dict['y'][:10].to("cuda")
+
+print("\n=== Tensor Details ===")
+print(f"Data type: {y_tensor.dtype}")
+print(f"Tensor Shape: {y_tensor.shape}")
+print(f"Min value: {y_tensor.min()} | Max value: {y_tensor.max()}")
+
+# Print the first 3 rows/sequences safely
+#print("\nFirst 3 entries:")
+#print(y_tensor[:3].cpu()) # Bring back to CPU just to print cleanly
+
+# 3. Scale your time series!
+scaler = TimeSeriesScalerMeanVariance()
+# Slicing the first 20 sequences and pulling to numpy
+X_scaled = scaler.fit_transform(y_tensor.cpu().numpy())  
+
+# 4. Initialize TimeSeriesKMeans with Soft-DTW
+km = TimeSeriesKMeans(
+    n_clusters=3, 
+    metric="softdtw", 
+    metric_params={"gamma": 0.1}, # Added gamma definition for softdtw smoothing
+    max_iter=10, 
+    n_jobs=-1, 
+    random_state=42
+)
+
+# # 5. Fit the model and get cluster assignments
+# cluster_labels = km.fit_predict(X_scaled)
+
+# print("\nCluster assignments for each sequence:", cluster_labels)
+
+# =====================================================================
+# PREPARING INPUTS FOR YOUR CUSTOM PLOT_SIGNALS FUNCTION
+# =====================================================================
+
+# 1. Reconstruct the true time timeline axis (t)
+dt_original = 0.01
+downsample_factor = 1
+effective_dt = dt_original * downsample_factor
+num_timesteps = X_scaled.shape[1]
+
+# This creates the 1D horizontal x-axis array your function expects
+time_axis = np.arange(num_timesteps) * effective_dt
+
+# 2. Extract signals into a list of 1D numpy arrays
+# Your function loops through 'signals', so we split X_scaled into a list of sequences
+signals_list = [X_scaled[i].ravel() for i in range(len(X_scaled))]
+
+# # 3. Generate labels string tracking cluster IDs for the legend
+# labels_list = [f"Sequence {i} (Cluster {cluster_labels[i]})" for i in range(len(X_scaled))]
+
+# 4. Define your export path parameters
+output_dir = os.path.dirname(dataset_path).replace("dataset", "dataset_plots")
 os.makedirs(output_dir, exist_ok=True)
+save_file_path = os.path.join(output_dir, "soft_dtw_clustering_results.png")
 
-fluid_colors = {
-    "HFC-152": "#1f77b4",
-    "Neopentane": "#ff7f0e",
-    "HFCO-1233zd(E)": "#2ca02c"
-}
+# =====================================================================
+# EXECUTE YOUR PLOT_SIGNALS FUNCTION
+# =====================================================================
+print("\nCompiling visual canvas using plot_signals()...")
 
-fig, ax = plt.subplots(figsize=(12, 8))
-
-datasets = [
-    ("HFC-152", df_hcf),
-    ("Neopentane", df_neopentane),
-    ("HFCO-1233zd(E)", df_hfco)
-]
-
-for name, df in datasets:
-    color = fluid_colors[name]
-    
-    # Liquid Phase: Col 2 (index 1) over Col 3 (index 2)
-    # x = index 2 (Entropy), y = index 1 (Temp)
-    ax.plot(df.iloc[:, 2].dropna(), df.iloc[:, 1].dropna(), 
-            color=color, linestyle='-', linewidth=2, label=name)
-    
-    # Vapor Phase: Col 5 (index 4) over Col 6 (index 5)
-    # x = index 5 (Entropy), y = index 4 (Temp)
-    ax.plot(df.iloc[:, 5].dropna(), df.iloc[:, 4].dropna(), 
-            color=color, linestyle='--', linewidth=2)
-
-# === TICK OPTIMIZATION ===
-# Now that data is numeric, MaxNLocator will produce clean numbers (300, 310, etc.)
-ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=10))
-ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=10))
-ax.xaxis.set_minor_locator(ticker.AutoMinorLocator())
-ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
-
-# === FIXED ASPECT RATIO ===
-x_left, x_right = ax.get_xlim()
-y_bottom, y_top = ax.get_ylim()
-ax.set_aspect((x_right - x_left) / (y_top - y_bottom))
-
-# Formatting
-ax.set_xlabel(r"Molar Entropy [$J \cdot mol^{-1} \cdot K^{-1}$]", fontsize=13)
-ax.set_ylabel(r"Temperature [K]", fontsize=13)
-ax.grid(True, which='major', linestyle='-', alpha=0.4)
-ax.legend(title="")
-
-save_path = os.path.join(output_dir, "Combined_TS_Diagram_Clean.png")
-plt.savefig(save_path, dpi=300, bbox_inches="tight")
-plt.show()
+img_asset = plot_signals(
+    t=time_axis,
+    signals=signals_list,
+    #labels=labels_list,
+    title="MIMO Trajectories Grouped by Soft-DTW Shape Profile",
+    xlabel="Time [s]",
+    ylabel="Scaled Signal Value (Normalized)",
+    figsize=(8, 8),  # Square canvas plays well with your fixed aspect ratio logic
+    save_path=save_file_path,
+    show=True,
+    filename="soft_dtw_clustering_raster",
+    dirname=output_dir
+)

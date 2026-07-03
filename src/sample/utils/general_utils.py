@@ -1753,7 +1753,7 @@ import torch
 import pandas as pd
 from torchdiffeq import odeint
 
-def simulate_tracking_torchdiffeq_esn(
+def simulate_tracking_esn(
     model,
     plant,
     r_trajectories,  
@@ -1804,7 +1804,7 @@ def simulate_tracking_torchdiffeq_esn(
     history_pairs = [[] for _ in range(batch_size)]
 
     # Instantiate our localized adaptive step wrapper
-    gpu_solver = LocalTrackingSolverWrapper(plant, hyperparam_config).to(device)
+   
 
     # --- 🌀 STEP-BY-STEP CLOSED-LOOP ROLLOUT LOOP ---
     for i in range(steps):
@@ -1854,19 +1854,13 @@ def simulate_tracking_torchdiffeq_esn(
         all_states[i] = state  
 
         # 6. INTEGRATION STEP VIA TORCHDIFFEQ
-        gpu_solver.current_u = u
-        t_span = torch.tensor([float(t_start), float(t_end)], dtype=torch.float32, device=device)
+        
         
         with torch.no_grad():
-            solution = odeint(gpu_solver, state, t_span, method='dopri5', rtol=1e-5, atol=1e-7)
+            state, _ = plant.step(state, u, t_start, dt)
 
             # Extract final integrated state array and apply dynamic clamping bounds
-            state = torch.clamp(
-                solution[1].detach(),
-                min=gpu_solver.state_min_bounds,
-                max=gpu_solver.state_max_bounds
-            ).to(dtype=torch.float32)
-
+        
     # --- PLOTTING & EXPORT BLOCKS (Fully Untouched) ---
     time_axis = np.arange(steps) * dt
     trajectory_reports = []

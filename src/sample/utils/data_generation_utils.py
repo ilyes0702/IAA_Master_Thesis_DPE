@@ -7,7 +7,7 @@ from src.sample.utils.saving_utils import save_df_to_csv, save_training_dataset
 from src.sample.utils.plotting_utils import plot_signals
 
 
-def generate_canaday_signal_single(hyperparam_config, channel_idx=1):
+def generate_signal_single(hyperparam_config, channel_idx=1):
     """
     Generate smooth, band-limited control signals using an Active Shielding methodology
     to guarantee that each unique MIMO channel stays completely within its hard limits,
@@ -83,55 +83,7 @@ def generate_canaday_signal_single(hyperparam_config, channel_idx=1):
     return u_buffer, u_center
 
 
-# def generate_canaday_signal_single(hyperparam_config, channel_idx=1):
-#     """
-#     Generate smooth, band-limited control signals matching the scaling logic
-#     of generate_data_parallel, using global configuration parameters.
-#     Scales the final output to a flat [0, p] unipolar range.
-#     """
-#     sig_cfg = hyperparam_config["signal"]
-#     train_cfg = hyperparam_config["train"]
-    
-#     batch_size = train_cfg["batch_size"]
-#     seq_len = sig_cfg["seq_len"]
-#     device = train_cfg["device"]
-    
-#     # 🌍 GLOBAL PARAMETERS (No channel-specific lookups)
-#     lambd = sig_cfg["lambd"]
-#     configured_p = sig_cfg["p"]
-
-    
-#     # Step 1: Sample values from a uniform distribution [-1, 1]
-#     raw = torch.rand((batch_size, seq_len), device=device) * 2 - 1
-    
-#     # Step 2: Fourier-transform to frequency domain
-#     fft_sig = torch.fft.rfft(raw, dim=1)
-#     freqs = torch.fft.rfftfreq(seq_len, d=sig_cfg["dt"], device=device)
-    
-#     # Step 3: Drop frequencies above 1/lambda
-#     cutoff = 1.0 / lambd
-#     fft_sig[:, freqs > cutoff] = 0
-    
-#     # Step 4: Inverse-Fourier-transform
-#     v_train = torch.fft.irfft(fft_sig, n=seq_len, dim=1)
-    
-#     # Step 5: Global Min-Max Normalization to [0, 1] (Matching generate_data_parallel)
-#     v_min = v_train.min(dim=1, keepdim=True)[0]
-#     v_max = v_train.max(dim=1, keepdim=True)[0]
-#     v_norm = (v_train - v_min) / (v_max - v_min + 1e-8)
-    
-#     # Step 6: Scale by the global amplitude 'p' to bound within [0, p]
-#     u_buffer = v_norm * configured_p
-    
-#     # Since there are no centers or offsets in this logic, we return 
-#     # a tensor of zeros for the center matrix to maintain signature compatibility.
-#     u_center = torch.zeros((batch_size, 1), device=device)
-    
-#     return u_buffer, u_center
-
-from torchdiffeq import odeint
-
-def generate_canaday_signals(hyperparam_config):
+def generate_signals(hyperparam_config):
     """Generate independent MIMO control vectors using index-aware tracking."""
     train_cfg = hyperparam_config["train"]
     mamba_cfg = hyperparam_config["mamba"]
@@ -144,7 +96,7 @@ def generate_canaday_signals(hyperparam_config):
 
     for i in range(output_dim):
         # Pass 1-based index to resolve channel configurations cleanly
-        u_single, D_center = generate_canaday_signal_single(hyperparam_config, channel_idx=i+1)
+        u_single, D_center = generate_signal_single(hyperparam_config, channel_idx=i+1)
         u_buffer.append(u_single.unsqueeze(-1))
         D_center_list.append(D_center)
 
@@ -173,7 +125,7 @@ def generate_signals_mix(hyperparam_config):
 
     for i in range(output_dim):
         # 1. Generate the standard baseline Canaday signal for the channel
-        u_single, D_center = generate_canaday_signal_single(hyperparam_config, channel_idx=i+1)
+        u_single, D_center = generate_signal_single(hyperparam_config, channel_idx=i+1)
         
         # u_single shape: [batch_size, seq_len]
         # 2. Determine which batch items will be replaced with constants
@@ -202,132 +154,6 @@ def generate_signals_mix(hyperparam_config):
 
     return u_buffer, D_center
 
-# =====================================================================
-# 2. FIXED: Fully Clean MIMO Training Batch (No Delays)
-# =====================================================================
-
-import torch
-
-class TorchDiffeqPlantWrapper(torch.nn.Module):
-    def __init__(self, plant, hyperparam_config):
-        super().__init__()
-        self.plant = plant
-        self.current_u = None  # Updated dynamically at every macro step
-        
-        # 1. Dynamically read initial state to determine state dimensionality
-        initial_state = plant.get_initial_state(batch_size=1)
-        self.state_dim = initial_state.shape[-1]
-        
-        # 2. Parse the hyperparameter config for hard mins and maxes dynamically
-        plant_cfg = hyperparam_config.get("plant", {})
-        
-        mins = []
-        maxes = []
-        
-        for idx in range(1, self.state_dim + 1):
-            # Lookup key (e.g., "x_1_hard_min", "x_2_hard_min")
-            min_val = plant_cfg.get(f"x_{idx}_hard_min", 0.0)
-            max_val = plant_cfg.get(f"x_{idx}_hard_max", None)
-            
-            # Replace None with mathematical infinity
-            min_val = float(min_val) if min_val is not None else -float('inf')
-            max_val = float(max_val) if max_val is not None else float('inf')
-            
-            mins.append(min_val)
-            maxes.append(max_val)
-            
-        # 3. Register bounds as constant tensors on the correct device/dtype
-        # We shape them to [1, state_dim] for seamless broadcasting across any batch size
-        self.register_buffer("state_min_bounds", torch.tensor([mins], dtype=torch.float32))
-        self.register_buffer("state_max_bounds", torch.tensor([maxes], dtype=torch.float32))
-
-    def forward(self, t, state):
-        # state shape: [batch_size, state_dim]
-        
-        # 🟢 DYNAMIC FIX: Clamp all states simultaneously using the registered boundary buffers
-        # Ensures correct clamping across any batch size without hardcoded indices
-        #state_clamped = torch.clamp(state, min=self.state_min_bounds, max=self.state_max_bounds)
-
-        
-        # Dynamically slice into separate state channels for your native plant dynamics method
-        # state_list will be a list of tensors: [x1, x2, ..., xN] each with shape [batch_size, 1]
-        #state_list = [state_clamped[:, idx : idx + 1] for idx in range(self.state_dim)]
-
-        state_list = [state[:, idx : idx + 1] for idx in range(self.state_dim)]
-        
-        
-        u1 = self.current_u 
-        
-        # Unpack the list directly into the dynamics function (*state_list spreads them out as arguments)
-        derivatives = self.plant.dynamics(*state_list, u1, t)
-        
-        # If your plant.dynamics returns a tuple (dx1dt, dx2dt, ...), concatenate them back
-        if isinstance(derivatives, tuple):
-            return torch.cat(derivatives, dim=1)
-        
-        return derivatives
-
-def generate_training_batch_torchdiffeq(plant, hyperparam_config):
-    sig_cfg = hyperparam_config["signal"]
-    train_cfg = hyperparam_config["train"]
-
-    seq_len = int(sig_cfg["seq_len"])
-    dt = sig_cfg["dt"]
-    batch_size = int(train_cfg["batch_size"])
-    delta_steps = int(train_cfg.get("delay_steps", 1)) 
-    device = train_cfg["device"]
-
-    # Initialize states directly on the GPU
-    state = plant.get_initial_state(batch_size).to(device)
-
-    extended_config = copy.deepcopy(hyperparam_config)
-    extended_config["signal"]["seq_len"] = seq_len + delta_steps
-    u_buffer, D_center = generate_canaday_signals(extended_config)
-
-    raw_y_history = []
-    raw_u_history = []
-    raw_state_history = []
-
-    # Initialize our torchdiffeq plant wrapper
-    gpu_solver = TorchDiffeqPlantWrapper(plant, hyperparam_config).to(device)
-
-    total_simulation_steps = seq_len + delta_steps
-    for t_idx in range(total_simulation_steps):
-        t_start = t_idx * dt
-        t_end = t_start + dt
-        
-        u_signal = u_buffer[:, t_idx, :].to(device)  # Shape: [batch_size, output_dim]
-        y_t = plant.get_y(state, t_start)
-
-        raw_y_history.append(y_t)
-        raw_u_history.append(u_signal)
-        raw_state_history.append(state.clone())
-
-        # Update the static control input for this interval inside the wrapper
-        gpu_solver.current_u = u_signal
-
-        # Define the local micro-time evaluation interval for the adaptive step
-        t_span = torch.tensor([t_start, t_end], device=device, dtype=torch.float32).float()
-
-        # Integrate the entire batch simultaneously on the GPU!
-        # 'dopri5' is the GPU equivalent to SciPy's 'RK45'
-        solution = odeint(gpu_solver, state, t_span, method='dopri5', rtol=1e-5, atol=1e-7)
-        
-        # odeint returns evaluations at [t_start, t_end], we grab the state at t_end
-        state = solution[1].detach()
-
-    # Slicing and tensor construction remains completely untouched:
-    all_y_t = raw_y_history[:seq_len]  
-    all_y_next = raw_y_history[delta_steps : seq_len + delta_steps]  
-    all_u = raw_u_history[:seq_len]  
-    all_states = raw_state_history[:seq_len]
-
-    x_tensor = torch.cat([torch.stack(all_y_t, dim=1), torch.stack(all_y_next, dim=1)], dim=-1)
-    y_target = torch.stack(all_u, dim=1)
-    state_tensor = torch.stack(all_states, dim=1)
-
-    return x_tensor, y_target, D_center, state_tensor
-
 
 def generate_training_batch(plant, hyperparam_config):
     """
@@ -350,7 +176,7 @@ def generate_training_batch(plant, hyperparam_config):
     # Extend seq_len long enough to pull clean future states (y_next)
     extended_config = copy.deepcopy(hyperparam_config)
     extended_config["signal"]["seq_len"] = seq_len + delta_steps
-    u_buffer, D_center = generate_canaday_signals(extended_config)
+    u_buffer, D_center = generate_signals(extended_config)
 
     raw_y_history = []
     raw_u_history = []
@@ -416,7 +242,7 @@ def generate_training_batch_w_der(plant, hyperparam_config):
     # Extend seq_len long enough to pull clean future states (y_next)
     extended_config = copy.deepcopy(hyperparam_config)
     extended_config["signal"]["seq_len"] = seq_len + delta_steps
-    u_buffer, D_center = generate_canaday_signals(extended_config)
+    u_buffer, D_center = generate_signals(extended_config)
 
     raw_y_history = []
     raw_ydot_history = []   # 🛠️ NEW: Track y_dot

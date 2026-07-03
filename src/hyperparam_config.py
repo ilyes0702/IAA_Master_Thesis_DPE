@@ -264,18 +264,18 @@ hyperparam_config_PenicillinPlantBirol2002 = {
 
 hyperparam_config_IdiophasePlant = {
         "signal": {
-            "seq_len": 51,
-            "dt": 0.1,
+            "seq_len": 2001,
+            "dt": 0.01,
             #/ 🕹️ Channel 1 Signal Parameters (e.g., highly dynamic)
-            "u_1_lambd": 10,        
-            "u_1_p": 0.0999,            
+            "u_1_lambd": 4,        
+            "u_1_p": 0.5,            
             
             #// 🕹️ Channel 2 Signal Parameters (e.g., highly filtered, slow moving)
-            "u_2_lambd": 5.0,        
-            "u_2_p": 0.29
+            "u_2_lambd": 4,        
+            "u_2_p": 0.5
         },
         "train": {
-            "batch_size": 10000,
+            "batch_size": 2000,
             "device": "cuda",
             "delay_steps": 1,
             "epochs": 50,
@@ -297,7 +297,7 @@ hyperparam_config_IdiophasePlant = {
             "V_idiophase": 170.0,
             "m_S": 23,
 
-            "x10": 1000,
+            "x10": 1500,
             "x20": 2000,
             "x30": 25,
             "x40": 1600,
@@ -321,16 +321,16 @@ hyperparam_config_IdiophasePlant = {
             "u_2_hard_max": 1.0,
 
             "y_1_hard_min": 0.0,
-            "y_1_hard_max": None,
+            "y_1_hard_max": 0.12,
 
             "y_2_hard_min": 0.0,
             "y_2_hard_max": None,
 
-            "u_1_D_center_min": 0.001,
-            "u_1_D_center_max": 0.999,
+            "u_1_D_center_min": 0.6,
+            "u_1_D_center_max": 0.9,
 
-            "u_2_D_center_min": 0.3,
-            "u_2_D_center_max": 0.7,
+            "u_2_D_center_min": 0.6,
+            "u_2_D_center_max": 0.9,
         },
         "mamba": {
             "expand": 32,
@@ -340,7 +340,7 @@ hyperparam_config_IdiophasePlant = {
         },
         "simulate": {
             "batch_size": 10,
-            "seq_len": 101,
+            "seq_len": 2001,
         }
     }
 

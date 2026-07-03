@@ -200,11 +200,113 @@ class MambaInverseController(nn.Module):
 
 
 
+import torch
+import torch.nn as nn
+from mamba_ssm import Mamba
 
+class MambaInverseController_stateful(nn.Module):
+    def __init__(self, hyperparam_config):
+        super().__init__()
+        
+        # Extract MIMO configuration dimensions dynamically
+        self.input_dim = hyperparam_config["mamba"]["input_dim"]   # e.g., 2 for MIMO
+        self.output_dim = hyperparam_config["mamba"]["output_dim"] # e.g., 2
+        self.d_state = hyperparam_config["mamba"]["d_state"]       # e.g., 16
+        self.expand = hyperparam_config["mamba"]["expand"]         # e.g., 2
+        
+        # d_model represents the raw concatenated features (y_t and y_next)
+        self.d_model = self.input_dim * 2  
+        
+        self.core = Mamba(
+            d_model=self.d_model,
+            d_state=self.d_state,
+            d_conv=4,
+            expand=self.expand
+        )
+        
+        # Maps from Mamba's core dimension back to your multi-variable control inputs
+        self.output_proj = nn.Linear(self.d_model, self.output_dim)
+
+    def forward(self, y_t, y_next):
+        """
+        Sequence/Batch training forward pass.
+        y_t/y_next shapes: [Batch, Seq_len, input_dim]
+        """
+        x = torch.cat([y_t, y_next], dim=-1)  # Shape: [Batch, Seq_len, d_model]
+        x = self.core(x)                      # Shape: [Batch, Seq_len, d_model]
+        return self.output_proj(x)            # Shape: [Batch, Seq_len, output_dim]
+
+    def allocate_inference_states(self, batch_size=1, device="cuda"):
+        """
+        Allocates zero-filled tracking tensors matching mamba_ssm dimensions.
+        Internal state size tracks (d_model * expand).
+        """
+        d_inner = self.d_model * self.expand
+        conv_state = torch.zeros(batch_size, d_inner, self.core.d_conv, device=device)
+        ssm_state = torch.zeros(batch_size, d_inner, self.core.d_state, device=device)
+        return conv_state, ssm_state
+
+    def step(self, y_t_single, y_next_single, conv_state, ssm_state):
+        """
+        Stateful decoding step supporting any arbitrary input dimensions (MIMO safe).
+        y_t_single/y_next_single shapes: [Batch, input_dim]
+        """
+        # ─── MIMO FIX ────────────────────────────────────────────────────────
+        # Concatenate along the feature dimension to preserve the batch structure.
+        # Shape: [Batch, input_dim] + [Batch, input_dim] -> [Batch, d_model]
+        x = torch.cat([y_t_single, y_next_single], dim=-1) 
+        
+        # 3D Sequence layout adapter required by mamba_ssm.step: [Batch, 1, d_model]
+        x_3d = x.unsqueeze(1)
+        
+        # Feed the 3D raw feature token step to Mamba core
+        x_out_3d, conv_state, ssm_state = self.core.step(x_3d, conv_state, ssm_state)
+        
+        # Remove sequence dimension: [Batch, 1, d_model] -> [Batch, d_model]
+        x_out = x_out_3d.squeeze(1)
+        
+        # Linearly map back to plant actuator dimensions
+        u_out = self.output_proj(x_out) # Shape: [Batch, output_dim]
+        
+        return u_out, conv_state, ssm_state
+
+    def reset_hooks_storage(self):
+        self.captured_V_sigma = []
+
+    # --- PROPERTIES FOR METADATA LOGGING ---
+    @property
+    def A_bar(self):
+        """Access discretized A_bar from the Mamba core. Shape: [B, L, d_inner, d_state]"""
+        return getattr(self.core, "A_bar", None)
+
+    @property
+    def B_bar(self):
+        """Access discretized B_bar from the Mamba core. Shape: [B, L, d_inner, d_state]"""
+        return getattr(self.core, "B_bar", None)
+    
+    @property
+    def B(self):
+        return self.core.B
+
+    @property
+    def C(self):
+        return self.core.C
+    
+    @property
+    def A(self):
+        return self.core.A
+    
+    @property
+    def D(self):
+        return getattr(self.core, "extracted_D", getattr(self.core, "D", None))
+    
+    @property
+    def mamba_dt(self):
+        return getattr(self.core, "extracted_dt", getattr(self.core, "dt", None))
 import torch
 import torch.nn as nn
 
-class MambaInverseController_stateful(nn.Module):
+class MambaInverseController_stateful_SISO(nn.Module):
     def __init__(self, hyperparam_config):
         super().__init__()
         
