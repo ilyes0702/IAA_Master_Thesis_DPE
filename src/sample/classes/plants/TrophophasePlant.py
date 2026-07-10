@@ -185,13 +185,13 @@ class TrophophasePlant:
         return [
             {
                 "cols": ["x1"],
-                "labels": ["Biomass concentration (x1)"],
+                "labels": ["Biomass concentration"],
                 "title": "Biomass Accumulation",
                 "ylabel": "Concentration [g/l]"
             },
             {
                 "cols": ["x2"],
-                "labels": ["Substrate concentration (x2)"],
+                "labels": ["Substrate concentration"],
                 "title": "Substrate Available",
                 "ylabel": "Concentration [mg/l]"
             },
@@ -203,7 +203,7 @@ class TrophophasePlant:
             },
             {
                 "cols": ["u1"],
-                "labels": ["Glucose Feed Rate (u1)"],
+                "labels": ["Glucose Feed Rate"],
                 "title": "Control Input Profile",
                 "ylabel": "Feed Rate [l/h]"
             }

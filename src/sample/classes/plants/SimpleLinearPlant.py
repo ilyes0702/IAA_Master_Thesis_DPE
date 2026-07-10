@@ -1,100 +1,97 @@
 import torch
 
-class GPUSimpleLinearPlant:
+class SimpleLinearPlant:
     def __init__(self, hyperparam_config):
         self.device = hyperparam_config["train"]["device"]
-        self.batch_size = hyperparam_config["train"]["batch_size"]
-        self.seq_len = hyperparam_config["signal"]["seq_len"]
-        self.lambd = hyperparam_config["signal"]["lambd"]
-        self.p = hyperparam_config["signal"]["p"]
-
-        p_cfg = hyperparam_config["plant"]
-        self.tau = torch.tensor(p_cfg["tau"], device=self.device)
-        self.gain = torch.tensor(p_cfg["gain"], device=self.device)
-        self.U_MAX = p_cfg["u_max"]
-        self.Y_MAX = p_cfg["y_max"]
-        
-        # Buffer for Canaday signal
-        self.u_buffer = None
-        self.ref_value = torch.tensor(0.2, device=self.device)
         self.dt = hyperparam_config["signal"]["dt"]
+        
+        cfg = hyperparam_config["plant"]
+        # System Matrices: dx/dt = A*x + B*u
+        self.a11 = torch.tensor(cfg["a11"], device=self.device)
+        self.a12 = torch.tensor(cfg["a12"], device=self.device)
+        self.a21 = torch.tensor(cfg["a21"], device=self.device)
+        self.a22 = torch.tensor(cfg["a22"], device=self.device)
+        
+        self.b1 = torch.tensor(cfg["b1"], device=self.device)
+        self.b2 = torch.tensor(cfg["b2"], device=self.device)
+        
+        # Output Matrix: y = C*x
+        self.c1 = torch.tensor(cfg["c1"], device=self.device)
+        self.c2 = torch.tensor(cfg["c2"], device=self.device)
 
     def get_initial_state(self, batch_size):
-        """Returns [batch_size, 1] tensor of [y]"""
-        #return torch.full((self.batch_size, 1), 0.2, device=self.device)
-        # Each batch item gets a random start between -1 and 1
-        return (torch.rand((batch_size, 1), device=self.device) * 2) - 1
+        """
+        Returns [batch_size, 2] tensor of [State_1, State_2].
+        Initializes values across a stable continuous window.
+        """
+        x1_init = torch.rand((batch_size, 1), device=self.device) * 4.0 - 2.0  # -2.0 to +2.0
+        x2_init = torch.rand((batch_size, 1), device=self.device) * 4.0 - 2.0  # -2.0 to +2.0
+        return torch.cat([x1_init, x2_init], dim=1)
 
     def get_y(self, state, t=None):
-        """The output is just the state (y)"""
-        return state[:, 0:1]
-
-    def step(self, state, u, t, dt=0.01):
-        """Vectorized first-order dynamics step"""
-        y = state[:, 0:1]
-        
-        # dy/dt = (Gain * u - y) / tau
-        dy = (self.gain * u - y) / self.tau
-        
-        state_next = y + dy * dt
-        return state_next, y
-
-    def reset_trajectory(self):
         """
-        Canaday's FFT-based signal generation.
-        Matches the logic used in your Fermentation plant.
+        Calculates output metric matrix equation: y = C * x
         """
-        # 1. Sample uniform noise [-1, 1]
-        raw = torch.rand((self.batch_size, self.seq_len), device=self.device) * 2 - 1
-        
-        # 2. FFT to Frequency Domain
-        fft_sig = torch.fft.rfft(raw, dim=1)
-        freqs = torch.fft.rfftfreq(self.seq_len, d=self.dt)
-        
-        # 3. Low-pass Filter (cutoff = 1/lambda)
-        fft_sig[:, freqs > (1.0 / self.lambd)] = 0
-        
-        # 4. Inverse FFT back to Time Domain
-        v_train = torch.fft.irfft(fft_sig, n=self.seq_len, dim=1)
-        
-        # 5. Rescale to [-1, 1] then center and scale by p
-        v_min = v_train.min(dim=1, keepdim=True)[0]
-        v_max = v_train.max(dim=1, keepdim=True)[0]
-        v_norm = 2 * (v_train - v_min) / (v_max - v_min + 1e-8) - 1
-        
-        # Final control signal shifted to physical range [0.5 - p, 0.5 + p]
-        self.u_buffer = torch.clamp(0.5 + (v_norm * self.p), 0.0, self.U_MAX)
+        x1 = state[:, 0:1]
+        x2 = state[:, 1:2]
+        y = self.c1 * x1 + self.c2 * x2
+        return y 
 
-    def get_u_at_step(self, t_idx):
-        """Extracts the control value for the current time step"""
-        return self.u_buffer[:, t_idx].unsqueeze(1)
-    
+    def dynamics(self, x1, x2, u, t=None):
+        """
+        Calculates continuous derivative transformations for a standard linear system.
+        """
+        # dx1/dt = a11*x1 + a12*x2 + b1*u
+        dx1dt = self.a11 * x1 + self.a12 * x2 + self.b1 * u
+        # dx2/dt = a21*x1 + a22*x2 + b2*u
+        dx2dt = self.a21 * x1 + self.a22 * x2 + self.b2 * u
+        return dx1dt, dx2dt
+
+    def step(self, state, u, t, dt):
+        """
+        Standard Runge-Kutta 4th Order numerical integration execution block.
+        """
+        x1, x2 = state[:, 0:1], state[:, 1:2]
+        
+        # k1
+        dx1_1, dx2_1 = self.dynamics(x1, x2, u)
+        # k2
+        dx1_2, dx2_2 = self.dynamics(x1 + 0.5 * dt * dx1_1, x2 + 0.5 * dt * dx2_1, u)
+        # k3
+        dx1_3, dx2_3 = self.dynamics(x1 + 0.5 * dt * dx1_2, x2 + 0.5 * dt * dx2_2, u)
+        # k4
+        dx1_4, dx2_4 = self.dynamics(x1 + dt * dx1_3, x2 + dt * dx2_3, u)
+        
+        x1_next = x1 + (dt / 6.0) * (dx1_1 + 2 * dx1_2 + 2 * dx1_3 + dx1_4)
+        x2_next = x2 + (dt / 6.0) * (dx2_1 + 2 * dx2_2 + 2 * dx2_3 + dx2_4)
+        
+        state_next = torch.cat([x1_next, x2_next], dim=1)
+        return state_next, self.get_y(state_next)
+
     def get_plot_config(self):
         return [
-            # --- State evolution ---
             {
                 "cols": ["x1", "x2"],
-                "labels": ["Biomass (X)", "Substrate (S)"],
-                "title": "Fermentation State Evolution",
-                "ylabel": "Concentration"
+                "labels": ["State 1 (X1)", "State 2 (X2)"],
+                "title": "Linear Plant State Evolution",
+                "ylabel": "State Values"
             },
-
-            # --- System tracking ---
             {
                 "cols": ["y", "r"],
-                "labels": ["Growth Rate (μ)", "Target (μ_ref)"],
-                "title": "Growth Rate Tracking",
-                "ylabel": "1 / h"
+                "labels": ["Actual Output y", "Target y_ref"],
+                "title": "System Tracking Analysis",
+                "ylabel": "Output Magnitude"
             },
-
-            # --- Control input ---
             {
                 "cols": ["u"],
-                "labels": ["Feed Rate (u)"],
-                "title": "Feed Input Signal",
-                "ylabel": "Input"
+                "labels": ["Control Input (u)"],
+                "title": "Control Input Vector Profile",
+                "ylabel": "Input Drive Force"
             }
         ]
 
     def parse_state(self, state):
-        return {"process_value": state[0].item() if torch.is_tensor(state) else state[0]}
+        return {
+            "state_1": state[0].item() if torch.is_tensor(state) else state[0],
+            "state_2": state[1].item() if torch.is_tensor(state) else state[1]
+        }

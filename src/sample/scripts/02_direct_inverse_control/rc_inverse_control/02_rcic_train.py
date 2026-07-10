@@ -21,6 +21,8 @@ from src.sample.classes.plants.IdiophasePlant import IdiophasePlant
 
 from src.sample.classes.plants.YeastFermentation import FedBatchYeastPlant
 
+from src.sample.classes.plants.SimpleLinearPlant import SimpleLinearPlant
+
 from src.sample.classes.controllers.MambaInverseController import *
 from src.sample.classes.controllers.ESNInverseController import *
 
@@ -37,12 +39,12 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 if __name__ == "__main__":
     # Instantiate plant using shared hyperparameters.
-    hyperparam_config = hyperparam_config_TrophophasePlant
+    hyperparam_config = hyperparam_config_ChemostatPlant
     
-    plant = TrophophasePlant(hyperparam_config=hyperparam_config)
+    plant = ChemostatPlant(hyperparam_config=hyperparam_config)
     
     dataset_path = (
-       "results/2026-07-03/2026-07-03_16-10-58/TrophophasePlant_training_data/dataset/2026-07-03_16-10-58_training_data.pt"
+       "results/2026-07-08/2026-07-08_12-14-08/ChemostatPlant_training_data/dataset/2026-07-08_12-14-08_training_data.pt"
     )
     
     # Load the dataset from disk. The file is expected to be a dict-like object containing 'x' and 'y' keys. If loading fails, inspect the path first.
@@ -77,7 +79,8 @@ if __name__ == "__main__":
         Y,
         hyperparam_config,
         plant,
-        dirname=dirname
+        dirname=dirname,
+        run_simulation=True,
     )
 
         

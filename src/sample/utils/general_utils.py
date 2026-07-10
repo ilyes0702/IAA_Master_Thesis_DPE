@@ -206,9 +206,9 @@ def generate_reference_trajectory(steps, dt, device, mode="constant", constant_v
 
         noise = np.random.uniform(-0.005, 0.005, size=time_axis.shape)
 
-        #r_trajectory_np = 0.25 + 0.09 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism #chemostat
+        r_trajectory_np = 0.25 + 0.04 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism #chemostat
 
-        r_trajectory_np = 0.8 + 0.05 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism
+        #r_trajectory_np = 0.8 + 0.05 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism
         
         # Convert the structural numpy baseline into a target PyTorch tensor array
         r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
@@ -1777,10 +1777,10 @@ def simulate_tracking_esn(
     batch_size = sim_cfg["batch_size"]
     
     # ESN runs on CPU via NumPy, but torchdiffeq can still use your configured device
-    device = hyperparam_config["train"].get("device", "cpu")
+    device = hyperparam_config["train"]["device"]
     
-    input_dim = esn_cfg.get("input_dim", 2)    
-    output_dim = esn_cfg.get("output_dim", 2)  
+    input_dim = plant_cfg["input_dim"]    
+    output_dim = plant_cfg["output_dim"]  
 
     if len(r_trajectories) != input_dim:
         raise ValueError(f"Expected {input_dim} reference trajectories, got {len(r_trajectories)}")
@@ -1798,7 +1798,7 @@ def simulate_tracking_esn(
     # Force initial state to float32 to protect torchdiffeq execution graph
     state = plant.get_initial_state(batch_size).to(device=device, dtype=torch.float32)
 
-    print(f"📈 Testing ESN MIMO Trajectory Tracking via torchdiffeq: {batch_size} trajectories across {steps} steps...")
+    print(f"📈 Testing ESN MIMO Trajectory Tracking: {batch_size} trajectories across {steps} steps...")
 
     # ReservoirPy processes historical feedback paths step-by-step per batch index
     history_pairs = [[] for _ in range(batch_size)]
@@ -1834,10 +1834,8 @@ def simulate_tracking_esn(
             u_seq_norm = model.forward(curr_history)
             u_norm_step = u_seq_norm[-1, :]  # Shape: [output_dim]
 
-            if y_scaler:
-                u_unscaled = y_scaler.inverse_transform([u_norm_step])[0]
-            else:
-                u_unscaled = u_norm_step
+            
+            u_unscaled = y_scaler.inverse_transform([u_norm_step])[0]
                 
             u_unscaled_batch.append(u_unscaled)
 
@@ -1853,13 +1851,12 @@ def simulate_tracking_esn(
         all_u[i] = u  
         all_states[i] = state  
 
-        # 6. INTEGRATION STEP VIA TORCHDIFFEQ
+        # 6. INTEGRATION STEP 
         
         
         with torch.no_grad():
             state, _ = plant.step(state, u, t_start, dt)
 
-            # Extract final integrated state array and apply dynamic clamping bounds
         
     # --- PLOTTING & EXPORT BLOCKS (Fully Untouched) ---
     time_axis = np.arange(steps) * dt
@@ -1893,13 +1890,13 @@ def simulate_tracking_esn(
         trajectory_reports.append(df_traj)
 
         if plot_individual_plots:
-            u_meta = plot_metadata[3] if len(plot_metadata) > 3 else {}
+            u_meta = next((item for item in plot_metadata if "u" in item["cols"]), {})
             for i in range(output_dim):
                 label = u_meta.get("labels", [f"u_{i+1}"])[0] if i == 0 else f"Control Input (u_{i+1})"
                 title = u_meta.get("title", "Control Profile") if i == 0 else f"Control Input Profile (u_{i+1})"
                 plot_signals(t=time_axis, signals=[u_traj[:, i]], labels=[label], title=f"Trajectory {b}: {title}", xlabel="Time (h)", ylabel=u_meta.get("ylabel", "Action Value"), dirname=state_dirname, filename=f"plot_control_signal_u_{i+1}")
 
-            y_meta = plot_metadata[2] if len(plot_metadata) > 2 else {}
+            y_meta = next((item for item in plot_metadata if "y" in item["cols"]), {})
             meta_labels_ind = y_meta.get("labels", [])
             for i in range(input_dim):
                 title = y_meta.get("title", "Tracking Performance")
@@ -1916,7 +1913,7 @@ def simulate_tracking_esn(
                 plot_signals(t=time_axis, signals=[y_traj[:, i], r_np[:, i]], labels=[ind_y_label, ind_r_label], title=f"Trajectory {b}: {title} (y_{i+1})", xlabel="Time (h)", ylabel=y_meta.get("ylabel", "Signal Value"), dirname=state_dirname, filename=f"plot_output_tracking_y_{i+1}")
 
             for i in range(states_traj.shape[1]):
-                x_meta = plot_metadata[i] if i < len(plot_metadata) else {}
+                x_meta = next((item for item in plot_metadata if "x" in item["cols"]), {})
                 label = x_meta.get("labels", [f"State x_{i+1}"])[0]
                 title = x_meta.get("title", f"Internal Plant State (x_{i+1})")
                 plot_signals(t=time_axis, signals=[states_traj[:, i]], labels=[label], title=f"Trajectory {b}: {title}", xlabel="Time (h)", ylabel=x_meta.get("ylabel", "State Magnitude"), dirname=state_dirname, filename=f"plot_plant_state_x_{i+1}")

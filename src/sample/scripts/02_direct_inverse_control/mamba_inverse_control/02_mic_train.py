@@ -42,7 +42,7 @@ if __name__ == "__main__":
     plant = TrophophasePlant(hyperparam_config=hyperparam_config)
     
     dataset_path = (
-       "results/2026-07-02/2026-07-02_13-44-17/TrophophasePlant_training_data/dataset/2026-07-02_13-44-17_training_data.pt"
+       "results/2026-07-07/2026-07-07_16-13-47/TrophophasePlant_training_data/dataset/2026-07-07_16-13-47_training_data.pt"
     )
     
     # Load the dataset from disk. The file is expected to be a dict-like object containing 'x' and 'y' keys. If loading fails, inspect the path first.

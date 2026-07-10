@@ -59,7 +59,7 @@ figure.autolayout : False
 ### Fonts
 mathtext.fontset : cm
 font.family: serif
-font.serif: cmr10
+font.serif: DejaVu Serif
 
 ### Saving figures
 path.simplify : True

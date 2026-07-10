@@ -28,6 +28,74 @@ class SimplePlant:
         u_val = float(u)
         return self.a * y_val * y_val * 0.2 / (1 + y_val) + self.b * u_val
 
+import numpy as np
+
+class ContinuousChemostatPlant:
+    def __init__(self, dt=0.01):
+        self.dt = dt
+        
+        # Physical/Biological parameters (Pseudomonas putida degrading phenol)
+        self.mu_max = 0.45    # Max growth rate (h^-1)
+        self.K_s = 20.0       # Half-saturation constant (mg/L)
+        self.K_i = 250.0      # Inhibition constant (mg/L)
+        self.Y = 0.60         # Yield coefficient (mg/mg)
+        self.s_in = 500.0     # Influent concentration (mg/L)
+        
+        # Internal states: [Biomass (x), Substrate (s)]
+        # Initialized at a standard operational steady-state
+        self.state = np.array([297.0, 5.0]) 
+
+    def _biomass_growth_rate(self, s):
+        """Haldane kinetics model for growth rate with substrate inhibition."""
+        return (self.mu_max * s) / (self.K_s + s + (s**2 / self.K_i))
+
+    def dynamics(self, state, u):
+        """
+        Defines the continuous-time ODE equations: dx/dt = f(x, u)
+        State vector:  state[0] = x (Biomass), state[1] = s (Substrate)
+        Control Input: u = D (Dilution rate)
+        """
+        x = state[0]
+        s = state[1]
+        D = float(u) # Control input is the dilution rate
+        
+        mu = self._biomass_growth_rate(s)
+        
+        # dx/dt = (mu - D)*x
+        d_biomass = (mu - D) * x
+        
+        # ds/dt = D*(s_in - s) - (mu*x)/Y
+        d_substrate = D * (self.s_in - s) - (mu * x) / self.Y
+        
+        return np.array([d_biomass, d_substrate])
+
+    def step(self, u):
+        """
+        Advances the continuous system by dt using 4th-Order Runge-Kutta (RK4).
+        Returns the new measured system output (y), which is the substrate concentration.
+        """
+        dt = self.dt
+        x_n = self.state
+        
+        # RK4 Coefficients
+        k1 = self.dynamics(x_n, u)
+        k2 = self.dynamics(x_n + 0.5 * dt * k1, u)
+        k3 = self.dynamics(x_n + 0.5 * dt * k2, u)
+        k4 = self.dynamics(x_n + dt * k3, u)
+        
+        # Update internal state vector
+        self.state = x_n + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+        
+        # In wastewater control, our measured tracking output 'y' is 
+        # usually the effluent pollutant concentration (substrate 's')
+        y_measured = self.state[1] 
+        
+        return y_measured
+
+    def get_full_states(self):
+        """Helper to extract hidden internal states for your logging utility."""
+        return self.state
+    
 # =========================================================
 # 📊 DATA GENERATION (CANADAY'S METHOD)
 # =========================================================
@@ -242,7 +310,7 @@ def main():
     seed_everything(seed=2)
     rpy.set_seed(2) # Ensure ReservoirPy weights are initialized deterministically
     dt = 0.1
-    plant = SimplePlant()
+    plant = ContinuousChemostatPlant(dt=dt)
     
     # Instantiate the Echo State Network model
     model = build_reservoir_controller(units=300, lr=0.3, sr=0.9)

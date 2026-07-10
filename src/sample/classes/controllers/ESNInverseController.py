@@ -11,10 +11,10 @@ class ESNInverseController:
         self.output_dim = hyperparam_config["plant"]["output_dim"]   # e.g., number of plant control inputs
         
         # Hyperparameters specific to ESN
-        self.units = 200
-        self.lr = 0.3
-        self.sr = 1.0
-        self.ridge = 1e-6    # Regularization coefficient
+        self.units = hyperparam_config["esn"]["units"]  # Number of reservoir units
+        self.lr = hyperparam_config["esn"]["lr"]
+        self.sr = hyperparam_config["esn"]["sr"]
+        self.ridge = hyperparam_config["esn"]["ridge"]    # Regularization coefficient
         
         # Initialize ReservoirPy Nodes
         # The input dimension to the reservoir will automatically adapt to (input_dim * 2) 
@@ -72,3 +72,8 @@ class ESNInverseController:
             
         # Run the sequence through the reservoir and readout
         return self.model.run(x)
+    
+    def save_parameters(self, path):
+        """Save the trained ESN model to disk."""
+
+        print(self.reservoir.bias)

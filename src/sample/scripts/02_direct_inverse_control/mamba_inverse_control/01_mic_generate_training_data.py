@@ -45,7 +45,7 @@ def main() -> None:
         plant,
         hyperparam_config,
         dirname=dirname,
-        show_plots=False,  
+        show_plots=True,  
         save_logs=True
 		)
 

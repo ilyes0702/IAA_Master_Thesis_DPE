@@ -68,6 +68,8 @@ def generate_signal_single(hyperparam_config, channel_idx=1):
     u_center = torch.rand((batch_size, 1), device=device) * (c_max - c_min) + c_min
     
     # 🎯 ACTIVE SHIELDING: Calculate exact allowable deviation limits per trajectory row
+    print("u_hard_max:", u_hard_max)
+    print("u_center", u_center)
     dist_to_max = u_hard_max - u_center
     dist_to_min = u_center - u_hard_min
     max_safe_p = torch.minimum(dist_to_max, dist_to_min)
@@ -87,9 +89,10 @@ def generate_signals(hyperparam_config):
     """Generate independent MIMO control vectors using index-aware tracking."""
     train_cfg = hyperparam_config["train"]
     mamba_cfg = hyperparam_config["mamba"]
+    plant_cfg = hyperparam_config["plant"]
 
     batch_size = train_cfg["batch_size"]
-    output_dim = mamba_cfg["output_dim"] 
+    output_dim = plant_cfg["output_dim"] 
 
     u_buffer = []
     D_center_list = []
@@ -106,53 +109,53 @@ def generate_signals(hyperparam_config):
     return u_buffer, D_center
 
 
-def generate_signals_mix(hyperparam_config):
-    """Generate independent MIMO control vectors mixing Canaday signals with constant signals."""
-    train_cfg = hyperparam_config["train"]
-    mamba_cfg = hyperparam_config["mamba"]
-    sig_cfg = hyperparam_config["signal"]
+# def generate_signals_mix(hyperparam_config):
+#     """Generate independent MIMO control vectors mixing Canaday signals with constant signals."""
+#     train_cfg = hyperparam_config["train"]
+#     mamba_cfg = hyperparam_config["mamba"]
+#     sig_cfg = hyperparam_config["signal"]
 
-    batch_size = train_cfg["batch_size"]
-    output_dim = mamba_cfg["output_dim"] 
-    seq_len = int(sig_cfg["seq_len"])
+#     batch_size = train_cfg["batch_size"]
+#     output_dim = mamba_cfg["output_dim"] 
+#     seq_len = int(sig_cfg["seq_len"])
     
-    # Probability of a batch item being a constant signal (e.g., 0.3 = 30%)
-    # Default to 0.0 if not specified in config to remain backward compatible
-    constant_prob = train_cfg.get("constant_signal_probability", 0.3)
+#     # Probability of a batch item being a constant signal (e.g., 0.3 = 30%)
+#     # Default to 0.0 if not specified in config to remain backward compatible
+#     constant_prob = train_cfg.get("constant_signal_probability", 0.3)
 
-    u_buffer = []
-    D_center_list = []
+#     u_buffer = []
+#     D_center_list = []
 
-    for i in range(output_dim):
-        # 1. Generate the standard baseline Canaday signal for the channel
-        u_single, D_center = generate_signal_single(hyperparam_config, channel_idx=i+1)
+#     for i in range(output_dim):
+#         # 1. Generate the standard baseline Canaday signal for the channel
+#         u_single, D_center = generate_signal_single(hyperparam_config, channel_idx=i+1)
         
-        # u_single shape: [batch_size, seq_len]
-        # 2. Determine which batch items will be replaced with constants
-        # We perform this independently per channel or globally per batch element
-        for b in range(batch_size):
-            if np.random.rand() < constant_prob:
-                # Pick a random constant value within your physical input range
-                # For the Trophophase plant, u1 bounds are [0.0, 1.0]
-                u_min = hyperparam_config["plant"].get(f"u_{i+1}_min", 0.0)
-                u_max = hyperparam_config["plant"].get(f"u_{i+1}_max", 1.0)
+#         # u_single shape: [batch_size, seq_len]
+#         # 2. Determine which batch items will be replaced with constants
+#         # We perform this independently per channel or globally per batch element
+#         for b in range(batch_size):
+#             if np.random.rand() < constant_prob:
+#                 # Pick a random constant value within your physical input range
+#                 # For the Trophophase plant, u1 bounds are [0.0, 1.0]
+#                 u_min = hyperparam_config["plant"].get(f"u_{i+1}_min", 0.0)
+#                 u_max = hyperparam_config["plant"].get(f"u_{i+1}_max", 1.0)
                 
-                # Sample a random continuous step value
-                constant_val = u_min + (u_max - u_min) * np.random.rand()
+#                 # Sample a random continuous step value
+#                 constant_val = u_min + (u_max - u_min) * np.random.rand()
                 
-                # Overwrite this specific batch sequence index with a flat line
-                u_single[b, :] = constant_val
+#                 # Overwrite this specific batch sequence index with a flat line
+#                 u_single[b, :] = constant_val
                 
-                # (Optional) If D_center tracking matters for the constant, zero it out or preserve it
-                D_center[b, :] = 0.0 
+#                 # (Optional) If D_center tracking matters for the constant, zero it out or preserve it
+#                 D_center[b, :] = 0.0 
 
-        u_buffer.append(u_single.unsqueeze(-1))
-        D_center_list.append(D_center)
+#         u_buffer.append(u_single.unsqueeze(-1))
+#         D_center_list.append(D_center)
 
-    u_buffer = torch.cat(u_buffer, dim=-1)  # Shape: [batch_size, seq_len, output_dim]
-    D_center = torch.stack(D_center_list, dim=-1) 
+#     u_buffer = torch.cat(u_buffer, dim=-1)  # Shape: [batch_size, seq_len, output_dim]
+#     D_center = torch.stack(D_center_list, dim=-1) 
 
-    return u_buffer, D_center
+#     return u_buffer, D_center
 
 
 def generate_training_batch(plant, hyperparam_config):
@@ -336,12 +339,12 @@ def generate_and_save_dataset(
     sig_cfg = hyperparam_config["signal"]
     train_cfg = hyperparam_config["train"]
     mamba_cfg = hyperparam_config["mamba"]
-    plant_cfg = hyperparam_config.get("plant", {})
-    device = train_cfg.get("device", "cpu")
+    plant_cfg = hyperparam_config["plant"]
+    device = train_cfg["device"]
     dt = sig_cfg["dt"]
     
-    input_dim = mamba_cfg.get("input_dim", 2)   # e.g., (y1, y2)
-    output_dim = mamba_cfg.get("output_dim", 2) # e.g., (u1, u2)
+    input_dim = plant_cfg["input_dim"]   # e.g., (y1, y2)
+    output_dim = plant_cfg["output_dim"] # e.g., (u1, u2)
     total_sequences = int(train_cfg["batch_size"])
     
     logs_dir = os.path.join(dirname, "dataset_logs")
@@ -359,6 +362,9 @@ def generate_and_save_dataset(
 
     violated_sequences_count = 0
     valid_x_list, valid_y_list, valid_dfs = [], [], []
+    
+    # 📈 NEW: List to accumulate correlation results for valid sequences
+    per_sequence_correlations = []
     valid_idx_counter = 0
 
     for s_idx in range(total_sequences):
@@ -387,6 +393,7 @@ def generate_and_save_dataset(
 
         # 🕹️ 2. DYNAMIC CONTROL INPUTS (u) BOUNDS CHECK
         for i in range(output_dim):
+            print(output_dim)
             single_seq_u = u[:, i]
             h_min = plant_cfg.get(f"f_u_{i+1}_hard_min") or plant_cfg.get(f"u_{i+1}_hard_min")
             h_max = plant_cfg.get(f"f_u_{i+1}_hard_max") or plant_cfg.get(f"u_{i+1}_hard_max")
@@ -402,13 +409,10 @@ def generate_and_save_dataset(
                 seq_has_violation = True
 
         # 🛡️ 3. DYNAMIC STATE VARIABLES HARD BOUNDS CHECK
-        # Automatically detects the number of states from the array shape
         state_dim = states.shape[-1] 
 
         for i in range(state_dim):
             single_state_seq = states[:, i]
-            
-            # Dynamically fetch configurations based on 1-indexed state names (x_1, x_2, ...)
             x_min = plant_cfg.get(f"x_{i+1}_hard_min")
             x_max = plant_cfg.get(f"x_{i+1}_hard_max")
             
@@ -422,15 +426,46 @@ def generate_and_save_dataset(
                       f"Bound: {x_max}, Max Found: {np.max(single_state_seq):.4f}\033[0m")
                 seq_has_violation = True
 
-        # Rejection handling
+        #Rejection handling
         if seq_has_violation:
             violated_sequences_count += 1
             print(f"\033[91m🛑 Excluding [Seq {s_idx}] from final dataset structures.\033[0m")
             continue
 
-        # Append execution histories if valid
+        # 📈 NEW: Calculate Pearson Correlation for this individual valid sequence trace
+        seq_corr_metrics = {"sequence_index": valid_idx_counter}
+        drop_due_to_correlation = False
+        min_correlation_threshold = hyperparam_config["train"]["min_correlation_threshold"]
+        
+        for u_idx in range(output_dim):
+            single_u_curve = u[:, u_idx]
+            for y_idx in range(input_dim):
+                single_y_curve = y_t[:, y_idx]
+                
+                # Check for zero variance to avoid warnings/NaN values
+                if np.std(single_u_curve) == 0 or np.std(single_y_curve) == 0:
+                    corr_val = 0.0
+                else:
+                    corr_val = np.corrcoef(single_u_curve, single_y_curve)[0, 1]
+                
+                # 🎯 Filtering Rule: Check if the correlation magnitude drops below 0.7
+                # (Using np.abs() keeps strong inverse behaviors like -0.85)
+                if np.abs(corr_val) < min_correlation_threshold:
+                    drop_due_to_correlation = True
+                    print(f"\033[94mℹ️ INFO: [Seq {s_idx}] Rejected. Low correlation on u_{u_idx+1}──y_{y_idx+1} ({corr_val:+.4f})\033[0m")
+                
+                seq_corr_metrics[f"corr_u{u_idx+1}_y{y_idx+1}"] = corr_val
+
+        # 🎯 Rejection handler specifically for weak correlation tracking
+        if drop_due_to_correlation:
+            violated_sequences_count += 1
+            print(f"\033[91m🛑 Excluding [Seq {s_idx}] due to weak u-y behavior mapping.\033[0m")
+            continue
+
+        # Append execution histories ONLY if both bounds AND correlation conditions are satisfied
         valid_x_list.append(x_tensor_raw[s_idx])
         valid_y_list.append(y_target_raw[s_idx])
+        per_sequence_correlations.append(seq_corr_metrics)
 
         # Construct logs dynamically
         time_axis = np.arange(len(u)) * dt
@@ -460,7 +495,6 @@ def generate_and_save_dataset(
         valid_dfs.append(seq_df)
         
         filename_base = f"sequence_{valid_idx_counter}.csv"
-        #filename_base = f"sequence.csv"
         valid_idx_counter += 1
         
         if save_logs:
@@ -480,9 +514,16 @@ def generate_and_save_dataset(
                 signals_to_plot.append(u[:, i])
                 labels_to_plot.append(f"u_{i+1}")
             
-            # # Add all four states into the debugging plot list
-            # signals_to_plot.extend([x_1_seq, x_2_seq, x_3_seq, x_4_seq])
-            # labels_to_plot.extend(["x_1", "x_2", "x_3", "x_4"])
+            # 📈 NEW: Build a concise correlation string for the title
+            corr_strings = []
+            for k, v in seq_corr_metrics.items():
+                if k != "sequence_index":
+                    # Shortens 'corr_u1_y1' to 'u1-y1'
+                    short_label = k.replace("corr_", "").replace("_", "-")
+                    corr_strings.append(f"{short_label}:{v:+.2f}")
+            
+            # Join them together, e.g., "[u1-y1:+0.84 | u1-y2:-0.12]"
+            title_corr_suffix = "\n" + " | ".join(corr_strings)
 
             plot_signals(
                 t=time_axis,
@@ -490,13 +531,12 @@ def generate_and_save_dataset(
                 labels=labels_to_plot,
                 xlabel="Time [h]",
                 ylabel="Signal Profile",
-                title=f"MIMO Valid Sequence {valid_idx_counter-1} Profile",
+                # 🎯 Updated Title to conditionally include the correlation values
+                title=f"MIMO Valid Sequence {valid_idx_counter-1} Profile{title_corr_suffix}",
                 dirname=plots_dir,
                 filename=f"{filename_base}_plot.png",
                 show=True
             )
-
-            
 
     # 🚨 FINAL BOUNDS VIOLATION & FILTERING SUMMARY
     violation_percentage = (violated_sequences_count / total_sequences) * 100
@@ -522,6 +562,12 @@ def generate_and_save_dataset(
     
     x_np_filtered = final_x_tensor.cpu().numpy()
     y_np_filtered = final_y_target.cpu().numpy()
+
+    # 📈 NEW: Convert the per-sequence list of summaries into a DataFrame and export to disk
+    if per_sequence_correlations:
+        per_seq_df = pd.DataFrame(per_sequence_correlations)
+        save_df_to_csv(per_seq_df, dirname=dirname, filename="mimo_per_sequence_correlations.csv")
+        print(f"🎉 Per-sequence correlation matrix saved to: {os.path.join(dirname, 'mimo_per_sequence_correlations.csv')}")
 
     # 📊 Compile Clean Filtered Dataset Statistics
     print("📊 Compiling CLEAN (filtered) MIMO macro-dataset statistics...")

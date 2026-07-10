@@ -3,7 +3,6 @@ import copy
 import os
 import pickle
 
-from src.sample.utils.data_generation_utils import TorchDiffeqPlantWrapper
 from torchdiffeq import odeint
 import matplotlib.pyplot as plt
 import numpy as np
@@ -454,16 +453,73 @@ def train_controller(
     return fold_histories
 
 
+import os
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
+import torch
+
+def save_esn_parameters_to_csv(model, fold_dir):
+    """
+    Helper function to safely extract and save ESN weight matrices 
+    (both trained readout weights and untrained reservoir weights) to CSV.
+    """
+    print(f"💾 Exporting ESN weight matrices to CSV in: {fold_dir}")
+    
+    # 1. Handle ReservoirPy Model or Node structure
+    if hasattr(model, "nodes"):
+        for node in model.nodes:
+            node_name = node.name.lower()
+            # Untrained Reservoir Parameters
+            if "reservoir" in node_name:
+                if hasattr(node, "Win") and node.Win is not None:
+                    pd.DataFrame(node.Win).to_csv(os.path.join(fold_dir, "esn_W_in_untrained.csv"), index=False, header=False)
+                if hasattr(node, "W") and node.W is not None:
+                    pd.DataFrame(node.W).to_csv(os.path.join(fold_dir, "esn_W_reservoir_untrained.csv"), index=False, header=False)
+                if hasattr(node, "bias") and node.bias is not None:
+                    pd.DataFrame(node.bias).to_csv(os.path.join(fold_dir, "esn_bias_untrained.csv"), index=False, header=False)
+            
+            # Trained Readout Parameters
+            elif "ridge" in node_name or "readout" in node_name:
+                # ReservoirPy stores readout weights either in 'Wout' or 'W' depending on version/configuration
+                w_out = getattr(node, "Wout", getattr(node, "W", None))
+                if w_out is not None:
+                    pd.DataFrame(w_out).to_csv(os.path.join(fold_dir, "esn_W_out_trained.csv"), index=False, header=False)
+                if hasattr(node, "bias") and node.bias is not None:
+                    pd.DataFrame(node.bias).to_csv(os.path.join(fold_dir, "esn_readout_bias_trained.csv"), index=False, header=False)
+
+    # 2. Fallback for custom or flat objects (e.g., model.W_in, model.W, model.W_out)
+    else:
+        # Untrained parameters
+        for attr_name, file_name in [("W_in", "esn_W_in_untrained.csv"), 
+                                     ("Win", "esn_W_in_untrained.csv"),
+                                     ("W", "esn_W_reservoir_untrained.csv"), 
+                                     ("W_res", "esn_W_reservoir_untrained.csv"),
+                                     ("bias", "esn_bias_untrained.csv")]:
+            if hasattr(model, attr_name):
+                weights = getattr(model, attr_name)
+                if weights is not None:
+                    pd.DataFrame(np.asarray(weights)).to_csv(os.path.join(fold_dir, file_name), index=False, header=False)
+        
+        # Trained parameters
+        for attr_name, file_name in [("W_out", "esn_W_out_trained.csv"), 
+                                     ("Wout", "esn_W_out_trained.csv")]:
+            if hasattr(model, attr_name):
+                weights = getattr(model, attr_name)
+                if weights is not None:
+                    pd.DataFrame(np.asarray(weights)).to_csv(os.path.join(fold_dir, file_name), index=False, header=False)
+
+
 
 
 def train_controller_esn(
     model,
-    X_raw,          # Clean Shape: [Total_Seqs, Seq_Len, input_dim * 2] (y_t and y_next)
-    Y_raw,          # Clean Shape: [Total_Seqs, Seq_Len, output_dim]
+    X_raw,          # Shape: [Total_Seqs, Seq_Len, input_dim * 2] (y_t and y_next)
+    Y_raw,          # Shape: [Total_Seqs, Seq_Len, output_dim]
     hyperparam_config,
     plant,
     dirname,
-    run_simulation = False
+    run_simulation=False
 ):
     # --- EXTRACT HYPERPARAMETERS ---
     dt = hyperparam_config["signal"]["dt"]
@@ -524,24 +580,25 @@ def train_controller_esn(
         val_y = scaler_y.transform(val_y_flat).reshape(N_val, seq_len, dim_y)
 
         fold_dir = f"{dirname}/fold_{fold+1}"
+        os.makedirs(fold_dir, exist_ok=True)
         save_to_json(hyperparam_config, fold_dir, f"hyperparam_config_fold_{fold+1}")
         save_scaler_object(scaler_x, dirname=fold_dir, filename="scaler_x")
         save_scaler_object(scaler_y, dirname=fold_dir, filename="scaler_y")
 
         # --- ⚡ ANALYTICAL RIDGE REGRESSION TRAINING ---
         print(f"⚡ Executing instant weight computation via Ridge Regression...")
-        
+
         # Convert full array matrices into sequence lists for ReservoirPy compatibility
         X_train_list = [train_x[i] for i in range(N_train)]
         Y_train_list = [train_y[i] for i in range(N_train)]
-        
+
         # Train linear readout matrix instantly
         model.fit(X_train_list, Y_train_list)
 
         # --- 📊 EVALUATION METRICS COLLECTION ---
         # Generate predictions across train traces
         train_all_preds = np.array([model.forward(train_x[i]) for i in range(N_train)])
-        
+
         # Generate predictions across validation traces
         val_all_preds_arr = np.array([model.forward(val_x[i]) for i in range(N_val)])
         val_all_trues_arr = val_y
@@ -552,68 +609,154 @@ def train_controller_esn(
 
         # Populate history dictionaries to match validation summary targets
         fold_histories[fold] = {
-            "train_loss": [mean_train_loss], 
-            "val_loss": [mean_val_loss], 
+            "train_loss": [mean_train_loss],
+            "val_loss": [mean_val_loss],
             "val_epochs": [1],
             **{f"train_loss_ch{ch+1}": [np.mean((train_all_preds[..., ch] - train_y[..., ch]) ** 2)] for ch in range(output_dim)},
             **{f"val_loss_ch{ch+1}": [np.mean((val_all_preds_arr[..., ch] - val_all_trues_arr[..., ch]) ** 2)] for ch in range(output_dim)}
         }
-
+     
         print(f"✨ [Fold {fold+1}] Performance Complete:")
+        model.save_parameters(f"{fold_dir}/parameters")
         print(f"   ↳ Total Train MSE: {mean_train_loss:.6f} | Total Val MSE: {mean_val_loss:.6f}")
-        
+
         # Persist trained parameters to disk
         save_model_esn(model, dirname=fold_dir, hyperparam_config=hyperparam_config, filename="best_fold_model")
 
-        # --- ⏳ PLANT SIMULATION ROLLOUT FOR VALIDATION SEQUENCES ---
+        # --- 📊 VALIDATION PLOTS: CONTROL INPUTS + OUTPUT SIGNALS (FIRST 5 SEQUENCES) ---
+        if N_val > 0:
+            print(f"📊 Generating validation plots for first 5 sequences of Fold {fold+1}...")
+
+            t_axis_val = np.arange(seq_len) * dt
+            plots_dir = f"{fold_dir}/validation_control_and_output_plots"
+            os.makedirs(plots_dir, exist_ok=True)
+
+            for seq_idx in range(min(5, N_val)):
+                # Unscaled predictions and ground truth for control inputs
+                seq_pred_unscaled = scaler_y.inverse_transform(val_all_preds_arr[seq_idx])
+                seq_true_unscaled = scaler_y.inverse_transform(val_all_trues_arr[seq_idx])
+
+                # Unscaled output signals (y_t and y_next) from X_raw
+                seq_x_unscaled = scaler_x.inverse_transform(val_x[seq_idx])
+                y_t = seq_x_unscaled[:, :input_dim]  # First half: y_t
+                y_next = seq_x_unscaled[:, input_dim:]  # Second half: y_next
+
+                # --- PLOT 1: CONTROL INPUTS (u) ---
+                for ch in range(output_dim):
+                    actual_u = seq_true_unscaled[:, ch]
+                    predicted_u = seq_pred_unscaled[:, ch]
+
+                    plot_signals(
+                        t=t_axis_val,
+                        signals=[actual_u, predicted_u],
+                        labels=[
+                            rf"Actual Control ($u_{ch+1}$)",
+                            rf"Predicted Control ($\hat{{u}}_{ch+1}$)"
+                        ],
+                        title=f"Fold {fold+1} - Seq {seq_idx+1}: Control Input (Channel {ch+1})",
+                        xlabel="Time [s]",
+                        ylabel="Control Input",
+                        figsize=(7, 5),
+                        filename=f"control_tracking_fold_{fold+1}_seq_{seq_idx+1}_ch{ch+1}",
+                        dirname=plots_dir
+                    )
+
+                # --- PLOT 2: OUTPUT SIGNALS (y) ---
+                for out_ch in range(input_dim):
+                    plot_signals(
+                        t=t_axis_val,
+                        signals=[y_t[:, out_ch], y_next[:, out_ch]],
+                        labels=[
+                            rf"Original Output ($y_{out_ch+1}$)",
+                            rf"Next Output ($y_{out_ch+1,next}$)"
+                        ],
+                        title=f"Fold {fold+1} - Seq {seq_idx+1}: Output Signal (Channel {out_ch+1})",
+                        xlabel="Time [s]",
+                        ylabel="Output Signal",
+                        figsize=(7, 5),
+                        filename=f"output_tracking_fold_{fold+1}_seq_{seq_idx+1}_ch{out_ch+1}",
+                        dirname=plots_dir
+                    )
+
+            print(f"✅ Validation plots (control + output) generated for first 5 sequences of Fold {fold+1}.")
+
+        # --- ⏳ PLANT SIMULATION ROLLOUT FOR VALIDATION SEQUENCES (OPTIONAL) ---
         if run_simulation and N_val > 0:
             print(f"📊 Simulating plant dynamics across ALL ({N_val}) validation profiles...")
-            
+
             t_axis_val = np.arange(seq_len) * dt
             pred_curves_dir = f"{fold_dir}/validation_tracking_curves"
-            
+            os.makedirs(pred_curves_dir, exist_ok=True)
+
+            # Instantiate or use the plant instance
             plant_instance = plant(hyperparam_config) if isinstance(plant, type) else plant
-            
-            # Keep solver on CPU for clean NumPy data streams if needed, or fallback to config device
-            device = hyperparam_config["train"].get("device", "cpu")
+            device = plant_instance.device
 
             for seq_idx in range(N_val):
                 seq_pred_unscaled = scaler_y.inverse_transform(val_all_preds_arr[seq_idx])
                 seq_true_unscaled = scaler_y.inverse_transform(val_all_trues_arr[seq_idx])
                 seq_x_unscaled = scaler_x.inverse_transform(val_x[seq_idx])
-                
+
+                # Get starting state profile: [1, 2]
                 current_sim_state = plant_instance.get_initial_state(batch_size=1)
                 state_dim = current_sim_state.shape[-1]
-                
+
                 simulated_states_history = {st: [] for st in range(state_dim)}
                 simulated_outputs_history = {out: [] for out in range(input_dim)}
 
-                gpu_solver = TorchDiffeqPlantWrapper(plant_instance, hyperparam_config).to(device)
-                
+                # 🌀 CRITICAL CORRECTION: Calculate and record initial output at t = 0
+                y_init = plant_instance.get_y(current_sim_state, t_axis_val[0])
+                for out in range(input_dim):
+                    simulated_outputs_history[out].append(y_init[0, out].item())
+
                 for step in range(seq_len):
+                    # Record the current state components before stepping forward
                     for st in range(state_dim):
                         simulated_states_history[st].append(current_sim_state[0, st].item())
-                    
-                    u_pred_step = torch.from_numpy(seq_pred_unscaled[step:step+1]).to(device=device, dtype=torch.float32)
-                    t_start = t_axis_val[step]
-                    t_end = t_start + dt
-                    
-                    t_span = torch.tensor([t_start, t_end], device=device, dtype=torch.float32)
-                    gpu_solver.current_u = u_pred_step
-                    
-                    solution = odeint(gpu_solver, current_sim_state, t_span, method='dopri5', rtol=1e-5, atol=1e-7)
-                    
-                    current_sim_state = torch.clamp(
-                        solution[1].detach(),
-                        min=gpu_solver.state_min_bounds,
-                        max=gpu_solver.state_max_bounds
-                    )
-                    
-                    y_next_pred = plant_instance.get_y(current_sim_state, t_end)
-                    for out in range(input_dim):
-                        simulated_outputs_history[out].append(y_next_pred[0, out].item())
 
-                # Assemble validation dataset trace logging metrics
+                    # Package predicted controller output u into a Tensor for the step
+                    u_pred_step = torch.from_numpy(seq_pred_unscaled[step:step+1]).to(device=device, dtype=torch.float32)
+                    t_curr = t_axis_val[step]
+
+                    # Execute plant step -> advances state to t + dt
+                    current_sim_state, y_next_pred = plant_instance.step(
+                        current_sim_state,
+                        u_pred_step,
+                        t_curr,
+                        dt
+                    )
+
+                    # Only capture the subsequent steps up to step < seq_len - 1 to match timeline bounds
+                    if step < (seq_len - 1):
+                        for out in range(input_dim):
+                            simulated_outputs_history[out].append(y_next_pred[0, out].item())
+
+                # --- PLOT 3: ORIGINAL VS. SIMULATED OUTPUTS (ONLY FOR FIRST 5 SEQUENCES) ---
+                if seq_idx < 5:
+                    for out_ch in range(input_dim):
+                        # Ensure arrays match length exactly
+                        sim_y_track = np.array(simulated_outputs_history[out_ch])
+                        original_y_track = seq_x_unscaled[:, out_ch] # y_t from dataset
+
+                        plot_signals(
+                            t=t_axis_val,
+                            signals=[
+                                original_y_track,  # Original ground truth path
+                                sim_y_track        # Pure output driven by ESN predicted control sequence
+                            ],
+                            labels=[
+                                rf"Original Dataset Output ($y_{out_ch+1}$)",
+                                rf"Simulated Output from Predicted $u$ ($\hat{{y}}_{out_ch+1}$)"
+                            ],
+                            title=f"Fold {fold+1} - Seq {seq_idx+1}: Dataset vs. Predicted Control Output (Channel {out_ch+1})",
+                            xlabel="Time [s]",
+                            ylabel="Output Signal [Growth Rate]",
+                            figsize=(7, 5),
+                            filename=f"output_comparison_fold_{fold+1}_seq_{seq_idx+1}_ch{out_ch+1}",
+                            dirname=pred_curves_dir
+                        )
+
+                # Save simulation data to CSV
                 log_data = {"Time (s)": t_axis_val}
                 for out_idx in range(input_dim):
                     log_data[f"Target_y{out_idx+1}_t"] = seq_x_unscaled[:, out_idx]
@@ -627,11 +770,11 @@ def train_controller_esn(
 
                 for st in range(state_dim):
                     log_data[f"Simulated_State_x{st+1}"] = simulated_states_history[st]
-                    
+
                 val_profile_df = pd.DataFrame(log_data)
                 save_df_to_csv(val_profile_df, dirname=pred_curves_dir, filename=f"val_plant_simulation_fold_{fold+1}_seq_{seq_idx+1}")
-                
-            print(f"✅ All {N_val} validation trajectory simulation logs dumped to CSV files for Fold {fold + 1}.")
+
+            print(f"✅ All {N_val} validation trajectory simulation logs dumped. Sample diagrams generated for Fold {fold + 1}.")
 
     # --- FINAL SUMMARY RECORD GENERATION ---
     print("\n💾 Packing overarching metadata curves...")
@@ -645,4 +788,5 @@ def train_controller_esn(
     summary_df = pd.DataFrame(summary_records)
     save_df_to_csv(summary_df, dirname=dirname, filename="kfold_cross_validation_summary")
     print("✅ Dedicated ESN optimization finalized successfully.")
+
     return fold_histories

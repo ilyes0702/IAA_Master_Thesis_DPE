@@ -7,6 +7,7 @@ simulation routine.
 """
 import torch.nn as nn
 import matplotlib.pyplot as plt
+from src.sample.classes.plants.SimpleLinearPlant import SimpleLinearPlant
 from src.sample.classes.plants.PenicillinPlantBirol2002 import PenicillinPlantBirol2002
 from src.sample.config import get_run_description, log_message
 plt.style.use("src/sample/style.mplstyle")
@@ -36,8 +37,8 @@ def main():
     # run_description = get_run_description()
     # log_message(f"RUN DESCRIPTION: {run_description}")
 
-    hyperparam_config = hyperparam_config_TrophophasePlant   # Initialize the plant model using hyperparameters
-    plant = TrophophasePlant(hyperparam_config=hyperparam_config)
+    hyperparam_config = hyperparam_config_ChemostatPlant   # Initialize the plant model using hyperparameters
+    plant = ChemostatPlant(hyperparam_config=hyperparam_config)
 
     #plant = IdiophasePlant(hyperparam_config_IdiophasePlant)
     
@@ -45,16 +46,16 @@ def main():
    
     #print(torch.load(controller_path, map_location='cuda'))
 
-    controller_path = "TrophophasePlant_training/fold_1/best_fold_model.pkl"
+    controller_path = "ChemostatPlant_training/fold_3/best_fold_model.pkl"
     # Load the trained inverse controller
     loaded_controller = load_model_esn(ESNInverseController, controller_path)
 
     scaler_x = load_scaler(
-        "results/2026-07-03/2026-07-03_16-16-30/TrophophasePlant_training/fold_1/scalers/2026-07-03_16-16-30_scaler_x.pkl"
+        "results/2026-07-08/2026-07-08_12-14-38/ChemostatPlant_training/fold_3/scalers/2026-07-08_12-14-38_scaler_x.pkl"
     )
 
     scaler_y = load_scaler(
-        "results/2026-07-03/2026-07-03_16-16-30/TrophophasePlant_training/fold_1/scalers/2026-07-03_16-16-30_scaler_y.pkl"
+        "results/2026-07-08/2026-07-08_12-14-38/ChemostatPlant_training/fold_3/scalers/2026-07-08_12-14-38_scaler_y.pkl"
         )
     
 
@@ -87,7 +88,7 @@ def main():
         dt=hyperparam_config["signal"]["dt"],
         device=hyperparam_config["train"]["device"],
         mode="constant",
-        constant_val=0.015,
+        constant_val=0.3,
     )
 
     r_static_y_2 = generate_reference_trajectory(
@@ -101,8 +102,8 @@ def main():
     r_smooth = generate_smooth_profile_trajectory(
         time_axis=torch.arange(hyperparam_config["simulate"]["seq_len"]) * hyperparam_config["signal"]["dt"],
         config={
-            'y_floor': 0.25,
-            'y_peak': 0.15,
+            'y_floor': 0.35,
+            'y_peak': 0.8,
             't_rise_center': 10.0,
             'k_rise': 1.0,
             't_sink_center': 25.0,
@@ -117,26 +118,19 @@ def main():
     r_smooth_decay = generate_exponential_decay_trajectory(
         steps=seq_len,
         dt=dt,
-        y_start=0.12,       # Starts here
-        y_target=0.015,     # Smoothly descends and turns to this constant value
+        y_start=0.1,       # Starts here
+        y_target=0.1,     # Smoothly descends and turns to this constant value
         tau=0.1,            # Governs speed (lower = faster drop)
         device=sim_device
     )
 
 
-    r_smooth_decay = generate_exponential_decay_trajectory(
-        steps=seq_len,
-        dt=dt,
-        y_start=0.12,       # Starts here
-        y_target=0.015,     # Smoothly descends and turns to this constant value
-        tau=0.1,            # Governs speed (lower = faster drop)
-        device=sim_device
-    )
+
 
     simulate_tracking_esn(
         model=loaded_controller,
         plant=plant,
-        r_trajectories=[r_smooth_decay.squeeze()],
+        r_trajectories=[r_static_y_1.squeeze()],
         hyperparam_config=hyperparam_config,
         x_scaler=scaler_x,
         y_scaler=scaler_y,

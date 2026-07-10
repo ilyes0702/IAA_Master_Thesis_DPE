@@ -20,6 +20,7 @@ from src.sample.classes.plants.TrophophasePlant import TrophophasePlant
 from src.hyperparam_config import *
 import matplotlib.pyplot as plt
 from src.sample.classes.plants.PenicillinPlantBirol2002 import PenicillinPlantBirol2002
+from src.sample.classes.plants.SimpleLinearPlant import SimpleLinearPlant
 
 # Apply project style for plots (if plotting is enabled)
 plt.style.use("src/sample/style.mplstyle")
@@ -33,9 +34,9 @@ def main() -> None:
 	"""
 
 	#hyperparam_config = hyperparam_config_BajpaiReussPlant
-	hyperparam_config = hyperparam_config_TrophophasePlant
+	hyperparam_config = hyperparam_config_ChemostatPlant
 
-	plant = TrophophasePlant(hyperparam_config=hyperparam_config)
+	plant = ChemostatPlant(hyperparam_config=hyperparam_config)
 
 	#plant = IdiophasePlant(hyperparam_config)
 	dirname = plant.__class__.__name__ + "_training_data"
