@@ -16,15 +16,11 @@ from src.sample.config import *
 
 from src.sample.classes.plants.ChemostatPlant import ChemostatPlant
 from src.sample.classes.plants.MassSpringDamperPlant import MassSpringDamperPlant
-from src.sample.classes.plants.TrophophasePlant import TrophophasePlant
-from src.sample.classes.plants.IdiophasePlant import IdiophasePlant
-
-from src.sample.classes.plants.YeastFermentation import FedBatchYeastPlant
-
+from src.sample.classes.plants.TrophophasePlant import *
+from src.sample.classes.plants.IdiophasePlant import *
+from src.sample.classes.plants.CocultivationPlant import CoCultivationPlant
 from src.sample.classes.controllers.MambaInverseController import *
 from src.sample.classes.controllers.ESNInverseController import *
-
-
 
 from src.hyperparam_config import *
 
@@ -42,27 +38,15 @@ if __name__ == "__main__":
     plant = TrophophasePlant(hyperparam_config=hyperparam_config)
     
     dataset_path = (
-       "results/2026-07-07/2026-07-07_16-13-47/TrophophasePlant_training_data/dataset/2026-07-07_16-13-47_training_data.pt"
+       "results/2026-07-16/2026-07-16_15-52-03/TrophophasePlant_training_data/dataset/2026-07-16_15-52-03_training_data.pt"
     )
     
     # Load the dataset from disk. The file is expected to be a dict-like object containing 'x' and 'y' keys. If loading fails, inspect the path first.
     dataset = torch.load(dataset_path, weights_only=True)
 
-    # Extract features (X) and targets (Y).
-    # X: (total_sequences, seq_len, 2*num_outputs) -> [y_t, y_next]
-    # Y: (total_sequences, seq_len, 1*num_inputs) -> [u_control]
-    X = dataset["x"]
-    Y = dataset["y"]
-
-    # Quick sanity prints to confirm shapes and sample values.
-    print("✅ Dataset successfully loaded!")
-    print(f"Features (X) shape: {X.shape}")
-    print(f"Targets  (Y) shape: {Y.shape}")
-
-
     # Initialize the inverse controller and move it to the selected device.
 
-    controller = MambaInverseController_stateful(hyperparam_config=hyperparam_config)
+    controller = MambaInverseController(hyperparam_config=hyperparam_config)
 
     # Directory name to store training artifacts (models, plots, logs).
     dirname = f"{plant.__class__.__name__}_training"
@@ -72,11 +56,12 @@ if __name__ == "__main__":
     # Run the training routine. show_plots can be toggled for interactive use.
     train_controller(
         controller,
-        X,
-        Y,
-        hyperparam_config,
-        plant,
-        dirname=dirname
-    )
-
-        
+        Y_trajectories=dataset["y"],      # Passes [Num_Trajectories, Seq_Len, input_dim]
+        U_trajectories=dataset["u"],
+        X_states=dataset["states"],
+        hyperparam_config=hyperparam_config_TrophophasePlant,
+        plant=plant,
+        dirname=dirname,
+        run_simulation=True,
+        run_sim_with_plots=True
+    )   

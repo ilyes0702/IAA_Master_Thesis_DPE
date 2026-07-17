@@ -15,11 +15,10 @@ import torch
 # Utility functions and classes for simulation
 from src.sample.utils.general_utils import *
 from src.hyperparam_config import *
-from src.sample.classes.plants.IdiophasePlant import IdiophasePlant
-from src.sample.classes.plants.MassSpringDamperPlant import MassSpringDamperPlant
-from src.sample.classes.plants.TrophophasePlant import TrophophasePlant
-from src.sample.classes.plants.ChemostatPlant import ChemostatPlant
-from src.sample.classes.plants.YeastFermentation import FedBatchYeastPlant
+from src.sample.classes.plants.IdiophasePlant import *
+from src.sample.classes.plants.MassSpringDamperPlant import *
+from src.sample.classes.plants.TrophophasePlant import *
+from src.sample.classes.plants.ChemostatPlant import *
 from src.sample.classes.controllers.MambaInverseController import *
 from src.sample.classes.controllers.ESNInverseController import *
 
@@ -39,38 +38,29 @@ def main():
     hyperparam_config = hyperparam_config_TrophophasePlant   # Initialize the plant model using hyperparameters
     plant = TrophophasePlant(hyperparam_config=hyperparam_config)
 
-    #plant = IdiophasePlant(hyperparam_config_IdiophasePlant)
-    
-
-   
-    #print(torch.load(controller_path, map_location='cuda'))
-
-    controller_path = "models/2026-07-06/2026-07-06_16-50-48/TrophophasePlant_training/fold_5/2026-07-06_16-50-48_best_fold_model.pt"
+    controller_path = "models/2026-07-16/2026-07-16_15-56-24/TrophophasePlant_training/fold_1/2026-07-16_15-56-24_best_fold_model.pt"
     # Load the trained inverse controller
-    loaded_controller = load_model(MambaInverseController_stateful, controller_path)
+    loaded_controller = load_model(MambaInverseController, controller_path)
 
     scaler_x = load_scaler(
-        "results/2026-07-06/2026-07-06_16-50-48/TrophophasePlant_training/fold_5/scalers/2026-07-06_16-50-48_scaler_x.pkl"
+        "results/2026-07-16/2026-07-16_15-56-24/TrophophasePlant_training/fold_1/scalers/2026-07-16_15-56-24_scaler_x.pkl"
     )
 
     scaler_y = load_scaler(
-        "results/2026-07-06/2026-07-06_16-50-48/TrophophasePlant_training/fold_5/scalers/2026-07-06_16-50-48_scaler_y.pkl"
+        "results/2026-07-16/2026-07-16_15-56-24/TrophophasePlant_training/fold_1/scalers/2026-07-16_15-56-24_scaler_y.pkl"
         )
     
+    # means_x = scaler_x.mean_
+    # stds_x = scaler_x.scale_
 
-    means_x = scaler_x.mean_
-    stds_x = scaler_x.scale_
+    # print(f"Means x: {means_x}")
+    # print(f"Standard Deviations x: {stds_x}")
 
-    print(f"Means x: {means_x}")
-    print(f"Standard Deviations x: {stds_x}")
+    # means_y = scaler_y.mean_
+    # stds_y = scaler_y.scale_
 
-    means_y = scaler_y.mean_
-    stds_y = scaler_y.scale_
-
-    print(f"Means y: {means_y}")
-    print(f"Standard Deviations y: {stds_y}")
-    
-    # Example: Separate sine and cosine trajectories for y1 and y2
+    # print(f"Means y: {means_y}")
+    # print(f"Standard Deviations y: {stds_y}")
 
     # Generate a dynamic reference trajectory (time-varying target)
     r_dynamic = generate_reference_trajectory(
@@ -87,7 +77,7 @@ def main():
         dt=hyperparam_config["signal"]["dt"],
         device=hyperparam_config["train"]["device"],
         mode="constant",
-        constant_val=0.015,
+        constant_val=0.02,
     )
 
     r_static_y_2 = generate_reference_trajectory(
@@ -127,8 +117,8 @@ def main():
     r_smooth_decay = generate_exponential_decay_trajectory(
         steps=seq_len,
         dt=dt,
-        y_start=0.2,       # Starts here
-        y_target=0.015,     # Smoothly descends and turns to this constant value
+        y_start=0.12,       # Starts here
+        y_target=0.02,     # Smoothly descends and turns to this constant value
         tau=0.1,            # Governs speed (lower = faster drop)
         device=sim_device
     )
@@ -136,7 +126,7 @@ def main():
     simulate_tracking_stateful(
         model=loaded_controller,
         plant=plant,
-        r_trajectories=[r_smooth_decay.squeeze()],
+        r_trajectories=[r_static_y_1.squeeze()],
         hyperparam_config=hyperparam_config,
         x_scaler=scaler_x,
         y_scaler=scaler_y,

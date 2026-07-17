@@ -87,3 +87,41 @@ class MassSpringDamperPlant:
             "position": state[0].item() if torch.is_tensor(state) else state[0],
             "velocity": state[1].item() if torch.is_tensor(state) else state[1]
         }
+    
+hyperparam_config_MassSpringDamperPlant = {
+    "plant" :{
+        "m": 0.1,
+        "d": 0.1,
+        "k": 1.0,
+        "u_1_D_center_min": 0.5,
+        "u_1_D_center_max": 0.5,
+        "u_1_hard_min": 0,
+        "u_1_hard_max": 1.0
+    },
+    "signal": {
+        "lambd": 15,
+        "p": 0.15,
+        "seq_len": 1001,
+        "dt": 0.1
+    },
+    "train": {
+        "k_folds": 5,
+        "epochs": 50,
+        "batch_size":5000,
+        "lr": 1e-3,
+        "device": "cuda", # if torch.cuda.is_available() else "cpu",
+        "delay_steps": 1,
+        "loss_function": "MSELoss()", 
+        "lr_decay_rate":1,
+    },
+    "mamba": {
+        "d_model": 64,
+        "d_state": 16,
+        "input_dim": 1,  # y
+        "output_dim": 1  # u
+    },
+    "simulate": {
+        "batch_size": 10,
+        "seq_len": 10,
+    }
+}

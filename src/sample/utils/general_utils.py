@@ -12,7 +12,7 @@ from src.sample.utils.saving_utils import *
 from src.sample.config import *
 from src.sample.utils.plotting_utils import plot_signals
 import torch
-from src.sample.classes.controllers.MambaInverseController import MambaInverseController, MambaInverseController
+from src.sample.classes.controllers.MambaInverseController import MambaInverseController
 import matplotlib.pyplot as plt
 import random
 
@@ -206,9 +206,9 @@ def generate_reference_trajectory(steps, dt, device, mode="constant", constant_v
 
         noise = np.random.uniform(-0.005, 0.005, size=time_axis.shape)
 
-        r_trajectory_np = 0.25 + 0.04 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism #chemostat
+        #r_trajectory_np = 0.25 + 0.04 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism #chemostat
 
-        #r_trajectory_np = 0.8 + 0.05 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism
+        r_trajectory_np = 0.1 + 0.05 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism
         
         # Convert the structural numpy baseline into a target PyTorch tensor array
         r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
@@ -2284,7 +2284,7 @@ def simulate_tracking(
     }
 
 
-def simulate_tracking_stateful(
+def simulate_tracking_stateful_marcia(
     model,
     plant,
     r_trajectories,  # List of reference trajectories, one for each output dimension. Shape: [steps] for each trajectory.
@@ -2411,11 +2411,11 @@ def simulate_tracking_stateful(
     
     # Retrieve the metadata configuration blocks from the plant
     plot_metadata = plant.get_plot_config()
-    
-    # Extract metadata blocks safely with explicit fallbacks
-    state_meta  = plot_metadata[0] if len(plot_metadata) > 0 else {}
-    output_meta = plot_metadata[1] if len(plot_metadata) > 1 else {}
-    control_meta = plot_metadata[2] if len(plot_metadata) > 2 else {}
+
+    # Extract metadata blocks safely using dynamic column name checks
+    state_meta = next((c for c in plot_metadata if any(col.startswith("x") for col in c["cols"])), {})
+    output_meta = next((c for c in plot_metadata if any(col.startswith("y") for col in c["cols"])), {})
+    control_meta = next((c for c in plot_metadata if any(col.startswith("u") for col in c["cols"])), {})
     
     save_to_json(
         data=ssm_history,
@@ -2511,60 +2511,111 @@ def simulate_tracking_stateful(
     y_np = all_y.cpu().numpy()       # Shape: [steps, batch_size, input_dim]
     u_np = all_u.cpu().numpy()       # Shape: [steps, batch_size, output_dim]
     s_np = all_states.cpu().numpy()  # Shape: [steps, batch_size, state_dim]
+    #r_np = all_r.cpu().numpy()       # Shape: [steps, input_dim] (Assume reference trajectory is evaluated per step)
 
-    # Global Summary 1: System Outputs Convergence Overlay
+    # ==========================================
+    # 1. System Outputs Convergence Stacked Plot (y1 vs r1, y2 vs r2)
+    # ==========================================
+    signals_to_plot = []
+    labels_to_plot = []
+    ylabels_to_plot = []
+
     for i in range(input_dim):
-        summary_signals = [y_np[:, j, i] for j in range(batch_size)] + [r_np[:, i]]
+        # Retrieve base labels and ylabels dynamically
         labels_list = output_meta.get("labels", [])
-        base_y_label = labels_list[0] if len(labels_list) > 0 else f"y_{i+1}"
-        base_r_label = labels_list[1] if len(labels_list) > 1 else f"r_{i+1}"
+        base_y_label = labels_list[i] if i < len(labels_list) else f"y_{i+1}"
         
-        plot_signals(
-            t=time_axis,
-            signals=summary_signals,
-            labels=[f"Traj {j} ({base_y_label})" for j in range(batch_size)] + [f"Target ({base_r_label})"],
-            title=f"Batch Convergence ({base_y_label}) - {batch_size} Trajectories Overview",
-            xlabel="Time (h)",
-            ylabel=output_meta.get("ylabel", "System Output"),
-            dirname=dirname,
-            filename=f"batch_summary_y_{i+1}"
-        )
+        # Overlay all batch trajectories + the reference trajectory on this subplot row
+        row_signals = [y_np[:, j, i] for j in range(batch_size)] + [r_np[:, i]]
+        row_labels = [f"{batch_size} Simulated Curves" if j == 0 else "" for j in range(batch_size)] + ["Reference"]
+        
+        signals_to_plot.append(row_signals)
+        labels_to_plot.append(row_labels)
+        
+        # Grab the corresponding ylabel for this subplot row
+        y_labels_list = output_meta.get("ylabel", [])
+        row_ylabel = y_labels_list[i] if isinstance(y_labels_list, list) and i < len(y_labels_list) else f"Output {i+1}"
+        ylabels_to_plot.append(row_ylabel)
 
-    # Global Summary 2: Control Action Profiles Overlay
+    plot_stacked(
+        t=time_axis,
+        signals=signals_to_plot,
+        labels=labels_to_plot,
+        xlabel=r"$t$ / h",
+        ylabel=ylabels_to_plot,
+        asp=[0.33] * len(signals_to_plot),
+        dirname=dirname,
+        filename="batch_summary_outputs_stacked.png",
+        show=True
+    )
+
+    # ==========================================
+    # 2. Control Action Profiles Stacked Plot (u1, u2)
+    # ==========================================
+    signals_to_plot = []
+    labels_to_plot = []
+    ylabels_to_plot = []
+
     for i in range(output_dim):
         labels_list = control_meta.get("labels", [])
         label_base = labels_list[i] if i < len(labels_list) else f"u_{i+1}"
-        title_base = control_meta.get("title", "Control Profile")
-        summary_inputs = [u_np[:, j, i] for j in range(batch_size)]
         
-        plot_signals(
-            t=time_axis,
-            signals=summary_inputs,
-            labels=[f"Traj {j} ({label_base})" for j in range(batch_size)],
-            title=f"Batch Profile: {title_base} - Overlaid Actions",
-            xlabel="Time (h)",
-            ylabel=control_meta.get("ylabel", "Action Value"),
-            dirname=dirname,
-            filename=f"batch_summary_u_{i+1}"
-        )
+        # Pack control inputs for this row
+        row_signals = [u_np[:, j, i] for j in range(batch_size)]
+        row_labels = [f"{batch_size} Simulated Curves" if j == 0 else "" for j in range(batch_size)]
+        
+        signals_to_plot.append(row_signals)
+        labels_to_plot.append(row_labels)
+        
+        y_labels_list = control_meta.get("ylabel", [])
+        row_ylabel = y_labels_list[i] if isinstance(y_labels_list, list) and i < len(y_labels_list) else f"Action {i+1}"
+        ylabels_to_plot.append(row_ylabel)
 
-    # Global Summary 3: State Trajectories Overlay
+    plot_stacked(
+        t=time_axis,
+        signals=signals_to_plot,
+        labels=labels_to_plot,
+        xlabel=r"$t$ / h",
+        ylabel=ylabels_to_plot,
+        asp=[0.33] * len(signals_to_plot),
+        dirname=dirname,
+        filename="batch_summary_controls_stacked.png",
+        show=True
+    )
+
+    # ==========================================
+    # 3. State Trajectories Stacked Plot (x1, x2, x3, x4)
+    # ==========================================
+    signals_to_plot = []
+    labels_to_plot = []
+    ylabels_to_plot = []
+
     for i in range(s_np.shape[2]):
         labels_list = state_meta.get("labels", [])
         label_base = labels_list[i] if i < len(labels_list) else f"x_{i+1}"
-        title_base = state_meta.get("title", "State Evolution")
-        summary_states = [s_np[:, j, i] for j in range(batch_size)]
         
-        plot_signals(
-            t=time_axis,
-            signals=summary_states,
-            labels=[f"Traj {j} ({label_base})" for j in range(batch_size)],
-            title=f"Batch Trajectories: {title_base} ({label_base}) Ensembles",
-            xlabel="Time (h)",
-            ylabel=state_meta.get("ylabel", "State Magnitude"),
-            dirname=dirname,
-            filename=f"batch_summary_x_{i+1}"
-        )
+        # Pack state trajectories for this row
+        row_signals = [s_np[:, j, i] for j in range(batch_size)]
+        row_labels = [f"{batch_size} Simulated Curves" if j == 0 else "" for j in range(batch_size)]
+        
+        signals_to_plot.append(row_signals)
+        labels_to_plot.append(row_labels)
+        
+        y_labels_list = state_meta.get("ylabel", [])
+        row_ylabel = y_labels_list[i] if isinstance(y_labels_list, list) and i < len(y_labels_list) else f"State {i+1}"
+        ylabels_to_plot.append(row_ylabel)
+
+    plot_stacked(
+        t=time_axis,
+        signals=signals_to_plot,
+        labels=labels_to_plot,
+        xlabel=r"$t$ / h",
+        ylabel=ylabels_to_plot,
+        asp=[0.33] * len(signals_to_plot),
+        dirname=dirname,
+        filename="batch_summary_states_stacked.png",
+        show=True
+    )
 
     # --- METRICS COMPILATION ---
     tracking_metrics = {}
@@ -2581,6 +2632,383 @@ def simulate_tracking_stateful(
         "simulated_controls": all_u.cpu().numpy()
     }
 import torch.nn as nn
+
+import os
+import torch
+import numpy as np
+import pandas as pd
+
+def simulate_tracking_stateful(
+    model,
+    plant,
+    r_trajectories,  # List of reference trajectories, one for each output dimension. Shape: [steps] for each trajectory.
+    hyperparam_config,
+    x_scaler,
+    y_scaler,
+    dirname,
+    plot_individual_plots=False
+):
+    """
+    Simulates a controlled MIMO plant over a specified time horizon using stateful,
+    step-by-step inference (carrying forward Mamba hidden states) while tracking a
+    separate reference trajectory for each output dimension.
+    
+    Aligned with the robust plant instantiation and plotting routines of the validation rollout.
+    """
+    # Extract configuration sub-dictionaries
+    train_cfg = hyperparam_config["train"]
+    sig_cfg = hyperparam_config["signal"]
+    sim_cfg = hyperparam_config["simulate"]
+    mamba_cfg = hyperparam_config.get("mamba", {})
+    plant_cfg = hyperparam_config["plant"]
+
+    model.core.return_bc = True  # Enable returning B and C
+    
+    # Unpack specific parameters
+    steps = sim_cfg["seq_len"]
+    dt = sig_cfg["dt"]
+    batch_size = sim_cfg["batch_size"]
+    device = train_cfg["device"]
+    input_dim = mamba_cfg["input_dim"]    # Number of plant outputs (y1, y2, ...)
+    output_dim = mamba_cfg["output_dim"]  # Number of control inputs (u1, u2, ...)
+
+    # 🌟 1. HANDLE PLANT INSTANTIATION (Class vs. Instance)
+    if isinstance(plant, type):
+        plant_instance = plant(hyperparam_config)
+    else:
+        plant_instance = plant
+
+    # Validate r_trajectories
+    if len(r_trajectories) != input_dim:
+        raise ValueError(f"Expected {input_dim} reference trajectories, got {len(r_trajectories)}")
+
+    # Convert r_trajectories to a tensor of shape [steps, input_dim]
+    r_trajectory = torch.stack(r_trajectories, dim=1)  # Shape: [steps, input_dim]
+    r_np = r_trajectory.cpu().numpy()  # Shape: [steps, input_dim]
+
+    # Initialize GPU tensor buffers
+    all_y = torch.zeros((steps, batch_size, input_dim), device=device)  
+    all_u = torch.zeros((steps, batch_size, output_dim), device=device)  
+    
+    # Dynamically query plant state dimensions to avoid hardcoding
+    sample_state = plant_instance.get_initial_state(1)
+    state_dim = sample_state.shape[-1]
+    all_states = torch.zeros((steps, batch_size, state_dim), device=device)  
+
+    state = plant_instance.get_initial_state(batch_size)
+
+    # Prepare model for evaluation mode
+    model.eval()
+    ssm_history = {
+        "step": [], "time": [],
+        "A_bar": [], "B_bar": [], "C": [], "dt": []
+    }
+    print(f"📈 Testing Stateful MIMO Trajectory Tracking: {batch_size} trajectories across {steps} steps...")
+
+    # CORRECT MEMORY INITIALIZATION
+    model.reset_memory(batch_size=batch_size, device=device)
+
+    # INITIALIZE SLIDING WINDOW RUNNING BUFFERS FOR THE BATCH
+    n_y = mamba_cfg["n_y"]
+    n_u = mamba_cfg["n_u"]
+
+    # 🌟 Calculate the physical lookback threshold
+    # Since we need (n_y + 1) past outputs and n_u past controls:
+    warmup_steps = 10 # max(n_y + 1, n_u)
+
+    # Seed history buffers with only the very first step instead of dummy-repeating them
+    initial_y = plant_instance.get_y(state, 0.0).cpu().numpy()  # [batch_size, input_dim]
+    y_histories = [[initial_y[b].copy()] for b in range(batch_size)]
+    u_histories = [[np.zeros(output_dim)] for b in range(batch_size)]
+
+    # Execute forward tracking simulation
+    with torch.no_grad():
+        for i in range(steps):
+            t = i * dt
+            y_current = plant_instance.get_y(state, t)  # Shape: [batch_size, input_dim]
+            y_curr_np = y_current.cpu().numpy()
+
+            # 1. Update running history with the newly observed plant output
+            for b in range(batch_size):
+                y_histories[b].append(y_curr_np[b])
+                if len(y_histories[b]) > (n_y + 1):
+                    y_histories[b].pop(0)
+
+            # Look-ahead: Target reference state for the NEXT time-step (i+1)
+            next_idx = min(i + 1, steps - 1)
+            target_r = r_trajectory[next_idx].expand(batch_size, input_dim)
+            tgt_r_np = target_r.cpu().numpy()
+
+            # 🌟 Determine if we have enough physical history to start model control
+            if i < warmup_steps:
+                # --- WARMUP PHASE ---
+                # Model does not act yet. Use safe default control actions (zeros)
+                u_unscaled = 0.5* np.ones((batch_size, output_dim))
+                u = torch.tensor(u_unscaled, dtype=torch.float32, device=device)
+                
+            else:
+                # --- ACTIVE CONTROL PHASE ---
+                # We construct the input vector v_k using only genuine accumulated histories
+                v_k_batch_raw = []
+                for b in range(batch_size):
+                    y_window = np.array(y_histories[b])
+                    y_hist_reversed = y_window[::-1].flatten()
+
+                    u_window = np.array(u_histories[b]) if n_u > 0 else np.array([])
+                    u_hist_reversed = u_window[::-1].flatten() if n_u > 0 else np.array([])
+
+                    # Combine: [Target_Future, Past_Outputs, Past_Controls]
+                    v_k_single = np.concatenate([tgt_r_np[b], y_hist_reversed, u_hist_reversed])
+                    v_k_batch_raw.append(v_k_single)
+
+                # Convert, scale, and infer
+                v_k_batch_raw = np.array(v_k_batch_raw)
+                v_k_scaled = x_scaler.transform(v_k_batch_raw)
+                v_k_tensor = torch.tensor(v_k_scaled, dtype=torch.float32, device=device)
+
+                u_norm_tensor = model.step(v_k_tensor)
+                
+                u_norm_np = u_norm_tensor.cpu().numpy() 
+                u_unscaled = y_scaler.inverse_transform(u_norm_np)
+
+                # Force physical actuator limits
+                u_unscaled = np.clip(u_unscaled, plant_cfg["u_1_hard_min"], plant_cfg["u_1_hard_max"])  
+                u = torch.tensor(u_unscaled, dtype=torch.float32, device=device)  
+
+            # 2. Update control history with the chosen action
+            for b in range(batch_size):
+                u_histories[b].append(u_unscaled[b])
+                if len(u_histories[b]) > n_u:
+                    u_histories[b].pop(0)
+
+            # Step the physical plant forward
+            if output_dim == 1:
+                state, _ = plant_instance.step(state=state, u1=u[:, 0:1], t=t, dt=dt)
+            else:
+                try:
+                    state, _ = plant_instance.step(state=state, u=u, t=t, dt=dt)
+                except TypeError:
+                    kwargs = {f"u{j+1}": u[:, j:j+1] for j in range(output_dim)}
+                    state, _ = plant_instance.step(state=state, t=t, dt=dt, **kwargs)
+
+            # Logging metrics
+            all_y[i] = y_current  
+            all_u[i] = u  
+            all_states[i] = state 
+
+    # --- PLOTTING & EXPORT CONFIGURATION ---
+    time_axis = np.arange(steps) * dt
+    trajectory_reports = []
+    total_stacked_blocks = input_dim + output_dim
+    
+    # Retrieve the metadata configuration blocks from the plant safely
+    plot_metadata = plant_instance.get_plot_config() if hasattr(plant_instance, "get_plot_config") else []
+
+    # Safe lookup logic mirrored from validation sequence
+    state_meta = next((c for c in plot_metadata if any(col.startswith("x") for col in c["cols"])), {})
+    output_meta = next((c for c in plot_metadata if any(col.startswith("y") for col in c["cols"])), {})
+    control_meta = next((c for c in plot_metadata if any(col.startswith("u") for col in c["cols"])), {})
+    
+    save_to_json(
+        data=ssm_history,
+        dirname=dirname,          
+        filename="ssm_matrices_history"
+    )
+    
+    # Parse and save individual trajectory records
+    for b in range(batch_size):
+        state_dirname = os.path.join(dirname, f"initial_state_{b}")
+        os.makedirs(state_dirname, exist_ok=True)
+
+        y_traj = all_y[:, b, :].cpu().numpy()            # Shape: [steps, input_dim]
+        u_traj = all_u[:, b, :].cpu().numpy()            # Shape: [steps, output_dim]
+        states_traj = all_states[:, b, :].cpu().numpy()  # Shape: [steps, state_dim]
+
+        # Save DataFrame for this trajectory
+        df_data = {
+            "time": np.tile(time_axis, total_stacked_blocks),
+            "signal_type": np.repeat(
+                [f"y_{i+1}" for i in range(input_dim)] + [f"u_{i+1}" for i in range(output_dim)],
+                steps
+            ),
+            "value": np.concatenate([
+                y_traj[:, i] for i in range(input_dim)
+            ] + [
+                u_traj[:, i] for i in range(output_dim)
+            ]),
+        }
+        
+        for i in range(states_traj.shape[1]):
+            df_data[f"state_{i+1}"] = np.tile(states_traj[:, i], total_stacked_blocks)
+
+        df_traj = pd.DataFrame(df_data)
+        save_df_to_csv(df_traj, dirname=state_dirname, filename="state_report")
+        trajectory_reports.append(df_traj)
+
+        if plot_individual_plots:
+            # 1. Individual Plot: Control Signals
+            for i in range(output_dim):
+                labels_list = control_meta.get("labels", [])
+                label = labels_list[i] if i < len(labels_list) else f"Control Input (u_{i+1})"
+                title = control_meta.get("title", "Control Profile")
+                
+                plot_signals(
+                    t=time_axis,
+                    signals=[u_traj[:, i]],
+                    labels=[label],
+                    title=f"Trajectory {b}: {title}",
+                    xlabel=rf"$t \; / \; \mathrm{{s}}$",
+                    ylabel=control_meta.get("ylabel", "Action Value"),
+                    dirname=state_dirname,
+                    filename=f"plot_control_signal_u_{i+1}"
+                )
+
+            # 2. Individual Plot: Output tracking performance
+            for i in range(input_dim):
+                labels_list = output_meta.get("labels", [])
+                ind_y_label = labels_list[0] if len(labels_list) > 0 else f"Output (y_{i+1})"
+                ind_r_label = labels_list[1] if len(labels_list) > 1 else f"Target (r_{i+1})"
+                title = output_meta.get("title", "Tracking Performance")
+                
+                plot_signals(
+                    t=time_axis,
+                    signals=[y_traj[:, i], r_np[:, i]],  
+                    labels=[ind_y_label, ind_r_label],   
+                    title=f"Trajectory {b}: {title}",
+                    xlabel=rf"$t \; / \; \mathrm{{s}}$",
+                    ylabel=output_meta.get("ylabel", "Signal Value"),
+                    dirname=state_dirname,
+                    filename=f"plot_output_tracking_y_{i+1}"
+                )
+                
+            # 3. Individual Plot: Internal plant states
+            for i in range(states_traj.shape[1]):
+                labels_list = state_meta.get("labels", [])
+                label = labels_list[i] if i < len(labels_list) else f"State x_{i+1}"
+                title = state_meta.get("title", "Internal Plant States")
+                
+                plot_signals(
+                    t=time_axis,
+                    signals=[states_traj[:, i]],
+                    labels=[label],
+                    title=f"Trajectory {b}: {title} - {label}",
+                    xlabel=rf"$t \; / \; \mathrm{{s}}$",
+                    ylabel=state_meta.get("ylabel", "State Magnitude"),
+                    dirname=state_dirname,
+                    filename=f"plot_plant_state_x_{i+1}"
+                )
+
+    # --- GLOBAL BATCH OVERLAY PLOT GENERATION ---
+    y_np = all_y.cpu().numpy()       # Shape: [steps, batch_size, input_dim]
+    u_np = all_u.cpu().numpy()       # Shape: [steps, batch_size, output_dim]
+    s_np = all_states.cpu().numpy()  # Shape: [steps, batch_size, state_dim]
+
+    # ==========================================
+    # 1. System Outputs Convergence Stacked Plot
+    # ==========================================
+    signals_to_plot = []
+    labels_to_plot = []
+    ylabels_to_plot = []
+
+    for i in range(input_dim):
+        labels_list = output_meta.get("labels", [])
+        
+        row_signals = [y_np[:, j, i] for j in range(batch_size)] + [r_np[:, i]]
+        row_labels = [f"{batch_size} Simulated Curves" if j == 0 else "" for j in range(batch_size)] + ["Reference"]
+        
+        signals_to_plot.append(row_signals)
+        labels_to_plot.append(row_labels)
+        
+        y_labels_list = output_meta.get("ylabel", [])
+        row_ylabel = y_labels_list[i] if isinstance(y_labels_list, list) and i < len(y_labels_list) else f"Output {i+1}"
+        ylabels_to_plot.append(row_ylabel)
+
+    plot_stacked(
+        t=time_axis,
+        signals=signals_to_plot,
+        labels=labels_to_plot,
+        xlabel=rf"$t \; / \; \mathrm{{s}}$",
+        ylabel=ylabels_to_plot,
+        asp=[0.33] * len(signals_to_plot),
+        dirname=dirname,
+        filename="batch_summary_outputs_stacked.png",
+        show=True
+    )
+
+    # ==========================================
+    # 2. Control Action Profiles Stacked Plot
+    # ==========================================
+    signals_to_plot = []
+    labels_to_plot = []
+    ylabels_to_plot = []
+
+    for i in range(output_dim):
+        row_signals = [u_np[:, j, i] for j in range(batch_size)]
+        row_labels = [f"{batch_size} Simulated Curves" if j == 0 else "" for j in range(batch_size)]
+        
+        signals_to_plot.append(row_signals)
+        labels_to_plot.append(row_labels)
+        
+        y_labels_list = control_meta.get("ylabel", [])
+        row_ylabel = y_labels_list[i] if isinstance(y_labels_list, list) and i < len(y_labels_list) else f"Action {i+1}"
+        ylabels_to_plot.append(row_ylabel)
+
+    plot_stacked(
+        t=time_axis,
+        signals=signals_to_plot,
+        labels=labels_to_plot,
+        xlabel=rf"$t \; / \; \mathrm{{s}}$",
+        ylabel=ylabels_to_plot,
+        asp=[0.33] * len(signals_to_plot),
+        dirname=dirname,
+        filename="batch_summary_controls_stacked.png",
+        show=True
+    )
+
+    # ==========================================
+    # 3. State Trajectories Stacked Plot
+    # ==========================================
+    signals_to_plot = []
+    labels_to_plot = []
+    ylabels_to_plot = []
+
+    for i in range(s_np.shape[2]):
+        row_signals = [s_np[:, j, i] for j in range(batch_size)]
+        row_labels = [f"{batch_size} Simulated Curves" if j == 0 else "" for j in range(batch_size)]
+        
+        signals_to_plot.append(row_signals)
+        labels_to_plot.append(row_labels)
+        
+        y_labels_list = state_meta.get("ylabel", [])
+        row_ylabel = y_labels_list[i] if isinstance(y_labels_list, list) and i < len(y_labels_list) else f"State {i+1}"
+        ylabels_to_plot.append(row_ylabel)
+
+    plot_stacked(
+        t=time_axis,
+        signals=signals_to_plot,
+        labels=labels_to_plot,
+        xlabel=rf"$t \; / \; \mathrm{{s}}$",
+        ylabel=ylabels_to_plot,
+        asp=[0.33] * len(signals_to_plot),
+        dirname=dirname,
+        filename="batch_summary_states_stacked.png",
+        show=True
+    )
+
+    # --- METRICS COMPILATION ---
+    tracking_metrics = {}
+    for i in range(input_dim):
+        y_traj = y_np[:, :, i]  # Shape: [steps, batch_size]
+        r_traj = r_np[:, i]     # Shape: [steps]
+        metrics = compute_and_save_tracking_metrics(y_traj, r_traj, dt, dirname, suffix=f"y_{i+1}")
+        tracking_metrics[f"y_{i+1}"] = metrics
+
+    return {
+        "trajectory_dataframes": trajectory_reports,
+        "metrics": tracking_metrics,
+        "simulated_outputs": y_np,
+        "simulated_controls": all_u.cpu().numpy()
+    }
 
 # 🌟 ADD THIS WRAPPER CLASS OUTSIDE / BEFORE THE FUNCTION 🌟
 class TorchDiffeqPlantWrapper(nn.Module):

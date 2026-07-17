@@ -22,7 +22,8 @@ def plot_signals(
     save_path=None,
     show=False,
     filename=None,
-    dirname=None
+    dirname=None,
+    asp=1.0
 ):
     """
     Generic plotting function for time-series or x-y signals.
@@ -63,7 +64,8 @@ def plot_signals(
     # Standardize scale boundaries to maintain geometric proportions
     x_range = np.diff(ax.get_xlim())[0]
     y_range = np.diff(ax.get_ylim())[0]
-    ax.set_aspect(x_range / y_range)
+    range_ratio = x_range / y_range
+    ax.set_aspect(asp * range_ratio)
 
     # Apply axis descriptors and grid annotations
     ax.set_xlabel(xlabel)
@@ -100,6 +102,98 @@ def plot_signals(
 
 
 
+def plot_stacked(
+    t,
+    signals,
+    labels=None,         
+    title=None,
+    xlabel="Time",
+    ylabel="Value",         
+    save_path=None,
+    show=False,
+    filename=None,
+    dirname=None,
+    asp=0.33,            # Can be a single float (applied to all) or a list/tuple
+    hspace=0.05          
+):
+    """
+    Generic plotting function that stacks various subplots on top of each other.
+    """
+    num_subplots = len(signals)
+    
+    fig, axes = plt.subplots(
+        nrows=num_subplots, 
+        ncols=1, 
+        sharex=True
+    )
+    
+    if num_subplots == 1:
+        axes = [axes]
+
+    fig.subplots_adjust(hspace=hspace)
+
+    # Iterate and render each subplot row
+    for i, sig_group in enumerate(signals):
+        ax = axes[i]
+        
+        is_multi = isinstance(sig_group, (list, tuple)) and not isinstance(sig_group[0], (int, float))
+        curves = sig_group if is_multi else [sig_group]
+        row_labels = labels[i] if labels is not None else None
+        
+        if row_labels is not None:
+            if not isinstance(row_labels, (list, tuple)):
+                row_labels = [row_labels]
+        
+        for j, sig in enumerate(curves):
+            lbl = row_labels[j] if row_labels is not None and j < len(row_labels) else None
+            ax.plot(t, sig, label=lbl)
+            
+        if row_labels is not None and any(lbl is not None for lbl in row_labels):
+            ax.legend(loc="upper right")
+
+        # === ADJUSTABLE ASPECT RATIO === #
+        if isinstance(asp, (list, tuple)) and len(asp) == num_subplots:
+            current_asp = asp[i]
+        else:
+            current_asp = asp if isinstance(asp, (int, float)) else 0.33
+
+        x_range = np.diff(ax.get_xlim())[0]
+        y_range = np.diff(ax.get_ylim())[0]
+        if y_range > 0:  
+            range_ratio = x_range / y_range
+            ax.set_aspect(current_asp * range_ratio)
+
+        # Handle y-axis labels
+        if isinstance(ylabel, list) and len(ylabel) == num_subplots:
+            ax.set_ylabel(ylabel[i])
+        else:
+            ax.set_ylabel(ylabel if isinstance(ylabel, str) else f"Signal {i+1}")
+
+        if hspace < 0.15 and i < num_subplots - 1:
+            ax.label_outer()
+
+    axes[-1].set_xlabel(xlabel)
+
+    if title:
+        axes[0].set_title(title)
+
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", pad_inches=0.05)
+
+    if show:
+        plt.show()
+
+    buf = BytesIO()
+    fig.savefig(buf, format="PNG", dpi=600, bbox_inches="tight")
+    buf.seek(0)
+    plt.close(fig)
+
+    image = Image.open(buf)
+    if 'save_plot_image' in globals():
+        save_plot_image(image=image, filename=filename, dirname=dirname)
+        
+    return image
+    
 
 from io import BytesIO
 import numpy as np
@@ -149,7 +243,7 @@ def plot_heatmap(
         matrix = matrix.cpu().numpy()
 
     # Create figure and axis
-    fig, ax = plt.subplots(figsize=figsize, layout="constrained")
+    fig, ax = plt.subplots(figsize=figsize)
 
     # Plot heatmap
     im = ax.imshow(matrix, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)

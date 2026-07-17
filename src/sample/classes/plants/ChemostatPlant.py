@@ -63,19 +63,19 @@ class ChemostatPlant:
         return [
             {
                 "cols": ["x1", "x2"],
-                "labels": ["Biomass (X)", "Substrate (S)"],
+                "labels": [r"$X$ / $\mathrm{g}\,\mathrm{L}^{-1}$", r"$S$ / $\mathrm{g}\,\mathrm{L}^{-1}$"],
                 "title": "Chemostat State Evolution",
                 "ylabel": "Concentration [g/L]"
             },
             {
-                "cols": ["y", "r"],
-                "labels": ["Actual μ", "Target μ_ref"],
+                "cols": ["y"],
+                "labels": [r"$\mu/\mathrm{h}^{-1}$"],
                 "title": "Growth Rate Inverse Learning",
                 "ylabel": "Growth Rate [1/h]"
             },
             {
                 "cols": ["u"],
-                "labels": ["Dilution Rate (D)"],
+                "labels": [r"$D / \mathrm{L}\,\mathrm{h}^{-1}$"],
                 "title": "Control Input (D)",
                 "ylabel": "Dilution Rate [1/h]"
             }
@@ -86,3 +86,65 @@ class ChemostatPlant:
             "biomass": state[0].item() if torch.is_tensor(state) else state[0],
             "substrate": state[1].item() if torch.is_tensor(state) else state[1]
         }
+
+
+
+hyperparam_config_ChemostatPlant = {
+    "plant" :{
+        "mu-max": 0.5,      # Maximum growth rate [1/h]
+        "Ks": 0.2,          # Half-saturation constant 
+        "Y": 0.6,           # Yield coefficient
+        "sR": 1.0,
+
+        "u_1_D_center_min": 0.15,
+        "u_1_D_center_max": 0.8,
+
+        "u_1_hard_min": 0.0,
+        "u_1_hard_max": 1,
+
+        "x_1_hard_min" : 0,
+        "x_2_hard_min" : None,
+
+        "x_1_hard_min" : 0,
+        "x_2_hard_min" : None,
+
+        "y_1_hard_min": 0,
+        "y_1_hard_max": 0.5,
+
+        "input_dim": 1,   # number of plant outputs
+        "output_dim": 1   # number of plant control inputs
+
+    },
+    "signal": {
+        "lambd": 15,
+        "p": 0.15,
+        "seq_len": 1001,
+        "dt": 0.1
+    },
+    "train": {
+        "k_folds": 5,
+        "epochs": 100,
+        "batch_size": 10000,
+        "lr": 1e-3,
+        "device": "cuda", # if torch.cuda.is_available() else "cpu",
+        "delay_steps": 1,
+        "loss_function": "MSELoss()", 
+        "lr_decay_rate":1,
+        "min_correlation_threshold": 0.7
+    },
+    "mamba": {
+        "d_state": 16,
+        "expand": 32
+    },
+
+    "esn": {
+        "units": 200,   
+        "lr": 0.5,
+        "sr": 0.9,
+        "ridge": 1e-7,    # Regularization coefficient  
+    },
+    "simulate": {
+        "batch_size": 10,
+        "seq_len": 401,
+    }
+}

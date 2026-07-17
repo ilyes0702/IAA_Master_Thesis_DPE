@@ -86,35 +86,76 @@ class IdiophasePlant:
 
     def step(self, state, u, t, dt):
         """
-        MIMO Runge-Kutta 4th Order numerical integration execution block.
+        MIMO Dormand-Prince (RK54) 5th-order numerical integration execution block.
         """
+        # Unpack state dimensions
         x1, x2, x3, x4 = state[:, 0:1], state[:, 1:2], state[:, 2:3], state[:, 3:4]
-        
-        # k1
+
+        # --- STAGE 1 (k1) ---
         dx1_1, dx2_1, dx3_1, dx4_1 = self.dynamics(x1, x2, x3, x4, u, t)
-        
-        # k2
+
+        # --- STAGE 2 (k2) ---
+        c2 = 1.0 / 5.0
         dx1_2, dx2_2, dx3_2, dx4_2 = self.dynamics(
-            x1 + 0.5 * dt * dx1_1, x2 + 0.5 * dt * dx2_1, 
-            x3 + 0.5 * dt * dx3_1, x4 + 0.5 * dt * dx4_1, u, t + 0.5 * dt
+            x1 + dt * (1.0/5.0) * dx1_1,
+            x2 + dt * (1.0/5.0) * dx2_1,
+            x3 + dt * (1.0/5.0) * dx3_1,
+            x4 + dt * (1.0/5.0) * dx4_1,
+            u, t + c2 * dt
         )
-        
-        # k3
+
+        # --- STAGE 3 (k3) ---
+        c3 = 3.0 / 10.0
         dx1_3, dx2_3, dx3_3, dx4_3 = self.dynamics(
-            x1 + 0.5 * dt * dx1_2, x2 + 0.5 * dt * dx2_2, 
-            x3 + 0.5 * dt * dx3_2, x4 + 0.5 * dt * dx4_2, u, t + 0.5 * dt
+            x1 + dt * ((3.0/40.0) * dx1_1 + (9.0/40.0) * dx2_2),
+            x2 + dt * ((3.0/40.0) * dx2_1 + (9.0/40.0) * dx2_2),
+            x3 + dt * ((3.0/40.0) * dx3_1 + (9.0/40.0) * dx3_2),
+            x4 + dt * ((3.0/40.0) * dx4_1 + (9.0/40.0) * dx4_2),
+            u, t + c3 * dt
         )
-        
-        # k4
+
+        # --- STAGE 4 (k4) ---
+        c4 = 4.5 / 5.0  # 4/5
         dx1_4, dx2_4, dx3_4, dx4_4 = self.dynamics(
-            x1 + dt * dx1_3, x2 + dt * dx2_3, 
-            x3 + dt * dx3_3, x4 + dt * dx4_3, u, t + dt
+            x1 + dt * ((32.0/9.0) * dx1_1 - (84.0/9.0) * dx1_2 + (35.0/9.0) * dx1_3),
+            x2 + dt * ((32.0/9.0) * dx2_1 - (84.0/9.0) * dx2_2 + (35.0/9.0) * dx2_3),
+            x3 + dt * ((32.0/9.0) * dx3_1 - (84.0/9.0) * dx3_2 + (35.0/9.0) * dx3_3),
+            x4 + dt * ((32.0/9.0) * dx4_1 - (84.0/9.0) * dx4_2 + (35.0/9.0) * dx4_3), # Fixed dx4_4 -> dx4_3 here
+            u, t + c4 * dt
         )
-        
-        x1_next = x1 + (dt / 6.0) * (dx1_1 + 2 * dx1_2 + 2 * dx1_3 + dx1_4)
-        x2_next = x2 + (dt / 6.0) * (dx2_1 + 2 * dx2_2 + 2 * dx2_3 + dx2_4)
-        x3_next = x3 + (dt / 6.0) * (dx3_1 + 2 * dx3_2 + 2 * dx3_3 + dx3_4)
-        x4_next = x4 + (dt / 6.0) * (dx4_1 + 2 * dx4_2 + 2 * dx4_3 + dx4_4)
+
+        # --- STAGE 5 (k5) ---
+        c5 = 8.0 / 9.0
+        dx1_5, dx2_5, dx3_5, dx4_5 = self.dynamics(
+            x1 + dt * ((19372.0/6561.0) * dx1_1 - (25360.0/2187.0) * dx1_2 + (64448.0/6561.0) * dx1_3 - (212.0/729.0) * dx1_4),
+            x2 + dt * ((19372.0/6561.0) * dx2_1 - (25360.0/2187.0) * dx2_2 + (64448.0/6561.0) * dx2_3 - (212.0/729.0) * dx2_4),
+            x3 + dt * ((19372.0/6561.0) * dx3_1 - (25360.0/2187.0) * dx3_2 + (64448.0/6561.0) * dx3_3 - (212.0/729.0) * dx3_4),
+            x4 + dt * ((19372.0/6561.0) * dx4_1 - (25360.0/2187.0) * dx4_2 + (64448.0/6561.0) * dx4_3 - (212.0/729.0) * dx4_4),
+            u, t + c5 * dt
+        )
+
+        # --- STAGE 6 (k6) ---
+        c6 = 1.0
+        dx1_6, dx2_6, dx3_6, dx4_6 = self.dynamics(
+            x1 + dt * ((9017.0/3168.0) * dx1_1 - (355.0/33.0) * dx1_2 + (46732.0/5247.0) * dx1_3 + (49.0/176.0) * dx1_4 - (5103.0/18656.0) * dx1_5),
+            x2 + dt * ((9017.0/3168.0) * dx2_1 - (355.0/33.0) * dx2_2 + (46732.0/5247.0) * dx2_3 + (49.0/176.0) * dx2_4 - (5103.0/18656.0) * dx2_5),
+            x3 + dt * ((9017.0/3168.0) * dx3_1 - (355.0/33.0) * dx3_2 + (46732.0/5247.0) * dx3_3 + (49.0/176.0) * dx3_4 - (5103.0/18656.0) * dx3_5),
+            x4 + dt * ((9017.0/3168.0) * dx4_1 - (355.0/33.0) * dx4_2 + (46732.0/5247.0) * dx4_3 + (49.0/176.0) * dx4_4 - (5103.0/18656.0) * dx4_5),
+            u, t + c6 * dt
+        )
+
+        # --- STAGE 7 (k7 / FSAL Stage) ---
+        # In Dormand-Prince, the 7th stage uses the 5th-order output weights as coefficients.
+        # We calculate the next step variables here directly to evaluate k7.
+        b1, b3, b4, b5, b6 = 35.0/384.0, 500.0/1113.0, 125.0/192.0, -2187.0/6784.0, 11.0/84.0
+
+        x1_next = x1 + dt * (b1 * dx1_1 + b3 * dx1_3 + b4 * dx1_4 + b5 * dx1_5 + b6 * dx1_6)
+        x2_next = x2 + dt * (b1 * dx2_1 + b3 * dx2_3 + b4 * dx2_4 + b5 * dx2_5 + b6 * dx2_6)
+        x3_next = x3 + dt * (b1 * dx3_1 + b3 * dx3_3 + b4 * dx3_4 + b5 * dx3_5 + b6 * dx3_6)
+        x4_next = x4 + dt * (b1 * dx4_1 + b3 * dx4_3 + b4 * dx4_4 + b5 * dx4_5 + b6 * dx4_6)
+
+        # (Optional) If you plan to implement adaptive step size error evaluation later:
+        # k7 evaluations (dx_7) are calculated by running dynamics at t + dt using state_next.
         
         state_next = torch.cat([x1_next, x2_next, x3_next, x4_next], dim=1)
         return state_next, self.get_y(state_next, t + dt)
@@ -122,34 +163,41 @@ class IdiophasePlant:
     def get_plot_config(self):
         return [
             {
-                "cols": ["x1", "x2"],
-                "labels": ["Biomass [mg] (x1)", "Substrate Mass (x2)"],
-                "title": "Biomass & Substrate Evolution",
-                "ylabel": "Mass [g or mg]"
+                "cols": ["x1", "x2", "x3", "x4"],
+                "labels": [
+                    r"$X$ / $\mathrm{mg}$", 
+                    r"$S$ / $\mathrm{g}$", 
+                    r"$M_{\mathrm{pre}}$ / $\mathrm{g}$", 
+                    r"$M_{\mathrm{pen}}$ / $\mathrm{g}$"
+                ],
+                "ylabel": [
+                    r"$X$ / $\mathrm{mg}$", 
+                    r"$S$ / $\mathrm{g}$", 
+                    r"$M_{\mathrm{pre}}$ / $\mathrm{g}$", 
+                    r"$M_{\mathrm{pen}}$ / $\mathrm{g}$"
+                ]
             },
             {
-                "cols": ["x3", "x4"],
-                "labels": ["Precursor Mass (x3)", "Penicillin Mass (x4)"],
-                "title": "Precursor & Product Yield",
-                "ylabel": "Mass [g or mg]"
-            },
-            {
-                "cols": ["y1", "r1"],
-                "labels": ["Actual μ", "Target μ*"],
-                "title": "MIMO Tracking Output 1: Growth Rate",
-                "ylabel": "Growth Rate [1/h]"
-            },
-            {
-                "cols": ["y2", "r2"],
-                "labels": ["Actual c3", "Target c3*"],
-                "title": "MIMO Tracking Output 2: Precursor Conc.",
-                "ylabel": "Concentration [g Pre/L]"
+                "cols": ["y1", "y2"],
+                "labels": [
+                    r"$\mu$ / $\mathrm{h}^{-1}$", 
+                    r"$c_{\mathrm{pre}}$ / $\mathrm{g}\,\mathrm{L}^{-1}$"
+                ],
+                "ylabel": [
+                    r"$\mu$ / $\mathrm{h}^{-1}$", 
+                    r"$c_{\mathrm{pre}}$ / $\mathrm{g}\,\mathrm{L}^{-1}$"
+                ]
             },
             {
                 "cols": ["u1", "u2"],
-                "labels": ["Glucose Feed (u1)", "Precursor Feed (u2)"],
-                "title": "MIMO Control Inputs Space",
-                "ylabel": "Flow Rates [l/h]"
+                "labels": [
+                    r"$F_{\mathrm{glu}}$ / $\mathrm{L}\,\mathrm{h}^{-1}$", 
+                    r"$F_{\mathrm{pre}}$ / $\mathrm{L}\,\mathrm{h}^{-1}$"
+                ],
+                "ylabel": [
+                    r"$F_{\mathrm{glu}}$ / $\mathrm{L}\,\mathrm{h}^{-1}$", 
+                    r"$F_{\mathrm{pre}}$ / $\mathrm{L}\,\mathrm{h}^{-1}$"
+                ]
             }
         ]
 
@@ -164,4 +212,90 @@ class IdiophasePlant:
 
 
 
-    
+hyperparam_config_IdiophasePlant = {
+        "signal": {
+            "seq_len": 2001,
+            "dt": 0.01,
+            #/ 🕹️ Channel 1 Signal Parameters (e.g., highly dynamic)
+            "u_1_lambd": 4,        
+            "u_1_p": 0.5,            
+            
+            #// 🕹️ Channel 2 Signal Parameters (e.g., highly filtered, slow moving)
+            "u_2_lambd": 4,        
+            "u_2_p": 0.5,
+        
+        },
+        "train": {
+            "batch_size": 100,
+            "device": "cuda",
+            "delay_steps": 10,
+            "epochs": 50,
+            "lr": 1e-3,
+            "loss_function": "MSELoss()",
+            "k_folds": 5,
+            "lr_decay_rate":1,
+            "min_correlation_threshold": -1.1,
+        },
+        "plant": {
+            "mu_max": 0.12,
+            "Ks": 50.0,
+            "p1": 0.00047,
+            "p2": 200000.0,
+            "p5": 0.9,
+            "p6": 100.0,
+            "p7": 0.04,
+            "q": 2000.0,
+            "mu_Pen": 3.0,
+            "V_idiophase": 170.0,
+            "m_S": 23,
+
+            "x10": 1500,
+            "x20": 2000,
+            "x30": 25,
+            "x40": 1600,
+
+            "x_1_hard_min": 0.0,
+            "x_1_hard_max": None,
+
+            "x_2_hard_min": 0.0,
+            "x_2_hard_max": None,
+
+            "x_3_hard_min": 0.0,
+            "x_3_hard_max": None,
+
+            "x_4_hard_min": 0.0,
+            "x_4_hard_max": None,
+            
+            "u_1_hard_min": 0.0,
+            "u_1_hard_max": 1.0,
+
+            "u_2_hard_min": 0.0,
+            "u_2_hard_max": 1.0,
+
+            "y_1_hard_min": 0.0,
+            "y_1_hard_max": 0.12,
+
+            "y_2_hard_min": 0.0,
+            "y_2_hard_max": None,
+
+            "u_1_D_center_min": 0.6,
+            "u_1_D_center_max": 0.9,
+
+            "u_2_D_center_min": 0.0,
+            "u_2_D_center_max": 0.5,
+
+            
+            "input_dim": 2,  # y1, y2
+            "output_dim": 2  # u1, u2
+        },
+        "mamba": {
+            "expand": 100,
+            "d_state": 16,
+            "input_dim": 2,  # y1, y2
+            "output_dim": 2  # u1, u2
+        },
+        "simulate": {
+            "batch_size": 10,
+            "seq_len": 2001,
+        }
+    }

@@ -184,28 +184,19 @@ class TrophophasePlant:
     def get_plot_config(self):
         return [
             {
-                "cols": ["x1"],
-                "labels": ["Biomass concentration"],
-                "title": "Biomass Accumulation",
-                "ylabel": "Concentration [g/l]"
+                "cols": ["x_1", "x_2"],
+                "labels": [r"$X$ / $\mathrm{g}\,\mathrm{L}^{-1}$", r"$S$ / $\mathrm{g}\,\mathrm{L}^{-1}$"],
+                "ylabel": [r"$X$ / $\mathrm{g}\,\mathrm{L}^{-1}$", r"$S$ / $\mathrm{g}\,\mathrm{L}^{-1}$"]
             },
             {
-                "cols": ["x2"],
-                "labels": ["Substrate concentration"],
-                "title": "Substrate Available",
-                "ylabel": "Concentration [mg/l]"
+                "cols": ["y"],
+                "labels": [r"$\mu$ / $\mathrm{h}^{-1}$"],
+                "ylabel": r"$\mu$ / $\mathrm{h}^{-1}$"
             },
             {
-                "cols": ["y", "r"],
-                "labels": ["Actual μ", "Target μ*"],
-                "title": "Growth Rate Trophophase Control",
-                "ylabel": "Growth Rate [1/h]"
-            },
-            {
-                "cols": ["u1"],
-                "labels": ["Glucose Feed Rate"],
-                "title": "Control Input Profile",
-                "ylabel": "Feed Rate [l/h]"
+                "cols": ["u"],
+                "labels": [r"$F$ / $\mathrm{L}\,\mathrm{h}^{-1}$"],
+                "ylabel": r"$F$ / $\mathrm{L}\,\mathrm{h}^{-1}$"
             }
         ]
 
@@ -214,3 +205,66 @@ class TrophophasePlant:
             "biomass_concentration": state[0].item() if torch.is_tensor(state) else state[0],
             "substrate_concentration": state[1].item() if torch.is_tensor(state) else state[1]
         }
+    
+
+hyperparam_config_TrophophasePlant = {
+    "plant" :{
+        "mu_max": 0.12,
+        "Ks": 50,
+        "m_S": 23.0, #0
+        "p1": 0.00047,
+        "p2": 200000.0,
+        
+        "u_1_D_center_min": 0.6,
+        "u_1_D_center_max": 0.9,
+
+        "u_1_hard_min": 0.0,
+        "u_1_hard_max": 1,
+
+        "x_1_hard_min": 0,
+        "x_1_hard_max": None,
+
+        "y_1_hard_min": 0,
+        "y_1_hard_max": 0.12,
+
+        "x10": 1500.0,   #wenn trainiert mit 1500 aber getesttet mit 1600, gute performnce
+        "x20": 2000.0,
+
+        "input_dim": 1,  # y
+        "output_dim": 1  # u
+
+        
+    },
+    "signal": {
+        "lambd": 4,
+        "p": 0.5,
+        "seq_len": 2001,
+        "dt": 0.01
+    },
+    "train": {
+        "k_folds": 5,
+        "epochs": 100,
+        "batch_size": 2000,
+        "lr": 1e-3,
+        "device": "cuda", # if torch.cuda.is_available() else "cpu",
+        "delay_steps": 1,
+        "loss_function": "MSELoss()", 
+        "lr_decay_rate":1,
+        "min_correlation_threshold": -1.1,
+        "constant_signal_probability": 0.0,
+        "n_u": 2,
+        "n_y": 2
+    },
+    "mamba": {
+        "expand": 16,
+        "d_state": 16,
+        "input_dim": 1,  # y
+        "output_dim": 1,  # u
+        "n_u": 2,
+        "n_y": 2
+    },
+    "simulate": {
+        "batch_size": 10,
+        "seq_len": 2001,
+    }
+}

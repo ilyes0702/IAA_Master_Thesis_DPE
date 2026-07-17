@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import pandas as pd
 from src.sample.utils.saving_utils import save_df_to_csv, save_training_dataset
-from src.sample.utils.plotting_utils import plot_signals
+from src.sample.utils.plotting_utils import plot_signals, plot_stacked
 
 
 def generate_signal_single(hyperparam_config, channel_idx=1):
@@ -109,219 +109,381 @@ def generate_signals(hyperparam_config):
     return u_buffer, D_center
 
 
-# def generate_signals_mix(hyperparam_config):
-#     """Generate independent MIMO control vectors mixing Canaday signals with constant signals."""
-#     train_cfg = hyperparam_config["train"]
-#     mamba_cfg = hyperparam_config["mamba"]
-#     sig_cfg = hyperparam_config["signal"]
+def generate_signals_mix(hyperparam_config):
+    """Generate independent MIMO control vectors mixing Canaday signals with constant signals."""
+    train_cfg = hyperparam_config["train"]
+    mamba_cfg = hyperparam_config["mamba"]
+    sig_cfg = hyperparam_config["signal"]
 
-#     batch_size = train_cfg["batch_size"]
-#     output_dim = mamba_cfg["output_dim"] 
-#     seq_len = int(sig_cfg["seq_len"])
+    batch_size = train_cfg["batch_size"]
+    output_dim = mamba_cfg["output_dim"] 
+    seq_len = int(sig_cfg["seq_len"])
     
-#     # Probability of a batch item being a constant signal (e.g., 0.3 = 30%)
-#     # Default to 0.0 if not specified in config to remain backward compatible
-#     constant_prob = train_cfg.get("constant_signal_probability", 0.3)
+    # Probability of a batch item being a constant signal (e.g., 0.3 = 30%)
+    # Default to 0.0 if not specified in config to remain backward compatible
+    constant_prob = train_cfg["constant_signal_probability"]
 
-#     u_buffer = []
-#     D_center_list = []
+    u_buffer = []
+    D_center_list = []
 
-#     for i in range(output_dim):
-#         # 1. Generate the standard baseline Canaday signal for the channel
-#         u_single, D_center = generate_signal_single(hyperparam_config, channel_idx=i+1)
+    for i in range(output_dim):
+        # 1. Generate the standard baseline Canaday signal for the channel
+        u_single, D_center = generate_signal_single(hyperparam_config, channel_idx=i+1)
         
-#         # u_single shape: [batch_size, seq_len]
-#         # 2. Determine which batch items will be replaced with constants
-#         # We perform this independently per channel or globally per batch element
-#         for b in range(batch_size):
-#             if np.random.rand() < constant_prob:
-#                 # Pick a random constant value within your physical input range
-#                 # For the Trophophase plant, u1 bounds are [0.0, 1.0]
-#                 u_min = hyperparam_config["plant"].get(f"u_{i+1}_min", 0.0)
-#                 u_max = hyperparam_config["plant"].get(f"u_{i+1}_max", 1.0)
+        # u_single shape: [batch_size, seq_len]
+        # 2. Determine which batch items will be replaced with constants
+        # We perform this independently per channel or globally per batch element
+        for b in range(batch_size):
+            if np.random.rand() < constant_prob:
+                # Pick a random constant value within your physical input range
+                # For the Trophophase plant, u1 bounds are [0.0, 1.0]
+                u_min = hyperparam_config["plant"].get(f"u_{i+1}_min", 0.0)
+                u_max = hyperparam_config["plant"].get(f"u_{i+1}_max", 1.0)
                 
-#                 # Sample a random continuous step value
-#                 constant_val = u_min + (u_max - u_min) * np.random.rand()
+                # Sample a random continuous step value
+                constant_val = u_min + (u_max - u_min) * np.random.rand()
                 
-#                 # Overwrite this specific batch sequence index with a flat line
-#                 u_single[b, :] = constant_val
+                # Overwrite this specific batch sequence index with a flat line
+                u_single[b, :] = constant_val
                 
-#                 # (Optional) If D_center tracking matters for the constant, zero it out or preserve it
-#                 D_center[b, :] = 0.0 
+                # (Optional) If D_center tracking matters for the constant, zero it out or preserve it
+                D_center[b, :] = 0.0 
 
-#         u_buffer.append(u_single.unsqueeze(-1))
-#         D_center_list.append(D_center)
+        u_buffer.append(u_single.unsqueeze(-1))
+        D_center_list.append(D_center)
 
-#     u_buffer = torch.cat(u_buffer, dim=-1)  # Shape: [batch_size, seq_len, output_dim]
-#     D_center = torch.stack(D_center_list, dim=-1) 
+    u_buffer = torch.cat(u_buffer, dim=-1)  # Shape: [batch_size, seq_len, output_dim]
+    D_center = torch.stack(D_center_list, dim=-1) 
 
-#     return u_buffer, D_center
-
+    return u_buffer, D_center
 
 def generate_training_batch(plant, hyperparam_config):
     """
-    Generate a clean MIMO training batch without any look-back delay tensors.
-    Slices perfectly to match only y_t and y_next. Also tracks and returns 
-    the raw plant continuous state history [x1, x2, x3, x4] for validation clipping.
-    """
-    sig_cfg = hyperparam_config["signal"]
-    train_cfg = hyperparam_config["train"]
-
-    seq_len = int(sig_cfg["seq_len"])
-    dt = sig_cfg["dt"]
-    batch_size = int(train_cfg["batch_size"])
-    delta_steps = int(train_cfg.get("delay_steps", 1)) # Step lookahead window length
-    device = train_cfg["device"]
-
-    # Initialize plant state
-    state = plant.get_initial_state(batch_size)
-
-    # Extend seq_len long enough to pull clean future states (y_next)
-    extended_config = copy.deepcopy(hyperparam_config)
-    extended_config["signal"]["seq_len"] = seq_len + delta_steps
-    u_buffer, D_center = generate_signals(extended_config)
-
-    raw_y_history = []
-    raw_u_history = []
-    raw_state_history = [] # 🛠️ NEW: Initialize state tracking history list
-
-    total_simulation_steps = seq_len + delta_steps
-    for t_idx in range(total_simulation_steps):
-        t = t_idx * dt
-        u_signal = u_buffer[:, t_idx, :]  # Shape: [batch_size, output_dim]
-        y_t = plant.get_y(state, t)       # Shape: [batch_size, input_dim]
-
-        raw_y_history.append(y_t)
-        raw_u_history.append(u_signal)
-        raw_state_history.append(state.clone()) # 🛠️ NEW: Store the current state tensor [batch_size, state_dim]
-
-        state, _ = plant.step(state, u_signal, t, dt)
-        state = state.detach()
-
-    # Slice out exact pairs without historical delay padding
-    all_y_t = raw_y_history[:seq_len]  
-    all_y_next = raw_y_history[delta_steps : seq_len + delta_steps]  
-    all_u = raw_u_history[:seq_len]  
+    Simulates the system and returns raw, continuous time-series arrays.
+    No sliding window or derivative slicing is performed here.
     
-    # 🛠️ NEW: Slice states matching your current time-step tracking window (0 to seq_len)
-    all_states = raw_state_history[:seq_len]
-
-    # Construct the training matrix tensors
-    # x_tensor shape: [batch_size, seq_len, input_dim * 2] (holding [y_t, y_next])
-    x_tensor = torch.cat([
-        torch.stack(all_y_t, dim=1),  
-        torch.stack(all_y_next, dim=1)
-    ], dim=-1).to(device)
-
-    # y_target shape: [batch_size, seq_len, output_dim]
-    y_target = torch.stack(all_u, dim=1).to(device)
-
-    # 🛠️ NEW: Stack states to output a clean [batch_size, seq_len, state_dim] tensor
-    state_tensor = torch.stack(all_states, dim=1).to(device)
-
-    # Return exactly 4 values to resolve the ValueError unpack crash
-    return x_tensor, y_target, D_center, state_tensor
-
-# now with derivatives
-
-def generate_training_batch_w_der(plant, hyperparam_config):
+    Returns:
+        - raw_u: [batch_size, seq_len, output_dim]
+        - raw_y: [batch_size, seq_len, input_dim]
+        - raw_states: [batch_size, seq_len, state_dim]
+        - D_center: [batch_size, output_dim]
     """
-    Generate a clean MIMO training batch including y, y_dot, and y_ddot.
-    Slices perfectly to match only steps from t to t+seq_len.
-    """
-    import copy
     sig_cfg = hyperparam_config["signal"]
     train_cfg = hyperparam_config["train"]
 
     seq_len = int(sig_cfg["seq_len"])
     dt = sig_cfg["dt"]
     batch_size = int(train_cfg["batch_size"])
-    delta_steps = int(train_cfg.get("delay_steps", 1)) # Step lookahead window length
     device = train_cfg["device"]
 
     # Initialize plant state
     state = plant.get_initial_state(batch_size)
 
-    # Extend seq_len long enough to pull clean future states (y_next)
-    extended_config = copy.deepcopy(hyperparam_config)
-    extended_config["signal"]["seq_len"] = seq_len + delta_steps
-    u_buffer, D_center = generate_signals(extended_config)
+    # Generate smooth input signals (u)
+    u_buffer, D_center = generate_signals(hyperparam_config)
 
     raw_y_history = []
-    raw_ydot_history = []   # 🛠️ NEW: Track y_dot
-    raw_yddot_history = []  # 🛠️ NEW: Track y_ddot
     raw_u_history = []
-    raw_state_history = [] 
+    raw_state_history = []
 
-    total_simulation_steps = seq_len + delta_steps
-    for t_idx in range(total_simulation_steps):
+    # Simulate step-by-step
+    for t_idx in range(seq_len):
         t = t_idx * dt
-        u_signal = u_buffer[:, t_idx, :]  # Shape: [batch_size, 1]
-        
-        # Calculate u_dot using a forward/backward difference from the buffer
-        if t_idx < total_simulation_steps - 1:
-            u_dot = (u_buffer[:, t_idx + 1, :] - u_signal) / dt
-        else:
-            u_dot = (u_signal - u_buffer[:, t_idx - 1, :]) / dt
+        u_signal = u_buffer[:, t_idx, :]  # [batch_size, output_dim]
+        y_t = plant.get_y(state, t)       # [batch_size, input_dim]
 
-        # 1. Compute current metrics
-        y_t = plant.get_y(state, t) 
-        y_dot_t = plant.get_y_dot(state, u_signal, t)
-        y_ddot_t = plant.get_y_ddot(state, u_signal, t, u1_dot=u_dot)
-
-        # 2. Append to histories
         raw_y_history.append(y_t)
-        raw_ydot_history.append(y_dot_t)
-        raw_yddot_history.append(y_ddot_t)
         raw_u_history.append(u_signal)
         raw_state_history.append(state.clone())
 
-        # 3. Transition system forward
         state, _ = plant.step(state, u_signal, t, dt)
         state = state.detach()
 
-    # Slice out exact pairs matching current vs future lookup windows
-    all_y_t = raw_y_history[:seq_len]  
-    all_y_next = raw_y_history[delta_steps : seq_len + delta_steps]  
-    
-    # 🛠️ NEW: Slice derivatives matching current window (0 to seq_len)
-    all_ydot = raw_ydot_history[:seq_len]
-    all_yddot = raw_yddot_history[:seq_len]
-    
-    all_u = raw_u_history[:seq_len]  
-    all_states = raw_state_history[:seq_len]
+    # Stack raw arrays along the time dimension (dim=1)
+    raw_u = torch.stack(raw_u_history, dim=1).to(device)       # [batch_size, seq_len, output_dim]
+    raw_y = torch.stack(raw_y_history, dim=1).to(device)       # [batch_size, seq_len, input_dim]
+    raw_states = torch.stack(raw_state_history, dim=1).to(device) # [batch_size, seq_len, state_dim]
 
-    # Stack components sequentially along the time dimension (dim=1)
-    y_t_stacked = torch.stack(all_y_t, dim=1)         # [batch_size, seq_len, 1]
-    y_next_stacked = torch.stack(all_y_next, dim=1)   # [batch_size, seq_len, 1]
-    ydot_stacked = torch.stack(all_ydot, dim=1)       # [batch_size, seq_len, 1]
-    yddot_stacked = torch.stack(all_yddot, dim=1)     # [batch_size, seq_len, 1]
+    return raw_u, raw_y, raw_states, D_center
 
-    # Construct the training matrix tensors
-    # New x_tensor shape: [batch_size, seq_len, 5] holding [y_t, y_next, y_dot, y_ddot]
-    x_tensor = torch.cat([
-        y_t_stacked,  
-        y_next_stacked
-    ], dim=-1).to(device)
 
-    # y_target shape: [batch_size, seq_len, output_dim]
-    # 🌟 UPDATED TARGETS: Concatenate u, y_dot, and y_ddot along the feature dimension
-    # New y_target shape: [batch_size, seq_len, output_dim + input_dim + input_dim]
-    y_target = torch.cat([
-        torch.stack(all_u, dim=1),
-        torch.stack(all_ydot, dim=1),
-        torch.stack(all_yddot, dim=1)
-    ], dim=-1).to(device)
 
-    # state_tensor shape: [batch_size, seq_len, state_dim]
-    state_tensor = torch.stack(all_states, dim=1).to(device)
 
-    return x_tensor, y_target, D_center, state_tensor
+
 
 # =====================================================================
 # 3. Clean Dataset Compilation and Disk Exporter
 # =====================================================================
+
 def generate_and_save_dataset(
+    plant,
+    hyperparam_config,
+    dirname,
+    show_plots=False,
+    save_logs=False
+):
+    """
+    Generates and saves a raw continuous MIMO dataset. 
+    Slicing, windowing, and target calculations are offloaded to training.
+    
+    Excludes any out-of-bounds curves from the final dataset.
+    """
+    sig_cfg = hyperparam_config["signal"]
+    train_cfg = hyperparam_config["train"]
+    plant_cfg = hyperparam_config["plant"]
+    device = train_cfg["device"]
+    dt = sig_cfg["dt"]
+    
+    input_dim = plant_cfg["input_dim"]   # e.g., (y1, y2)
+    output_dim = plant_cfg["output_dim"] # e.g., (u1, u2)
+    total_sequences = int(train_cfg["batch_size"])
+    
+    logs_dir = os.path.join(dirname, "dataset_logs")
+    plots_dir = os.path.join(dirname, "dataset_plots")
+
+    print(f"🚀 Running batch simulation for {total_sequences} sequences...")
+    
+    # 1. Fetch raw, un-sliced continuous histories from the simulation engine
+    u_raw, y_raw, state_raw, batch_d_centers = generate_training_batch(plant, hyperparam_config)
+
+    u_np = u_raw.cpu().numpy()          # Shape: [Total_Seqs, Seq_Len, output_dim]
+    y_np = y_raw.cpu().numpy()          # Shape: [Total_Seqs, Seq_Len, input_dim]
+    state_np = state_raw.cpu().numpy()  # Shape: [Total_Seqs, Seq_Len, state_dim]
+    batch_d_centers_np = batch_d_centers.cpu().numpy()  
+
+    violated_sequences_count = 0
+    valid_u_list, valid_y_list, valid_states_list, valid_dfs = [], [], [], []
+    per_sequence_correlations = []
+    valid_idx_counter = 0
+
+    # 2. Iterate through and validate each simulated sequence
+    for s_idx in range(total_sequences):
+        u = u_np[s_idx]             # [Seq_Len, output_dim]
+        y_t = y_np[s_idx]           # [Seq_Len, input_dim]
+        states = state_np[s_idx]     # [Seq_Len, state_dim]
+
+        seq_has_violation = False
+
+        # 📊 DYNAMIC OUTPUTS (y) BOUNDS CHECK
+        for i in range(input_dim):
+            single_seq_y = y_t[:, i]
+            h_min = plant_cfg.get(f"y_{i+1}_hard_min")
+            h_max = plant_cfg.get(f"y_{i+1}_hard_max")
+            
+            if h_min is not None and np.min(single_seq_y) < h_min:
+                print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] Output y_{i+1} dropped below limit! "
+                      f"Bound: {h_min}, Min Found: {np.min(single_seq_y):.4f}\033[0m")
+                seq_has_violation = True
+                
+            if h_max is not None and np.max(single_seq_y) > h_max:
+                print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] Output y_{i+1} exceeded limit! "
+                      f"Bound: {h_max}, Max Found: {np.max(single_seq_y):.4f}\033[0m")
+                seq_has_violation = True
+
+        # 🕹️ DYNAMIC CONTROL INPUTS (u) BOUNDS CHECK
+        for i in range(output_dim):
+            single_seq_u = u[:, i]
+            h_min = plant_cfg.get(f"f_u_{i+1}_hard_min") or plant_cfg.get(f"u_{i+1}_hard_min")
+            h_max = plant_cfg.get(f"f_u_{i+1}_hard_max") or plant_cfg.get(f"u_{i+1}_hard_max")
+            
+            if h_min is not None and np.min(single_seq_u) < h_min:
+                print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] Input u_{i+1} dropped below limit! "
+                      f"Bound: {h_min}, Min Found: {np.min(single_seq_u):.4f}\033[0m")
+                seq_has_violation = True
+                
+            if h_max is not None and np.max(single_seq_u) > h_max:
+                print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] Input u_{i+1} exceeded limit! "
+                      f"Bound: {h_max}, Max Found: {np.max(single_seq_u):.4f}\033[0m")
+                seq_has_violation = True
+
+        # 🛡️ DYNAMIC STATE VARIABLES HARD BOUNDS CHECK
+        state_dim = states.shape[-1] 
+        for i in range(state_dim):
+            single_state_seq = states[:, i]
+            x_min = plant_cfg.get(f"x_{i+1}_hard_min")
+            x_max = plant_cfg.get(f"x_{i+1}_hard_max")
+            
+            if x_min is not None and np.min(single_state_seq) < x_min:
+                print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] State variable x_{i+1} dropped below limit! "
+                      f"Bound: {x_min}, Min Found: {np.min(single_state_seq):.4f}\033[0m")
+                seq_has_violation = True
+                
+            if x_max is not None and np.max(single_state_seq) > x_max:
+                print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] State variable x_{i+1} exceeded limit! "
+                      f"Bound: {x_max}, Max Found: {np.max(single_state_seq):.4f}\033[0m")
+                seq_has_violation = True
+
+        # Rejection handling
+        if seq_has_violation:
+            violated_sequences_count += 1
+            print(f"\033[91m🛑 Excluding [Seq {s_idx}] from final dataset structures.\033[0m")
+            continue
+
+        # 📈 Calculate Pearson Correlation for filtering
+        seq_corr_metrics = {"sequence_index": valid_idx_counter}
+        drop_due_to_correlation = False
+        min_correlation_threshold = hyperparam_config["train"]["min_correlation_threshold"]
+        
+        for u_idx in range(output_dim):
+            single_u_curve = u[:, u_idx]
+            for y_idx in range(input_dim):
+                single_y_curve = y_t[:, y_idx]
+                
+                if np.std(single_u_curve) == 0 or np.std(single_y_curve) == 0:
+                    corr_val = 0.0
+                else:
+                    corr_val = np.corrcoef(single_u_curve, single_y_curve)[0, 1]
+                
+                if np.abs(corr_val) < min_correlation_threshold:
+                    drop_due_to_correlation = True
+                    print(f"\033[94mℹ️ INFO: [Seq {s_idx}] Rejected. Low correlation on u_{u_idx+1}──y_{y_idx+1} ({corr_val:+.4f})\033[0m")
+                
+                seq_corr_metrics[f"corr_u{u_idx+1}_y{y_idx+1}"] = corr_val
+
+        if drop_due_to_correlation:
+            violated_sequences_count += 1
+            print(f"\033[91m🛑 Excluding [Seq {s_idx}] due to weak u-y behavior mapping.\033[0m")
+            continue
+
+        # Save valid references to our clean tracking lists
+        valid_u_list.append(u_raw[s_idx])
+        valid_y_list.append(y_raw[s_idx])
+        valid_states_list.append(state_raw[s_idx])
+        per_sequence_correlations.append(seq_corr_metrics)
+
+        # Construct CSV log files dynamically
+        time_axis = np.arange(len(u)) * dt
+        columns, values = ["t"], [time_axis]
+
+        for i in range(input_dim):
+            columns.append(f"y_{i+1}")
+            values.append(y_t[:, i])
+        for i in range(output_dim):
+            columns.append(f"u_{i+1}")
+            values.append(u[:, i])
+        for i in range(state_dim):
+            columns.append(f"x_{i+1}")
+            values.append(states[:, i])
+
+        d_center = np.squeeze(batch_d_centers_np[s_idx])
+        for i in range(output_dim):
+            columns.append(f"D_center_u_{i+1}")
+            d_val = float(d_center[i]) if output_dim > 1 else float(d_center)
+            values.append(np.full(len(time_axis), d_val))
+
+        seq_df = pd.DataFrame({col: val for col, val in zip(columns, values)})
+        valid_dfs.append(seq_df)
+        
+        filename_base = f"sequence_{valid_idx_counter}.csv"
+        valid_idx_counter += 1
+        
+        if save_logs:
+            save_df_to_csv(seq_df, dirname=logs_dir, filename=filename_base)
+
+        if show_plots:
+            # Reuses your plotting routine using y_t as the base trajectory
+            plot_configs = plant.get_plot_config()
+            u_config = next((c for c in plot_configs if any(col.startswith("u") for col in c["cols"])), None)
+            y_config = next((c for c in plot_configs if any(col.startswith("y") for col in c["cols"])), None)
+                
+            signals_to_plot = []
+            labels_to_plot = []
+            ylabels_to_plot = []
+
+            for idx in range(u.shape[1]):
+                signals_to_plot.append(u[:, idx])
+                labels_to_plot.append([None])
+                ylabels_to_plot.append(u_config["labels"][idx] if u_config else rf"Input $u_{{{idx+1}}}$")
+
+            for idx in range(y_t.shape[1]):
+                signals_to_plot.append(y_t[:, idx])
+                labels_to_plot.append(["Output"])
+                ylabels_to_plot.append(y_config["labels"][idx] if y_config else rf"Output $y_{{{idx+1}}}$")
+
+            dynamic_asp = [0.33] * len(signals_to_plot)
+            plot_stacked(
+                t=time_axis,
+                signals=signals_to_plot,
+                labels=labels_to_plot,
+                xlabel=rf"$t \; / \; \mathrm{{h}}$",
+                ylabel=ylabels_to_plot,
+                asp=dynamic_asp,
+                dirname=plots_dir,
+                filename=f"{filename_base}_plot.png",
+                show=True
+            )
+            # =================================================================
+            # 3. SEPARATE STACKED PLOT FOR STATE VARIABLES (No legends needed)
+            # =================================================================
+            state_config = next((c for c in plot_configs if any(col.startswith("x") for col in c["cols"])), None)
+            
+            state_signals = []
+            state_labels = []
+            state_ylabels = []
+
+            num_states = states.shape[1]  
+            for idx in range(num_states):
+                state_signals.append(states[:, idx])
+                state_labels.append([None])  # Prevents redundant legend
+                
+                if state_config and idx < len(state_config["labels"]):
+                    state_ylabels.append(state_config["labels"][idx])
+                else:
+                    state_ylabels.append(rf"State $x_{{{idx+1}}}$")
+
+            state_asp = [0.33] * len(state_signals)
+            
+            plot_stacked(
+                t=time_axis,
+                signals=state_signals,
+                labels=state_labels,
+                xlabel=rf"$t \; / \; \mathrm{{h}}$",
+                ylabel=state_ylabels,
+                asp=state_asp,
+                dirname=plots_dir,
+                filename=f"{filename_base}_states_plot.png",
+                show=True
+            )
+
+    # 🚨 FINAL BOUNDS VIOLATION SUMMARY
+    violation_percentage = (violated_sequences_count / total_sequences) * 100
+    valid_sequences_count = total_sequences - violated_sequences_count
+
+    print("\n" + "="*60)
+    print("📊 BOUNDS CHECK SUMMARY REPORT (y, u, & all states)")
+    print(f"Total Raw Sequences Evaluated : {total_sequences}")
+    if violated_sequences_count > 0:
+        print(f"\033[91m\033[1m❌ Out-of-Bounds Curves Found : {violated_sequences_count} curves ({violation_percentage:.2f}%)\033[0m")
+        print(f"\033[32m\033[1m✓ Clean Saved Dataset Curves   : {valid_sequences_count} curves accepted\033[0m")
+    else:
+        print("\033[92m\033[1m   All generated curves are within the defined hard boundaries! (100% accepted)\033[0m")
+    print("="*60 + "\n")
+
+    if valid_sequences_count == 0:
+        print("\033[91m\033[1mCRITICAL ERROR: 100% of generated data curves violated bounds. No files exported.\033[0m")
+        return
+
+    # 3. Stack only validated raw tensors together 
+    final_u_tensor = torch.stack(valid_u_list, dim=0).to(device)
+    final_y_tensor = torch.stack(valid_y_list, dim=0).to(device)
+    final_state_tensor = torch.stack(valid_states_list, dim=0).to(device)
+    
+    # Save global stats
+    if per_sequence_correlations:
+        per_seq_df = pd.DataFrame(per_sequence_correlations)
+        save_df_to_csv(per_seq_df, dirname=dirname, filename="mimo_per_sequence_correlations.csv")
+
+    # Save to disk as a combined dictionary containing the continuous states
+    data_to_save = {
+        "u": final_u_tensor.cpu(),
+        "y": final_y_tensor.cpu(),
+        "states": final_state_tensor.cpu()
+    }
+    save_training_dataset(data_to_save, dirname=dirname)
+    
+    print(f"🎉 Raw continuous tracking MIMO dataset generated successfully ({valid_sequences_count} valid traces preserved).")
+
+def generate_and_save_dataset_marcia(
     plant,
     hyperparam_config,
     dirname,
@@ -393,7 +555,7 @@ def generate_and_save_dataset(
 
         # 🕹️ 2. DYNAMIC CONTROL INPUTS (u) BOUNDS CHECK
         for i in range(output_dim):
-            print(output_dim)
+            
             single_seq_u = u[:, i]
             h_min = plant_cfg.get(f"f_u_{i+1}_hard_min") or plant_cfg.get(f"u_{i+1}_hard_min")
             h_max = plant_cfg.get(f"f_u_{i+1}_hard_max") or plant_cfg.get(f"u_{i+1}_hard_max")
@@ -501,40 +663,91 @@ def generate_and_save_dataset(
             save_df_to_csv(seq_df, dirname=logs_dir, filename=filename_base)
 
         if show_plots:
-            signals_to_plot = []
-            labels_to_plot = []
-
-            for i in range(input_dim):
-                signals_to_plot.append(y_t[:, i])
-                labels_to_plot.append(f"y_{i+1}_t")
-            for i in range(input_dim):
-                signals_to_plot.append(y_next[:, i])
-                labels_to_plot.append(f"y_{i+1}_next")
-            for i in range(output_dim):
-                signals_to_plot.append(u[:, i])
-                labels_to_plot.append(f"u_{i+1}")
-            
-            # 📈 NEW: Build a concise correlation string for the title
+            # 📈 Build a concise correlation string for the title
             corr_strings = []
             for k, v in seq_corr_metrics.items():
                 if k != "sequence_index":
-                    # Shortens 'corr_u1_y1' to 'u1-y1'
                     short_label = k.replace("corr_", "").replace("_", "-")
                     corr_strings.append(f"{short_label}:{v:+.2f}")
-            
-            # Join them together, e.g., "[u1-y1:+0.84 | u1-y2:-0.12]"
             title_corr_suffix = "\n" + " | ".join(corr_strings)
 
-            plot_signals(
+            # Retrieve dynamic metadata from the active plant class
+            plot_configs = plant.get_plot_config()
+            
+            # Identify the specific sub-configs by checking if any column starts with 'u' or 'y'
+            # Identify the specific sub-configs by checking if any column starts with 'u' or 'y'
+            u_config = next((c for c in plot_configs if any(col.startswith("u") for col in c["cols"])), None)
+            y_config = next((c for c in plot_configs if any(col.startswith("y") for col in c["cols"])), None)
+            x_config = next((c for c in plot_configs if any(col.startswith("x") for col in c["cols"])), None)
+                
+            signals_to_plot = []
+            labels_to_plot = []
+            ylabels_to_plot = []
+
+            # 1. DYNAMIC INPUT SUBPLOTS (No legends needed)
+            num_inputs = u.shape[1]
+            for idx in range(num_inputs):
+                signals_to_plot.append(u[:, idx])
+                labels_to_plot.append([None])  # Prevents redundant legend
+                
+                if u_config and idx < len(u_config["labels"]):
+                    ylabels_to_plot.append(u_config["labels"][idx])
+                else:
+                    ylabels_to_plot.append(rf"Input $u_{{{idx+1}}}$")
+
+            # 2. DYNAMIC OUTPUT SUBPLOTS (Legends kept for overlapping signals)
+            num_outputs = y_t.shape[1]
+            for idx in range(num_outputs):
+                signals_to_plot.append([y_t[:, idx], y_next[:, idx]])
+                labels_to_plot.append(["Nominal output", "Future output"]) # Kept here
+                
+                if y_config and idx < len(y_config["labels"]):
+                    ylabels_to_plot.append(y_config["labels"][idx])
+                else:
+                    ylabels_to_plot.append(rf"Output $y_{{{idx+1}}}$")
+
+            # --- Generate Original Input/Output Plot ---
+            dynamic_asp = [0.33] * len(signals_to_plot)
+            plot_stacked(
                 t=time_axis,
                 signals=signals_to_plot,
                 labels=labels_to_plot,
-                xlabel="Time [h]",
-                ylabel="Signal Profile",
-                # 🎯 Updated Title to conditionally include the correlation values
-                title=f"MIMO Valid Sequence {valid_idx_counter-1} Profile{title_corr_suffix}",
+                xlabel=rf"$t \; / \; \mathrm{{h}}$",
+                ylabel=ylabels_to_plot,
+                asp=dynamic_asp,
                 dirname=plots_dir,
                 filename=f"{filename_base}_plot.png",
+                show=True
+            )
+
+            # =================================================================
+            # 3. SEPARATE STACKED PLOT FOR STATE VARIABLES (No legends needed)
+            # =================================================================
+            state_signals = []
+            state_labels = []
+            state_ylabels = []
+
+            num_states = states.shape[1]  
+            for idx in range(num_states):
+                state_signals.append(states[:, idx])
+                state_labels.append([None])  # Prevents redundant legend
+                
+                if x_config and idx < len(x_config["labels"]):
+                    state_ylabels.append(x_config["labels"][idx])
+                else:
+                    state_ylabels.append(rf"State $x_{{{idx+1}}}$")
+
+            state_asp = [0.33] * len(state_signals)
+            
+            plot_stacked(
+                t=time_axis,
+                signals=state_signals,
+                labels=state_labels,
+                xlabel=rf"$t \; / \; \mathrm{{h}}$",
+                ylabel=state_ylabels,
+                asp=state_asp,
+                dirname=plots_dir,
+                filename=f"{filename_base}_states_plot.png",
                 show=True
             )
 
@@ -606,7 +819,69 @@ def generate_and_save_dataset(
         "y": final_y_target.cpu()
     }
     save_training_dataset(data_to_save, dirname=dirname)
-    print("Shape x (y, y_next): ", final_x_tensor.shape)
-    print("Shape y (u): ", final_y_target.shape)
+    
     print(f"🎉 Clean tracking MIMO dataset generated successfully ({valid_sequences_count} valid traces preserved).")
 
+def generate_training_batch_marcia(plant, hyperparam_config):
+    """
+    Generate a clean MIMO training batch without any look-back delay tensors.
+    Slices perfectly to match only y_t and y_next. Also tracks and returns 
+    the raw plant continuous state history [x1, x2, x3, x4] for validation clipping.
+    """
+    sig_cfg = hyperparam_config["signal"]
+    train_cfg = hyperparam_config["train"]
+
+    seq_len = int(sig_cfg["seq_len"])
+    dt = sig_cfg["dt"]
+    batch_size = int(train_cfg["batch_size"])
+    delta_steps = int(train_cfg["delay_steps"]) # Step lookahead window length
+    device = train_cfg["device"]
+
+    # Initialize plant state
+    state = plant.get_initial_state(batch_size)
+
+    # Extend seq_len long enough to pull clean future states (y_next)
+    extended_config = copy.deepcopy(hyperparam_config)
+    extended_config["signal"]["seq_len"] = seq_len + delta_steps
+    u_buffer, D_center = generate_signals(extended_config)
+
+    raw_y_history = []
+    raw_u_history = []
+    raw_state_history = [] # 🛠️ NEW: Initialize state tracking history list
+
+    total_simulation_steps = seq_len + delta_steps
+    for t_idx in range(total_simulation_steps):
+        t = t_idx * dt
+        u_signal = u_buffer[:, t_idx, :]  # Shape: [batch_size, output_dim]
+        y_t = plant.get_y(state, t)       # Shape: [batch_size, input_dim]
+
+        raw_y_history.append(y_t)
+        raw_u_history.append(u_signal)
+        raw_state_history.append(state.clone()) # 🛠️ NEW: Store the current state tensor [batch_size, state_dim]
+
+        state, _ = plant.step(state, u_signal, t, dt)
+        state = state.detach()
+
+    # Slice out exact pairs without historical delay padding
+    all_y_t = raw_y_history[:seq_len]  
+    all_y_next = raw_y_history[delta_steps : seq_len + delta_steps]  
+    all_u = raw_u_history[:seq_len]  
+    
+    # 🛠️ NEW: Slice states matching your current time-step tracking window (0 to seq_len)
+    all_states = raw_state_history[:seq_len]
+
+    # Construct the training matrix tensors
+    # x_tensor shape: [batch_size, seq_len, input_dim * 2] (holding [y_t, y_next])
+    x_tensor = torch.cat([
+        torch.stack(all_y_t, dim=1),  
+        torch.stack(all_y_next, dim=1)
+    ], dim=-1).to(device)
+
+    # y_target shape: [batch_size, seq_len, output_dim]
+    y_target = torch.stack(all_u, dim=1).to(device)
+
+    # 🛠️ NEW: Stack states to output a clean [batch_size, seq_len, state_dim] tensor
+    state_tensor = torch.stack(all_states, dim=1).to(device)
+
+    # Return exactly 4 values to resolve the ValueError unpack crash
+    return x_tensor, y_target, D_center, state_tensor

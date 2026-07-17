@@ -1,6 +1,47 @@
 
 import torch
 
+
+import torch
+import torch.nn as nn
+
+class NormalizedRMSELoss(nn.Module):
+    def __init__(self, eps=1e-8, reduction='none'):
+        """
+        Normalized Root Mean Squared Error (NRMSE) Loss.
+        Computes the continuous-time integral loss approximation: sqrt(MSE / Var(y_true))
+        """
+        super().__init__()
+        self.eps = eps
+        self.reduction = reduction
+
+    def forward(self, y_pred, y_true):
+        # y_pred and y_true shapes: [Batch, Seq_Len, Dim]
+        
+        # 1. Compute element-wise squared error
+        squared_error = (y_true - y_pred) ** 2
+        
+        # 2. Compute Mean Squared Error (MSE) across the sequence dimension
+        # Keep dims to allow proper broadcasting if needed
+        mse = torch.mean(squared_error, dim=1, keepdim=True) # [Batch, 1, Dim]
+        
+        # 3. Compute variance of the true target signal along the sequence
+        # We add a small epsilon to prevent division by zero for flat targets
+        var_true = torch.var(y_true, dim=1, keepdim=True, unbiased=True) + self.eps # [Batch, 1, Dim]
+        
+        # 4. Compute the normalized loss per sequence and channel
+        loss = torch.sqrt(mse / var_true) # [Batch, 1, Dim]
+        
+        # Match dimensions to [Batch, Seq_Len, Dim] by broadcasting back across time steps
+        loss = loss.expand_as(y_true)
+        
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        return loss # returns 'none' (shape: [Batch, Seq_Len, Dim]) for channel-wise tracking
+    
+    
 #=== FUNCTION FOR BOUNDED RELATIVE LOSS ===#
 def bounded_relative_loss(pred, target, eps=1e-6):
     """

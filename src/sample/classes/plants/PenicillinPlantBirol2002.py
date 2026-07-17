@@ -149,3 +149,70 @@ class PenicillinPlantBirol2002:
                 "ylabel": "Specific Growth [1/h]"
             }
         ]
+    
+
+hyperparam_config_PenicillinPlantBirol2002 = {
+    "signal": {
+        "seq_len": 201,
+        "dt": 0.01,  # 0.1 hours (6 minutes) integration frequency
+        
+        # 🕹️ Control Input Channel 1: Substrate Feed Flow Rate (F)
+        "u_1_lambd": 15.0,        
+        "u_1_p": 0.1,            
+    },
+    "train": {
+        "batch_size": 100,
+        "device": "cuda",  # Leverages GPU for massive 10k batch parallelism
+        "delay_steps": 1,
+        "epochs": 50,
+        "lr": 1e-3,
+        "loss_function": "MSELoss()",
+        "k_folds": 5,
+        "lr_decay_rate": 1,
+    },
+    "plant": {
+        # --- Kinematics & Growth Parameters (From Paper Table 2) ---
+        "mu_x": 0.092,     # Maximum specific biomass growth rate (1/h)
+        "K_x": 0.15,       # Contois saturation constant for biomass substrate (g/g)
+        "mu_p": 0.005,     # Specific rate of penicillin production (1/h)
+        "K_p": 0.0002,     # Substrate inhibition constant for production (g/L)
+        "K_I": 0.10,       # High substrate concentration inhibition parameter (g/L)
+        "p_pow": 3.0,      # Yield equation exponential factor 'p'
+        "K_h": 0.04,       # Penicillin product hydrolysis decay constant (1/h)
+        
+        # --- Yield Coefficients & Operational Stream Values ---
+        "Y_xs": 0.45,      # Yield factor: grams of Biomass formed per gram of Glucose
+        "Y_ps": 0.90,      # Yield factor: grams of Penicillin formed per gram of Glucose
+        "m_x": 0.014,      # Maintenance coefficient requirement on substrate (1/h)
+        "s_f": 600.0,      # Highly concentrated feed substrate solution stream (g/L)
+        "F_loss": 2.5e-4,  # Constant evaporative volumetric loss rate (L/h) at 25°C
+        
+        # --- Physical Hard Operational Actuator / Tracker Constraints ---
+        # u1: Feed Flow Rate F (L/h)
+        "u_1_hard_min": 0.0,   # Valve fully closed
+        "u_1_hard_max": 2.0,   # Maximum physical volumetric pump capacity (L/h)
+        
+        # y1: Specific Growth Rate mu (1/h)
+        "y_1_hard_min": 0.0,
+        "y_1_hard_max": 0.15,  # Upper biological thermodynamic limit
+        
+        # y2: Penicillin Product Concentration P (g/L)
+        "y_2_hard_min": 0.0,
+        "y_2_hard_max": 40.0,  # Saturation limit before extreme viscosity degradation
+        
+        # --- Normal Operating Center Bounds for Initial Trajectory Exploration ---
+        # Dictates nominal operating flow bounds for steady fed-batch maintenance
+        "u_1_D_center_min": 0.04,  
+        "u_1_D_center_max": 0.06,  
+    },
+    "mamba": {
+        "d_model": 64,
+        "d_state": 16,
+        "input_dim": 2,   # Tracking inputs: [mu, P]
+        "output_dim": 1   # Control actions computed: [F]
+    },
+    "simulate": {
+        "batch_size": 10,
+        "seq_len": 351,
+    }
+}
