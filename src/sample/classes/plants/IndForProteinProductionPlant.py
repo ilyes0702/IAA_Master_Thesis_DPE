@@ -2,26 +2,28 @@ import torch
 
 class IndForProteinProductionPlant:
     def __init__(self, hyperparam_config):
+        self.hyperparam_config = hyperparam_config
         self.device = hyperparam_config["train"]["device"]
         self.dt = hyperparam_config["signal"]["dt"]
 
         # Constants and parameters from image description
         # (Ensure these keys are updated in your hyperparam dict as needed)
         self.mu_max = torch.tensor(hyperparam_config["plant"]["mu_max"], device=self.device)
-        self.K_CN = torch.tensor(hyperparam_config["plant"]["K_CN"], device=self.device)
-        self.K_s = torch.tensor(hyperparam_config["plant"]["K_s"], device=self.device)
         self.K_CI = torch.tensor(hyperparam_config["plant"]["K_CI"], device=self.device)
-
-        self.f_max_0 = torch.tensor(hyperparam_config["plant"]["f_max_0"], device=self.device)
+        self.k_22 = torch.tensor(hyperparam_config["plant"]["k_22"], device=self.device)
+        
+        self.K_s = torch.tensor(hyperparam_config["plant"]["K_s"], device=self.device)
         self.f_I_0 = torch.tensor(hyperparam_config["plant"]["f_I_0"], device=self.device)
-        self.K_I_param = torch.tensor(hyperparam_config["plant"]["K_I_param"], device=self.device)
-        
-        self.k11 = torch.tensor(hyperparam_config["plant"]["k11"], device=self.device)
+        self.C_n_f = torch.tensor(hyperparam_config["plant"]["C_n_f"], device=self.device)
+        self.Y = torch.tensor(hyperparam_config["plant"]["Y"], device=self.device)
+        self.K_CN = torch.tensor(hyperparam_config["plant"]["K_CN"], device=self.device)
+        self.k_11 = torch.tensor(hyperparam_config["plant"]["k_11"], device=self.device)
         self.K_IX = torch.tensor(hyperparam_config["plant"]["K_IX"], device=self.device)
+        self.f_max = torch.tensor(hyperparam_config["plant"]["f_max"], device=self.device)
         
-        self.N = torch.tensor(hyperparam_config["plant"]["N"], device=self.device)  # Feed nutrient conc.
-        self.I = torch.tensor(hyperparam_config["plant"]["I"], device=self.device)    # Feed inducer conc.
-        self.Y = torch.tensor(hyperparam_config["plant"]["Y"], device=self.device)    # Growth yield coeff.
+        self.K_I = torch.tensor(hyperparam_config["plant"]["K_I"], device=self.device)
+        self.C_i_f = torch.tensor(hyperparam_config["plant"]["C_i_f"], device=self.device)
+        
 
     def get_initial_state(self, batch_size):
         """
@@ -29,13 +31,14 @@ class IndForProteinProductionPlant:
         [x1 (Vol), x2 (X), x3 (N), x4 (P), x5 (Ind), x6 (Shock), x7 (Recovery)]
         """
         # Distribute state values randomly within realistic boundaries around nominal points
-        x1_init = 1.0 * torch.ones((batch_size, 1), device=self.device) # Nominal Vol = 1.0 L
-        x2_init = 0.1 * (0.95 + 0.10 * torch.rand((batch_size, 1), device=self.device))
-        x3_init = 5.0 * (0.95 + 0.10 * torch.rand((batch_size, 1), device=self.device))
-        x4_init = torch.zeros((batch_size, 1), device=self.device)
-        x5_init = torch.zeros((batch_size, 1), device=self.device)
-        x6_init = torch.ones((batch_size, 1), device=self.device)       # Shock factor starts at 1.0
-        x7_init = torch.zeros((batch_size, 1), device=self.device)      # Recovery starts clean
+        
+        x1_init = self.hyperparam_config["plant"]["x10"] * torch.ones((batch_size, 1), device=self.device)
+        x2_init = self.hyperparam_config["plant"]["x20"] * torch.ones((batch_size, 1), device=self.device)
+        x3_init = self.hyperparam_config["plant"]["x30"] * torch.ones((batch_size, 1), device=self.device)
+        x4_init = self.hyperparam_config["plant"]["x40"] * torch.ones((batch_size, 1), device=self.device)
+        x5_init = self.hyperparam_config["plant"]["x50"] * torch.ones((batch_size, 1), device=self.device)
+        x6_init = self.hyperparam_config["plant"]["x60"] * torch.ones((batch_size, 1), device=self.device)
+        x7_init = self.hyperparam_config["plant"]["x70"] * torch.ones((batch_size, 1), device=self.device)
 
         return torch.cat([x1_init, x2_init, x3_init, x4_init, x5_init, x6_init, x7_init], dim=1)
 
@@ -59,24 +62,25 @@ class IndForProteinProductionPlant:
         u1 = u[:, 0:1]
         u2 = u[:, 1:2]
         
+        R_R = self.K_CI/(self.K_CI+x5)
         # Intermediate kinetics (Eq 2, 3, 4)
         mu = (self.mu_max * x3 / (self.K_CN + x3 * (1.0 + x3 / self.K_s))) * \
-             (x6 + x7 * (self.K_CI / (self.K_CI + x5)))
+             (x6 + x7 * R_R)
              
-        R = (self.f_max_0 * x3 / (self.K_CN + x3 * (1.0 + x3 / self.K_s))) * \
-            ((self.f_I_0 + x5) / (self.K_I_param + x5))
+        R_f_p = (self.f_max * x3 / (self.K_CN + x3 * (1.0 + x3 / self.K_s))) * \
+            ((self.f_I_0 + x5) / (self.K_I + x5))
             
-        K1 = self.k11 * x5 / (self.K_IX + x5)
-        K2 = K1  # As stated: K1 = K2
+        k_1 = self.k_11 * x5 / (self.K_IX + x5)
+        k_2 = self.k_22 * x5 / (self.K_IX + x5)
 
         # Main Differential State Vector Mapping (Eq 1)
         dx1dt = u1 + u2
         dx2dt = x2 * mu - ((u1 + u2) / x1) * x2
-        dx3dt = (u1 * self.N / x1) - ((u1 + u2) / x1) * x3 - (mu / self.Y) * x2
-        dx4dt = x2 * R - ((u1 + u2) / x1) * x4
-        dx5dt = (u2 * self.I / x1) - ((u1 + u2) / x1) * x5
-        dx6dt = -K1 * x6
-        dx7dt = K2 * (1.0 - x7)
+        dx3dt = (u1 * self.C_n_f / x1) - ((u1 + u2) / x1) * x3 - (mu / self.Y) * x2
+        dx4dt = x2 * R_f_p - ((u1 + u2) / x1) * x4
+        dx5dt = (u2 * self.C_i_f / x1) - ((u1 + u2) / x1) * x5
+        dx6dt = -k_1 * x6
+        dx7dt = k_2 * (1.0 - x7)
 
         return dx1dt, dx2dt, dx3dt, dx4dt, dx5dt, dx6dt, dx7dt
 
@@ -153,23 +157,33 @@ class IndForProteinProductionPlant:
         """
         return [
             {
-                "cols": ["u"],
+                "cols": ["x_1", "x_2", "x_3", "x_4", "x_5", "x_6", "x_7"],
+                "labels": [r"$x_1 \; / \; \mathrm{{L}}$", r"$x_1 \; / \; \mathrm{{L}}$",r"$x_1 \; / \; \mathrm{{L}}$",r"$x_1 \; / \; \mathrm{{L}}$",r"$x_1 \; / \; \mathrm{{L}}$",r"$x_1 \; / \; \mathrm{{L}}$",r"$x_1 \; / \; \mathrm{{L}}$"],
+                "ylabel": [r"$x_1 \; / \; \mathrm{{L}}$", r"$x_1 \; / \; \mathrm{{L}}$",r"$x_1 \; / \; \mathrm{{L}}$",r"$x_1 \; / \; \mathrm{{L}}$",r"$x_1 \; / \; \mathrm{{L}}$",r"$x_1 \; / \; \mathrm{{L}}$",r"$x_1 \; / \; \mathrm{{L}}$"]
+            },
+            {
+                "cols": ["u_1", "u_2"],
                 "labels": [
                     rf"$u_1 \; / \; \mathrm{{L \cdot h^{{-1}}}}$", 
                     rf"$u_2 \; / \; \mathrm{{L \cdot h^{{-1}}}}$"
                 ],
-                "title": "Bioreactor Feeding Inflow Control Actions",
-                "ylabel": "Pump Flow Rates"
+                "ylabels": [
+                    rf"$u_1 \; / \; \mathrm{{L \cdot h^{{-1}}}}$", 
+                    rf"$u_2 \; / \; \mathrm{{L \cdot h^{{-1}}}}$"
+                ]
             },
             {
-                "cols": ["y"],
+                "cols": ["y_1", "y_2", "y_3"],
                 "labels": [
                     rf"$x_1 \; / \; \mathrm{{L}}$", 
                     rf"$x_2 \; / \; \mathrm{{g \cdot L^{{-1}}}}$", 
                     rf"$x_4 \; / \; \mathrm{{g \cdot L^{{-1}}}}$"
                 ],
-                "title": "Controlled Structural Profiles Tracking Evaluation",
-                "ylabel": "Regulated Outputs"
+                "ylabels": [
+                    rf"$x_1 \; / \; \mathrm{{L}}$", 
+                    rf"$x_2 \; / \; \mathrm{{g \cdot L^{{-1}}}}$", 
+                    rf"$x_4 \; / \; \mathrm{{g \cdot L^{{-1}}}}$"
+                ]
             }
         ]
 
@@ -189,28 +203,29 @@ hyperparam_config_IndForProteinProductionPlant = {
         # --- Kinematic & Yield Parameters (Lee & Ramirez Model) ---
         "mu_max": 0.407,       # Maximum specific growth rate [1/h]
         "K_CI": 0.22,         # Inducer inhibition/shock structural constant [g/L]
-        "k22": 0.09,          # Deactivation rate coefficient for protein shock [1/h]
-        "K_S": 14814.8,           # Substrate inhibition constant multiplier [g/L]
-        "f_IO": 0.0005,
+        "k_22": 0.09,          # Deactivation rate coefficient for protein shock [1/h]
+        "K_s": 14814.8,           # Substrate inhibition constant multiplier [g/L]
+        "f_I_0": 0.0005,
         "C_n_f": 100,
         "Y": 0.51,
 
 
+
         "K_CN": 0.108,          # Nitrogen/Nutrient saturation constant [g/L]
-        "k11": 0.09,          # Deactivation rate coefficient for growth shock [1/h]
+        "k_11": 0.09,          # Deactivation rate coefficient for growth shock [1/h]
         "K_IX": 0.034,          # Cell density impact factor on deactivation [g/L]
         
         "f_max": 0.095,     # Max specific foreign protein production rate [1/h]
-        "K_I_X": 0.034,     # Inducer activation affinity constant [g/L]   
+        "K_IX": 0.034,     # Inducer activation affinity constant [g/L]   
         
         "f_max": 0.095,
         "K_I": 0.022,
         "C_i_f": 4,        
         
         
-        "N": 100.0,           # Nutrient concentration in glucose feed stream [g/L]
-        "I": 4.0,             # Inducer concentration in activator feed stream [g/L]
-        "Y": 0.5,             # Biomass growth yield coefficient [g dry cells / g nutrient]
+        #"N": 100.0,           # Nutrient concentration in glucose feed stream [g/L]
+        #"I": 4.0,             # Inducer concentration in activator feed stream [g/L]
+        #"Y": 0.5,             # Biomass growth yield coefficient [g dry cells / g nutrient]
 
         # --- Actuator Flow Rate Bounds (2 Inputs: u_1 = Glucose Feed, u_2 = Inducer Feed) ---
         "u_1_hard_min": 0.0,       # Glucose pump fully off [L/h]
@@ -224,16 +239,24 @@ hyperparam_config_IndForProteinProductionPlant = {
         "u_2_D_center_max": 0.25,
 
         # --- State Trajectory Bounds (7 Dimensions) ---
-        "x_1_hard_min": 0.5,       # Minimum reactor heel volume to cover sensors [L]
-        "x_1_hard_max": 5.0,       # Total structural capacity of the tank vessel [L]
+        "x_1_hard_min": 0.0,       # Minimum reactor heel volume to cover sensors [L]
+        "x_1_hard_max": None,       # Total structural capacity of the tank vessel [L]
         "x_2_hard_min": 0.0,       # Biomass density floor [g/L]
         "x_3_hard_min": 0.0,       # Nutrient limitation floor [g/L]
         "x_4_hard_min": 0.0,       # Protein concentration floor [g/L]
         "x_5_hard_min": 0.0,       # Inducer concentration floor [g/L]
         "x_6_hard_min": 0.0,       # Shock factor boundary bounds
-        "x_6_hard_max": 1.0,
+        "x_6_hard_max": None,
         "x_7_hard_min": 0.0,       # Recovery factor bounds
-        "x_7_hard_max": 1.0,
+        "x_7_hard_max": None,
+
+        "x10": 1,
+        "x20": 0.1,
+        "x30": 40,
+        "x40": 0,
+        "x50": 0,
+        "x60": 1,
+        "x70": 0,
 
         # --- System Order Configurations ---
         "input_dim": 2,            # Dim(u) = [u1, u2]
@@ -243,27 +266,31 @@ hyperparam_config_IndForProteinProductionPlant = {
         "lambd": 10,               # Signal filtering/noise properties
         "p": 0.15,                 # Discontinuity probability factor
         "seq_len": 1501,           # Length of sequential time-series paths
-        "dt": 0.05                 # Timestep integration window [h] (50 ms steps)
+        "dt": 0.01                 # Timestep integration window [h] (50 ms steps)
     },
     "train": {
         "k_folds": 5,              # Cross-validation splits
         "epochs": 150,             # Total training iterations
-        "batch_size": 128,         # Number of batch elements
+        "batch_size": 1000,         # Number of batch elements
         "lr": 1e-3,                # Base optimization learning rate
         "device": "cuda",          # Core processing target execution context
         "delay_steps": 5,          # Latency control parameter markers
         "loss_function": "MSELoss()",
-        "lr_decay_rate": 0.98,     # Multiplicative factor per epoch decay
-        "min_correlation_threshold": 0.65
+        "lr_decay_rate": 1, # 0.98,     # Multiplicative factor per epoch decay
+        "min_correlation_threshold": -1.1,
+        "n_y": 2,
+        "n_u": 2,
+        "val_patience_epochs": 3,
+        "val_min_delta": 0.0001,
+        "lookback_offset": 10,
     },
     "mamba": {
         "d_state": 32,             # State expansion dimension space
-        "input_dim": 3,            # Mamba input maps to Plant Outputs (y_t Tracking)
-        "output_dim": 2,           # Mamba output maps to Plant Inputs (u_t Actions)
-        "expand": 64               # Core internal block expansion coefficient width
+        "expand": 1               # Core internal block expansion coefficient width
     },
     "simulate": {
         "batch_size": 16,          # Validation trajectory evaluation batch scale
         "seq_len": 3001            # Length of a full multi-day production run
     }
 }
+

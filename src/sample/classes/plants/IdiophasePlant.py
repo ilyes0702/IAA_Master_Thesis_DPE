@@ -86,78 +86,56 @@ class IdiophasePlant:
 
     def step(self, state, u, t, dt):
         """
-        MIMO Dormand-Prince (RK54) 5th-order numerical integration execution block.
+        MIMO Classic 4th-order Runge-Kutta (RK4) numerical integration block.
+        Designed for constant step size execution.
         """
         # Unpack state dimensions
         x1, x2, x3, x4 = state[:, 0:1], state[:, 1:2], state[:, 2:3], state[:, 3:4]
 
+        # Precompute half time step
+        dt_half = dt * 0.5
+
         # --- STAGE 1 (k1) ---
-        dx1_1, dx2_1, dx3_1, dx4_1 = self.dynamics(x1, x2, x3, x4, u, t)
+        dx1_1, dx2_1, dx3_1, dx4_1 = self.dynamics(
+            x1, x2, x3, x4, u, t
+        )
 
         # --- STAGE 2 (k2) ---
-        c2 = 1.0 / 5.0
         dx1_2, dx2_2, dx3_2, dx4_2 = self.dynamics(
-            x1 + dt * (1.0/5.0) * dx1_1,
-            x2 + dt * (1.0/5.0) * dx2_1,
-            x3 + dt * (1.0/5.0) * dx3_1,
-            x4 + dt * (1.0/5.0) * dx4_1,
-            u, t + c2 * dt
+            x1 + dt_half * dx1_1,
+            x2 + dt_half * dx2_1,
+            x3 + dt_half * dx3_1,
+            x4 + dt_half * dx4_1,
+            u, t + dt_half
         )
 
         # --- STAGE 3 (k3) ---
-        c3 = 3.0 / 10.0
         dx1_3, dx2_3, dx3_3, dx4_3 = self.dynamics(
-            x1 + dt * ((3.0/40.0) * dx1_1 + (9.0/40.0) * dx2_2),
-            x2 + dt * ((3.0/40.0) * dx2_1 + (9.0/40.0) * dx2_2),
-            x3 + dt * ((3.0/40.0) * dx3_1 + (9.0/40.0) * dx3_2),
-            x4 + dt * ((3.0/40.0) * dx4_1 + (9.0/40.0) * dx4_2),
-            u, t + c3 * dt
+            x1 + dt_half * dx1_2,
+            x2 + dt_half * dx2_2,
+            x3 + dt_half * dx3_2,
+            x4 + dt_half * dx4_2,
+            u, t + dt_half
         )
 
         # --- STAGE 4 (k4) ---
-        c4 = 4.5 / 5.0  # 4/5
         dx1_4, dx2_4, dx3_4, dx4_4 = self.dynamics(
-            x1 + dt * ((32.0/9.0) * dx1_1 - (84.0/9.0) * dx1_2 + (35.0/9.0) * dx1_3),
-            x2 + dt * ((32.0/9.0) * dx2_1 - (84.0/9.0) * dx2_2 + (35.0/9.0) * dx2_3),
-            x3 + dt * ((32.0/9.0) * dx3_1 - (84.0/9.0) * dx3_2 + (35.0/9.0) * dx3_3),
-            x4 + dt * ((32.0/9.0) * dx4_1 - (84.0/9.0) * dx4_2 + (35.0/9.0) * dx4_3), # Fixed dx4_4 -> dx4_3 here
-            u, t + c4 * dt
+            x1 + dt * dx1_3,
+            x2 + dt * dx2_3,
+            x3 + dt * dx3_3,
+            x4 + dt * dx4_3,
+            u, t + dt
         )
 
-        # --- STAGE 5 (k5) ---
-        c5 = 8.0 / 9.0
-        dx1_5, dx2_5, dx3_5, dx4_5 = self.dynamics(
-            x1 + dt * ((19372.0/6561.0) * dx1_1 - (25360.0/2187.0) * dx1_2 + (64448.0/6561.0) * dx1_3 - (212.0/729.0) * dx1_4),
-            x2 + dt * ((19372.0/6561.0) * dx2_1 - (25360.0/2187.0) * dx2_2 + (64448.0/6561.0) * dx2_3 - (212.0/729.0) * dx2_4),
-            x3 + dt * ((19372.0/6561.0) * dx3_1 - (25360.0/2187.0) * dx3_2 + (64448.0/6561.0) * dx3_3 - (212.0/729.0) * dx3_4),
-            x4 + dt * ((19372.0/6561.0) * dx4_1 - (25360.0/2187.0) * dx4_2 + (64448.0/6561.0) * dx4_3 - (212.0/729.0) * dx4_4),
-            u, t + c5 * dt
-        )
-
-        # --- STAGE 6 (k6) ---
-        c6 = 1.0
-        dx1_6, dx2_6, dx3_6, dx4_6 = self.dynamics(
-            x1 + dt * ((9017.0/3168.0) * dx1_1 - (355.0/33.0) * dx1_2 + (46732.0/5247.0) * dx1_3 + (49.0/176.0) * dx1_4 - (5103.0/18656.0) * dx1_5),
-            x2 + dt * ((9017.0/3168.0) * dx2_1 - (355.0/33.0) * dx2_2 + (46732.0/5247.0) * dx2_3 + (49.0/176.0) * dx2_4 - (5103.0/18656.0) * dx2_5),
-            x3 + dt * ((9017.0/3168.0) * dx3_1 - (355.0/33.0) * dx3_2 + (46732.0/5247.0) * dx3_3 + (49.0/176.0) * dx3_4 - (5103.0/18656.0) * dx3_5),
-            x4 + dt * ((9017.0/3168.0) * dx4_1 - (355.0/33.0) * dx4_2 + (46732.0/5247.0) * dx4_3 + (49.0/176.0) * dx4_4 - (5103.0/18656.0) * dx4_5),
-            u, t + c6 * dt
-        )
-
-        # --- STAGE 7 (k7 / FSAL Stage) ---
-        # In Dormand-Prince, the 7th stage uses the 5th-order output weights as coefficients.
-        # We calculate the next step variables here directly to evaluate k7.
-        b1, b3, b4, b5, b6 = 35.0/384.0, 500.0/1113.0, 125.0/192.0, -2187.0/6784.0, 11.0/84.0
-
-        x1_next = x1 + dt * (b1 * dx1_1 + b3 * dx1_3 + b4 * dx1_4 + b5 * dx1_5 + b6 * dx1_6)
-        x2_next = x2 + dt * (b1 * dx2_1 + b3 * dx2_3 + b4 * dx2_4 + b5 * dx2_5 + b6 * dx2_6)
-        x3_next = x3 + dt * (b1 * dx3_1 + b3 * dx3_3 + b4 * dx3_4 + b5 * dx3_5 + b6 * dx3_6)
-        x4_next = x4 + dt * (b1 * dx4_1 + b3 * dx4_3 + b4 * dx4_4 + b5 * dx4_5 + b6 * dx4_6)
-
-        # (Optional) If you plan to implement adaptive step size error evaluation later:
-        # k7 evaluations (dx_7) are calculated by running dynamics at t + dt using state_next.
+        # --- COMBINE STAGES ---
+        dt_6 = dt / 6.0
+        x1_next = x1 + dt_6 * (dx1_1 + 2.0 * dx1_2 + 2.0 * dx1_3 + dx1_4)
+        x2_next = x2 + dt_6 * (dx2_1 + 2.0 * dx2_2 + 2.0 * dx2_3 + dx2_4)
+        x3_next = x3 + dt_6 * (dx3_1 + 2.0 * dx3_2 + 2.0 * dx3_3 + dx3_4)
+        x4_next = x4 + dt_6 * (dx4_1 + 2.0 * dx4_2 + 2.0 * dx4_3 + dx4_4)
         
         state_next = torch.cat([x1_next, x2_next, x3_next, x4_next], dim=1)
+        
         return state_next, self.get_y(state_next, t + dt)
 
     def get_plot_config(self):
@@ -226,15 +204,20 @@ hyperparam_config_IdiophasePlant = {
         
         },
         "train": {
-            "batch_size": 100,
+            "batch_size": 1000,
             "device": "cuda",
-            "delay_steps": 10,
+            "delay_steps": 1,
             "epochs": 50,
             "lr": 1e-3,
             "loss_function": "MSELoss()",
             "k_folds": 5,
             "lr_decay_rate":1,
             "min_correlation_threshold": -1.1,
+            "n_y": 4,
+            "n_u": 2,
+            "lookback_offset": 100,
+            "val_patience_epochs": 3,
+            "val_min_delta": 0.00001
         },
         "plant": {
             "mu_max": 0.12,
@@ -289,10 +272,8 @@ hyperparam_config_IdiophasePlant = {
             "output_dim": 2  # u1, u2
         },
         "mamba": {
-            "expand": 100,
-            "d_state": 16,
-            "input_dim": 2,  # y1, y2
-            "output_dim": 2  # u1, u2
+            "expand": 1,
+            "d_state": 1,
         },
         "simulate": {
             "batch_size": 10,

@@ -35,19 +35,19 @@ def main():
     # run_description = get_run_description()
     # log_message(f"RUN DESCRIPTION: {run_description}")
 
-    hyperparam_config = hyperparam_config_TrophophasePlant   # Initialize the plant model using hyperparameters
-    plant = TrophophasePlant(hyperparam_config=hyperparam_config)
+    hyperparam_config = hyperparam_config_ChemostatPlant   # Initialize the plant model using hyperparameters
+    plant = ChemostatPlant(hyperparam_config=hyperparam_config)
 
-    controller_path = "models/2026-07-16/2026-07-16_15-56-24/TrophophasePlant_training/fold_1/2026-07-16_15-56-24_best_fold_model.pt"
+    controller_path = "models/2026-07-21/2026-07-21_13-05-50/ChemostatPlant_training/fold_1/2026-07-21_13-05-50_best_fold_model.pt"
     # Load the trained inverse controller
     loaded_controller = load_model(MambaInverseController, controller_path)
 
     scaler_x = load_scaler(
-        "results/2026-07-16/2026-07-16_15-56-24/TrophophasePlant_training/fold_1/scalers/2026-07-16_15-56-24_scaler_x.pkl"
+        "results/2026-07-21/2026-07-21_13-05-50/ChemostatPlant_training/fold_1/scalers/2026-07-21_13-05-50_scaler_x.pkl"
     )
 
     scaler_y = load_scaler(
-        "results/2026-07-16/2026-07-16_15-56-24/TrophophasePlant_training/fold_1/scalers/2026-07-16_15-56-24_scaler_y.pkl"
+        "results/2026-07-21/2026-07-21_13-05-50/ChemostatPlant_training/fold_1/scalers/2026-07-21_13-05-50_scaler_y.pkl"
         )
     
     # means_x = scaler_x.mean_
@@ -77,7 +77,7 @@ def main():
         dt=hyperparam_config["signal"]["dt"],
         device=hyperparam_config["train"]["device"],
         mode="constant",
-        constant_val=0.02,
+        constant_val=0.2,
     )
 
     r_static_y_2 = generate_reference_trajectory(

@@ -50,8 +50,9 @@ def create_inverse_controller_dataset(Y_trajectories, U_trajectories, n_y, n_u):
     if torch.is_tensor(U_trajectories):
         U_trajectories = U_trajectories.detach().cpu().numpy()
         
-    num_traces, total_seq_len, input_dim = Y_trajectories.shape
-    output_dim = U_trajectories.shape[-1]
+    # --- FIXED DIMENSION UNPACKING HERE ---
+    num_traces, total_seq_len, output_dim = Y_trajectories.shape
+    input_dim = U_trajectories.shape[-1]
     
     start_idx = max(n_y, n_u)
     end_idx = total_seq_len - 1
@@ -59,7 +60,7 @@ def create_inverse_controller_dataset(Y_trajectories, U_trajectories, n_y, n_u):
     
     # Calculate total feature dimension for verification
     # y_{k+1} (input_dim) + y_k...y_{k-n_y} (input_dim * (n_y + 1)) + u_{k-1}...u_{k-n_u} (output_dim * n_u)
-    feature_dim = input_dim + (input_dim * (n_y + 1)) + (output_dim * n_u)
+    feature_dim = n_u * input_dim + (n_y+2) * output_dim
     
     print(f"📦 Slicing {num_traces} traces. Window metrics:")
     print(f"   ↳ Clean Rollout Steps per Trace: {sliding_seq_len}")
@@ -70,27 +71,30 @@ def create_inverse_controller_dataset(Y_trajectories, U_trajectories, n_y, n_u):
     
     for t_idx in range(num_traces):
         y_trace = Y_trajectories[t_idx]  # Shape: [Total_Seq_Len, input_dim]
+        #print("y_trace.shape", y_trace.shape)
         u_trace = U_trajectories[t_idx]  # Shape: [Total_Seq_Len, output_dim]
-        
+        #print("u_trace.shape", u_trace.shape)
         trace_features = []
         trace_targets = []
         
         for k in range(start_idx, end_idx):
             # 1. Future target trajectory point: y_{k+1}
             y_next = y_trace[k + 1]
-            
+            #print("y_next: ", y_next.shape)
             # 2. Plant output history: [y_k, y_{k-1}, ..., y_{k-n_y}]
-            # We fetch from k down to k-n_y (inclusive), then flip to reverse chronological order
-            y_hist = y_trace[k - n_y : k + 1] 
-            y_hist_reversed = y_hist[::-1].flatten()
+            y_hist = y_trace[k - n_y : k + 1].flatten()
+            #print("y_hist: ", y_hist.shape) 
+            #y_hist_reversed = y_hist[::-1].flatten()
             
             # 3. Control input history: [u_{k-1}, u_{k-2}, ..., u_{k-n_u}]
-            # We fetch from k-n_u up to k-1, then flip to reverse chronological order
-            u_hist = u_trace[k - n_u : k]
-            u_hist_reversed = u_hist[::-1].flatten()
+            u_hist = u_trace[k - n_u : k].flatten()
+            #print("u_hist: ", u_hist.shape) 
+            #u_hist_reversed = u_hist[::-1].flatten()
             
             # Combine into a single feature row v_k
-            v_k = np.concatenate([y_next, y_hist_reversed, u_hist_reversed])
+            v_k = np.concatenate([y_next, y_hist, u_hist])
+
+            #print("v_k: ", v_k.shape)
             
             trace_features.append(v_k)
             trace_targets.append(u_trace[k])  # Target is the control action u_k
@@ -101,6 +105,8 @@ def create_inverse_controller_dataset(Y_trajectories, U_trajectories, n_y, n_u):
     # Stack back to 3D arrays matching your train_controller layout expectations
     X_raw = np.stack(X_list, axis=0)  # [Num_Traces, Sliding_Seq_Len, feature_dim]
     Y_raw = np.stack(Y_list, axis=0)  # [Num_Traces, Sliding_Seq_Len, output_dim]
+
+    print("X_raw shape after slicing:", X_raw.shape)
     
     return X_raw, Y_raw
 
@@ -126,7 +132,7 @@ def train_controller(
 
     n_y = train_cfg["n_y"]
     n_u = train_cfg["n_u"]
-    batch_size = 64
+    batch_size = 1
     val_patience = train_cfg["val_patience_epochs"]
     min_delta = train_cfg["val_min_delta"]
 
@@ -134,6 +140,9 @@ def train_controller(
     plant_cfg = hyperparam_config["plant"]
     input_dim = plant_cfg["input_dim"]
     output_dim = plant_cfg["output_dim"]
+
+    # Place this right before: for seq_idx in range(val_size):
+    sim_metrics_records = []
 
     # --- 1. GENERATE SLIDING WINDOW DATASET ---
     print(f"🔄 Slicing trajectories with sliding windows (n_y={n_y}, n_u={n_u})...")
@@ -265,7 +274,7 @@ def train_controller(
                 fold_train_batch_loss.append(current_loss_val)
                 fold_train_batch_indices.append(global_batch_counter)
 
-                for ch in range(output_dim):
+                for ch in range(input_dim):
                     ch_loss_val = raw_loss[:, :, ch].mean().item()
                     epoch_train_channel_accum[ch] += ch_loss_val * current_batch_size
                     fold_train_channel_batch_loss[ch].append(ch_loss_val)
@@ -297,7 +306,7 @@ def train_controller(
                     val_loss = raw_val_loss.mean()
                     epoch_val_loss_accum += val_loss.item() * current_val_batch_size
 
-                    for ch in range(output_dim):
+                    for ch in range(input_dim):
                         ch_val_loss_val = raw_val_loss[:, :, ch].mean().item()
                         epoch_val_channel_accum[ch] += ch_val_loss_val * current_val_batch_size
 
@@ -381,7 +390,7 @@ def train_controller(
         sample_pred_unscaled = scaler_y.inverse_transform(sample_pred_scaled)
         sample_true_unscaled = scaler_y.inverse_transform(sample_true_scaled)
 
-        for ch in range(output_dim):
+        for ch in range(input_dim):
             plot_signals(
                 t=t_axis_val,
                 signals=[sample_true_unscaled[:, ch], sample_pred_unscaled[:, ch]],
@@ -409,7 +418,7 @@ def train_controller(
 
                 total_trajectory_len = Y_trajectories.shape[1]
                 t_axis_full = np.arange(total_trajectory_len) * dt
-                lookback_offset = max(n_y, n_u)
+                lookback_offset = hyperparam_config["train"]["lookback_offset"] #max(n_y, n_u)
                 sliding_seq_len = total_trajectory_len - 1 - lookback_offset
 
                 # We must evaluate the model in eval mode
@@ -431,8 +440,8 @@ def train_controller(
 
                     # Pre-allocate tracking arrays for simulation
                     simulated_states = np.zeros((total_trajectory_len, state_dim))
-                    simulated_outputs = np.zeros((total_trajectory_len, input_dim))
-                    simulated_controls = np.zeros((total_trajectory_len, output_dim))
+                    simulated_outputs = np.zeros((total_trajectory_len, output_dim))
+                    simulated_controls = np.zeros((total_trajectory_len, input_dim))
 
                     # Step 0 Initialization
                     simulated_outputs[0] = target_y_trajectory[0].copy()
@@ -455,7 +464,7 @@ def train_controller(
                             # Step the plant using ground-truth actions to build up initial history
                             u_action_tensor = torch.tensor(u_action.reshape(1, -1), device=device, dtype=torch.float32)
                             current_sim_state, y_next_sim = plant_instance.step(
-                                state=current_sim_state, u1=u_action_tensor, t=k * dt, dt=dt
+                                state=current_sim_state, u=u_action_tensor, t=k * dt, dt=dt
                             )
                             
                             simulated_controls[k + 1] = u_action
@@ -503,7 +512,7 @@ def train_controller(
                             # Step the physical plant simulator using the predicted action!
                             u_action_tensor = torch.tensor(u_action.reshape(1, -1), device=device, dtype=torch.float32)
                             current_sim_state, y_next_sim = plant_instance.step(
-                                state=current_sim_state, u1=u_action_tensor, t=k * dt, dt=dt
+                                state=current_sim_state, u=u_action_tensor, t=k * dt, dt=dt
                             )
                             
                             # Log actual simulated consequences for the NEXT step (k+1)
@@ -515,6 +524,64 @@ def train_controller(
                     original_y = target_y_trajectory
                     original_u = target_u_trajectory
                     original_states = target_state_trajectory
+
+                    # --- TRACKING ERROR CALCULATIONS ---
+                    # Timestep-by-timestep squared error per output channel
+                    # Shape: (total_trajectory_len, output_dim)
+                    output_squared_error = (simulated_outputs - original_y) ** 2
+
+                    # Overall Mean Squared Error across the entire sequence
+                    seq_mse_total = float(np.mean(output_squared_error))
+
+                    # Per-channel Mean Squared Errors for this sequence
+                    seq_mse_per_channel = {
+                        f"MSE_y{out_idx+1}": float(np.mean(output_squared_error[:, out_idx]))
+                        for out_idx in range(output_dim)
+                    }
+
+                    # Record metrics for the summary file
+                    metrics_record = {
+                        "fold": fold + 1,
+                        "seq_idx": seq_idx,
+                        "val_traj_idx": int(val_traj_idx),
+                        "total_mse": seq_mse_total,
+                        **seq_mse_per_channel
+                    }
+                    sim_metrics_records.append(metrics_record)
+
+                    log_data = {"Time (s)": t_axis_full}
+
+                    # Logging Desired vs Simulated outputs + Per-timestep Squared Error
+                    for out_idx in range(output_dim):
+                        log_data[f"Desired_y{out_idx+1}"] = original_y[:, out_idx]
+                        log_data[f"Simulated_Output_y{out_idx+1}"] = simulated_outputs[:, out_idx]
+                        log_data[f"Squared_Error_y{out_idx+1}"] = output_squared_error[:, out_idx]
+
+                    for ch in range(input_dim):
+                        log_data[f"Actual_u{ch+1}"] = original_u[:, ch]
+                        log_data[f"Predicted_u{ch+1}_ClosedLoop"] = simulated_controls[:, ch]
+
+                    for st in range(state_dim):
+                        log_data[f"Simulated_State_x{st+1}"] = simulated_states[:, st]
+                        log_data[f"Original_State_x{st+1}"] = original_states[:, st]
+
+                    val_profile_df = pd.DataFrame(log_data)
+                    save_df_to_csv(
+                        val_profile_df,
+                        dirname=pred_curves_dir,
+                        filename=f"val_plant_simulation_fold_{fold+1}_seq_{seq_idx+1}"
+                    )
+                    # Place this immediately after the `for seq_idx in range(val_size):` loop finishes
+                    if sim_metrics_records:
+                        summary_df = pd.DataFrame(sim_metrics_records)
+                        save_df_to_csv(
+                            summary_df,
+                            dirname=pred_curves_dir,
+                            filename=f"val_closed_loop_mse_summary_fold_{fold+1}"
+                        )
+                        
+                        mean_fold_mse = summary_df["total_mse"].mean()
+                        print(f"📊 Fold {fold+1} Closed-Loop Mean MSE across validation set: {mean_fold_mse:.6f}")
                     # ---------------------------------------------------------
                     # PLOT AND LOG WRITING
                     # ---------------------------------------------------------
@@ -548,7 +615,7 @@ def train_controller(
                         io_labels = []
                         io_ylabels = []
 
-                        for ch in range(output_dim):
+                        for ch in range(input_dim):
                             io_signals.append([original_u[:, ch], simulated_controls[:, ch]])
                             io_labels.append(["Original", "Predicted (Closed Loop)"])
                             if u_config and ch < len(u_config["labels"]):
@@ -556,7 +623,7 @@ def train_controller(
                             else:
                                 io_ylabels.append(rf"Input $u_{{{ch+1}}}$")
 
-                        for out_idx in range(input_dim):
+                        for out_idx in range(output_dim):
                             io_signals.append([original_y[:, out_idx], simulated_outputs[:, out_idx]])
                             io_labels.append(["Desired", "Simulated"])
                             if y_config and out_idx < len(y_config["labels"]):
@@ -578,10 +645,10 @@ def train_controller(
                         )
 
                     log_data = {"Time (s)": t_axis_full}
-                    for out_idx in range(input_dim):
+                    for out_idx in range(output_dim):
                         log_data[f"Desired_y{out_idx+1}"] = original_y[:, out_idx]
                         log_data[f"Simulated_Output_y{out_idx+1}"] = simulated_outputs[:, out_idx]
-                    for ch in range(output_dim):
+                    for ch in range(input_dim):
                         log_data[f"Actual_u{ch+1}"] = original_u[:, ch]
                         log_data[f"Predicted_u{ch+1}_ClosedLoop"] = simulated_controls[:, ch]
                     for st in range(state_dim):
@@ -594,8 +661,15 @@ def train_controller(
                         dirname=pred_curves_dir,
                         filename=f"val_plant_simulation_fold_{fold+1}_seq_{seq_idx+1}"
                     )
+    # Calculate average best validation loss across all folds
+    all_best_val_losses = []
+    for fold_id in fold_histories:
+        best_loss_in_fold = min(fold_histories[fold_id]["val_loss"])
+        all_best_val_losses.append(best_loss_in_fold)
+        
+    mean_cv_loss = float(np.mean(all_best_val_losses))
 
-    return fold_histories
+    return fold_histories, mean_cv_loss
 
 def train_controller_marcia(
     model,

@@ -2669,8 +2669,8 @@ def simulate_tracking_stateful(
     dt = sig_cfg["dt"]
     batch_size = sim_cfg["batch_size"]
     device = train_cfg["device"]
-    input_dim = mamba_cfg["input_dim"]    # Number of plant outputs (y1, y2, ...)
-    output_dim = mamba_cfg["output_dim"]  # Number of control inputs (u1, u2, ...)
+    input_dim = plant_cfg["input_dim"]    # Number of plant outputs (y1, y2, ...)
+    output_dim = plant_cfg["output_dim"]  # Number of control inputs (u1, u2, ...)
 
     # 🌟 1. HANDLE PLANT INSTANTIATION (Class vs. Instance)
     if isinstance(plant, type):
@@ -2709,8 +2709,8 @@ def simulate_tracking_stateful(
     model.reset_memory(batch_size=batch_size, device=device)
 
     # INITIALIZE SLIDING WINDOW RUNNING BUFFERS FOR THE BATCH
-    n_y = mamba_cfg["n_y"]
-    n_u = mamba_cfg["n_u"]
+    n_y = train_cfg["n_y"]
+    n_u = train_cfg["n_u"]
 
     # 🌟 Calculate the physical lookback threshold
     # Since we need (n_y + 1) past outputs and n_u past controls:
@@ -2783,7 +2783,7 @@ def simulate_tracking_stateful(
 
             # Step the physical plant forward
             if output_dim == 1:
-                state, _ = plant_instance.step(state=state, u1=u[:, 0:1], t=t, dt=dt)
+                state, _ = plant_instance.step(state=state, u=u[:, 0:1], t=t, dt=dt)
             else:
                 try:
                     state, _ = plant_instance.step(state=state, u=u, t=t, dt=dt)

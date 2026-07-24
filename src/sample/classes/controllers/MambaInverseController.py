@@ -22,8 +22,8 @@ class MambaInverseController(nn.Module):
         super().__init__()
         
         # 1. Extract dynamic MIMO dimensions
-        self.input_dim = hyperparam_config["mamba"]["input_dim"]   # Dimension of plant output y (e.g. 2)
-        self.output_dim = hyperparam_config["mamba"]["output_dim"] # Dimension of plant control u (e.g. 2)
+        self.input_dim = hyperparam_config["plant"]["input_dim"]   # Dimension of plant output y (e.g. 2)
+        self.output_dim = hyperparam_config["plant"]["output_dim"] # Dimension of plant control u (e.g. 2)
         self.d_state = hyperparam_config["mamba"]["d_state"]
         self.expand = hyperparam_config["mamba"]["expand"]
         
@@ -31,10 +31,12 @@ class MambaInverseController(nn.Module):
         if feature_dim is not None:
             self.d_model = feature_dim
         else:
-            n_y = hyperparam_config["mamba"]["n_y"]
-            n_u = hyperparam_config["mamba"]["n_u"]
+            n_y = hyperparam_config["train"]["n_y"]
+            n_u = hyperparam_config["train"]["n_u"]
             # v_k = [y_{k+1}, y_k ... y_{k-n_y}, u_{k-1} ... u_{k-n_u}]
-            self.d_model = self.input_dim + (n_y + 1) * self.input_dim + n_u * self.output_dim
+            print(self.input_dim)
+            print(self.output_dim)
+            self.d_model = n_u * self.input_dim + (n_y+2) * self.output_dim
         print("d_model: ", self.d_model)
         print(f"🛠️ Initializing Mamba core with d_model (feature_dim) = {self.d_model}")
         
@@ -47,7 +49,7 @@ class MambaInverseController(nn.Module):
         )
         
         # 4. Map latent features back to actuator control dimensions
-        self.output_proj = nn.Linear(self.d_model, self.output_dim)
+        self.output_proj = nn.Linear(self.d_model, self.input_dim)
         
         # Inference memory state buffers
         self.conv_state = None

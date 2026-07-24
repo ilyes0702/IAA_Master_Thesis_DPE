@@ -10,12 +10,11 @@ includes the project) so imports resolve correctly.
 
 from src.sample.utils.data_generation_utils import generate_and_save_dataset
 from src.sample.utils.data_generation_utils import *
-from src.sample.classes.plants.ChemostatPlant import ChemostatPlant
+from src.sample.classes.plants.ChemostatPlant import *
 from src.sample.classes.plants.IdiophasePlant import IdiophasePlant
 from src.sample.classes.plants.MassSpringDamperPlant import MassSpringDamperPlant
 from src.sample.classes.plants.BajpaiReussPlant import BajpaiReussPlant
 
-from src.sample.classes.plants.YeastFermentation import FedBatchYeastPlant
 from src.sample.classes.plants.TrophophasePlant import TrophophasePlant
 from src.hyperparam_config import *
 import matplotlib.pyplot as plt

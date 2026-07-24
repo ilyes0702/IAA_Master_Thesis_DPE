@@ -19,8 +19,8 @@ from src.hyperparam_config import *
 from src.sample.classes.plants.IdiophasePlant import IdiophasePlant
 from src.sample.classes.plants.MassSpringDamperPlant import MassSpringDamperPlant
 from src.sample.classes.plants.TrophophasePlant import TrophophasePlant
-from src.sample.classes.plants.ChemostatPlant import ChemostatPlant
-from src.sample.classes.plants.YeastFermentation import FedBatchYeastPlant
+from src.sample.classes.plants.ChemostatPlant import *
+
 from src.sample.classes.controllers.MambaInverseController import *
 from src.sample.classes.controllers.ESNInverseController import *
 

@@ -122,19 +122,25 @@ hyperparam_config_ChemostatPlant = {
         "dt": 0.1
     },
     "train": {
-        "k_folds": 5,
+        "k_folds": 2,
         "epochs": 100,
-        "batch_size": 10000,
+        "batch_size": 100,
         "lr": 1e-3,
         "device": "cuda", # if torch.cuda.is_available() else "cpu",
         "delay_steps": 1,
         "loss_function": "MSELoss()", 
         "lr_decay_rate":1,
-        "min_correlation_threshold": 0.7
+        "min_correlation_threshold": 0.7,
+        "val_patience_epochs": 3,
+        "val_min_delta": 0.0005,
+
+        "n_u": 2,
+        "n_y": 2,
+        "lookback_offset": 2
     },
     "mamba": {
-        "d_state": 16,
-        "expand": 32
+        "d_state": 1,
+        "expand": 1
     },
 
     "esn": {

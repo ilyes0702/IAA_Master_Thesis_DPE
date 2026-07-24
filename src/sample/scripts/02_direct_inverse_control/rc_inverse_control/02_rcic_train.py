@@ -14,12 +14,12 @@ import torch
 from src.sample.classes.plants.PenicillinPlantBirol2002 import PenicillinPlantBirol2002
 from src.sample.config import *
 
-from src.sample.classes.plants.ChemostatPlant import ChemostatPlant
+from src.sample.classes.plants.ChemostatPlant import *
 from src.sample.classes.plants.MassSpringDamperPlant import MassSpringDamperPlant
 from src.sample.classes.plants.TrophophasePlant import TrophophasePlant
 from src.sample.classes.plants.IdiophasePlant import IdiophasePlant
 
-from src.sample.classes.plants.YeastFermentation import FedBatchYeastPlant
+
 
 from src.sample.classes.plants.SimpleLinearPlant import SimpleLinearPlant
 

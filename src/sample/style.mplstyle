@@ -65,8 +65,11 @@ text.latex.preamble : \usepackage{amsmath} \usepackage{amssymb} \usepackage{type
 font.family: serif
 font.serif: Computer Modern Roman, DejaVu Serif
 # This scales the base size (default is usually 10.0)
-font.size : 6.0
 mathtext.fontset : cm
 
 ### Saving figures
 path.simplify : True
+
+
+font.size: 8.0
+legend.fontsize: 8

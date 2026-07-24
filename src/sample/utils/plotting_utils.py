@@ -1,6 +1,6 @@
 from src.sample.utils.saving_utils import save_plot_image
 # ADD PROJECT DIRECTORY TO SYSTEM PATH
-
+import optuna
 # IMPORT DATA PROCESSING MODULES
 import numpy as np
 # IMPORT VISUALIZATION MODULES
@@ -100,6 +100,260 @@ def plot_signals(
     
     return image
 
+def plot_clustered_signals_pil(
+    t,
+    X,
+    cluster_labels,
+    centroids=None,
+    title="Clustered Time Series",
+    xlabel="Time",
+    ylabel="Value",
+    figsize=(6, 4),
+    show=False,
+    filename=None,
+    dirname=None,
+    asp=0.5
+):
+    """
+    Plots a dataset of time series colored by cluster assignment using the 
+    PIL-buffer architecture of `plot_signals`.
+
+    Parameters:
+    - t (numpy.ndarray or list): Time axis array [Seq_Len].
+    - X (torch.Tensor or numpy.ndarray): Signals array of shape [N, Seq_Len, 1] or [N, Seq_Len].
+    - cluster_labels (list or numpy.ndarray): Cluster IDs assigned to each sequence [N].
+    - centroids (numpy.ndarray, optional): Cluster barycenters of shape [n_clusters, Seq_Len, 1].
+    - title, xlabel, ylabel, figsize, show, filename, dirname, asp: Forwarded to plot_signals architecture.
+
+    Returns:
+    - image (PIL.Image.Image): High-resolution raster image object.
+    """
+    # 1. Convert input tensors/arrays to standard 2D NumPy array [N, Seq_Len]
+    if isinstance(X, torch.Tensor):
+        X_np = X.cpu().numpy()
+    else:
+        X_np = np.array(X)
+        
+    X_2d = np.squeeze(X_np)  # Ensures shape is [N, Seq_Len]
+    cluster_labels = np.array(cluster_labels)
+    unique_clusters = np.unique(cluster_labels)
+
+    # 2. Set up colormap across distinct cluster IDs
+    cmap = plt.cm.get_cmap("tab10", max(len(unique_clusters), 1))
+    
+    # 3. Build signals and labels list matching `plot_signals` input structure
+    signals_list = []
+    labels_list = []
+    
+    # We maintain a tracker to ensure each Cluster ID only creates ONE legend entry
+    added_to_legend = set()
+
+    # Pack individual time series traces
+    for seq, label in zip(X_2d, cluster_labels):
+        signals_list.append(seq)
+        
+        if label not in added_to_legend:
+            labels_list.append(f"Cluster {label}")
+            added_to_legend.add(label)
+        else:
+            labels_list.append(None)  # Hides duplicate trace entries in legend
+
+    # 4. Optional: Append Centroid trajectories (thick dashed lines)
+    if centroids is not None:
+        centroids_2d = np.squeeze(centroids)
+        for c_idx in unique_clusters:
+            if c_idx < len(centroids_2d):
+                signals_list.append(centroids_2d[c_idx])
+                labels_list.append(f"Centroid {c_idx}")
+
+    # 5. Build Matplotlib canvas using your buffer layout
+    fig, ax = plt.subplots(figsize=figsize, layout="constrained")
+
+    num_traces = len(X_2d)
+    
+    # Render individual sequence curves
+    for i in range(num_traces):
+        cluster_id = cluster_labels[i]
+        color = cmap(cluster_id % 10)
+        label_text = labels_list[i]
+        
+        ax.plot(t, signals_list[i], color=color, alpha=0.45, linewidth=1.2, label=label_text)
+
+    # Render centroid lines if provided
+    if centroids is not None:
+        for i in range(num_traces, len(signals_list)):
+            label_text = labels_list[i]
+            ax.plot(t, signals_list[i], color="black", linestyle="--", linewidth=2.5, label=label_text)
+
+    # === FIXED ASPECT RATIO (Identical to your plot_signals engine) === #
+    x_range = np.diff(ax.get_xlim())[0]
+    y_range = np.diff(ax.get_ylim())[0]
+    range_ratio = x_range / y_range if y_range != 0 else 1.0
+    ax.set_aspect(asp * range_ratio)
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+
+    if title:
+        ax.set_title(title)
+
+    # Build clean legend without duplicates
+    handles, legend_labels = ax.get_legend_handles_labels()
+    by_label = dict(zip(legend_labels, handles))
+    if by_label:
+        ax.legend(by_label.values(), by_label.keys(), loc="upper right")
+
+    ax.grid(True, linestyle=":", alpha=0.6)
+
+    if show:
+        plt.show()
+
+    # === MEMORY BUFFER & PIL CONVERSION === #
+    buf = BytesIO()
+    plt.savefig(buf, format="PNG", dpi=600)
+    buf.seek(0)
+    plt.close()
+
+    image = Image.open(buf)
+    
+    # Process custom storage if save_plot_image is available in scope
+    if "save_plot_image" in globals():
+        save_plot_image(image=image, filename=filename, dirname=dirname)
+    elif filename and dirname:
+        import os
+        os.makedirs(dirname, exist_ok=True)
+        image.save(os.path.join(dirname, filename))
+
+    return image
+
+def plot_param_heatmap(
+    study,
+    param_x,
+    param_y,
+    title=None,
+    figsize=(6, 6),
+    filename=None,
+    dirname=None,
+    asp=1.0,
+    show=False,
+):
+    """Generates a 2D objective surface heatmap for ANY pair of hyperparameters
+
+    from an Optuna study, following the project canvas rendering pipeline.
+
+    Parameters:
+    - study (optuna.study.Study): Completed or ongoing Optuna study object.
+    - param_x (str): Name of the hyperparameter mapped to the horizontal x-axis.
+    - param_y (str): Name of the hyperparameter mapped to the vertical y-axis.
+    - title (str, optional): Custom title header (defaults to "Loss Heatmap:
+    {param_y} vs {param_x}").
+    - figsize (tuple): Canvas size layout dimensions.
+    - filename (str, optional): Output image name (defaults to
+    "{param_y}_vs_{param_x}_heatmap").
+    - dirname (str, optional): Directory path for saving the raster image.
+    - asp (float): Aspect ratio scalar modifier.
+    - show (bool): Toggle UI canvas display.
+    """
+    # 1. Extract all unique sampled values for param_x and param_y
+    x_vals = set()
+    y_vals = set()
+
+    for trial in study.trials:
+        if trial.state == optuna.trial.TrialState.COMPLETE:
+            if param_x in trial.params and param_y in trial.params:
+                x_vals.add(trial.params[param_x])
+                y_vals.add(trial.params[param_y])
+
+    if not x_vals or not y_vals:
+        raise ValueError(
+            f"No completed trials found containing both hyperparameters: '{param_x}' and '{param_y}'."
+        )
+
+    # Sort tick labels for clean axis ordering
+    x_ticks = sorted(list(x_vals))
+    y_ticks = sorted(list(y_vals))
+
+    x_to_idx = {val: idx for idx, val in enumerate(x_ticks)}
+    y_to_idx = {val: idx for idx, val in enumerate(y_ticks)}
+
+    # 2. Initialize grid with NaNs
+    grid = np.full((len(y_ticks), len(x_ticks)), np.nan)
+
+    # 3. Populate matrix (aggregating via minimum if duplicates exist)
+    for trial in study.trials:
+        if trial.state == optuna.trial.TrialState.COMPLETE:
+            px = trial.params.get(param_x)
+            py = trial.params.get(param_y)
+            val = trial.value
+
+            if px in x_to_idx and py in y_to_idx and val is not None:
+                row_idx = y_to_idx[py]
+                col_idx = x_to_idx[px]
+                if np.isnan(grid[row_idx, col_idx]):
+                    grid[row_idx, col_idx] = val
+                else:
+                    grid[row_idx, col_idx] = min(grid[row_idx, col_idx], val)
+
+    # 4. Render canvas
+    fig, ax = plt.subplots(figsize=figsize, layout="constrained")
+
+    cax = ax.imshow(grid, origin="lower", cmap="viridis", aspect="auto")
+    cbar = fig.colorbar(cax, ax=ax)
+    cbar.set_label("Mean Validation Loss")
+
+    # Set dynamic axis tick labels
+    ax.set_xticks(np.arange(len(x_ticks)))
+    ax.set_yticks(np.arange(len(y_ticks)))
+    ax.set_xticklabels([str(x) for x in x_ticks])
+    ax.set_yticklabels([str(y) for y in y_ticks])
+
+    ax.set_xlabel(param_x)
+    ax.set_ylabel(param_y)
+
+    if title is None:
+        ax.set_title(f"Optuna Loss Heatmap: {param_y} vs {param_x}")
+    elif title:
+        ax.set_title(title)
+
+    # Overlay numerical cell values
+    mean_val = np.nanmean(grid)
+    for i in range(len(y_ticks)):
+        for j in range(len(x_ticks)):
+            val = grid[i, j]
+            if not np.isnan(val):
+                # Format floating point numbers cleanly
+                text_val = f"{val:.4f}" if val < 1.0 else f"{val:.2f}"
+                ax.text(
+                    j,
+                    i,
+                    text_val,
+                    ha="center",
+                    va="center",
+                    color="white" if val > mean_val else "black",
+                    fontsize=8,
+                )
+
+    # Dynamic aspect ratio scaling based on grid dimensions
+    range_ratio = len(x_ticks) / len(y_ticks)
+    ax.set_aspect(asp * range_ratio)
+
+    if show:
+        plt.show()
+
+    # 5. Pipeline export via PIL buffer
+    buf = BytesIO()
+    plt.savefig(buf, format="PNG", dpi=600)
+    buf.seek(0)
+    plt.close()
+
+    image = Image.open(buf)
+
+    out_filename = (
+        filename if filename else f"{param_y}_vs_{param_x}_heatmap"
+    )
+    save_plot_image(image=image, filename=out_filename, dirname=dirname)
+
+    return image
 
 
 def plot_stacked(

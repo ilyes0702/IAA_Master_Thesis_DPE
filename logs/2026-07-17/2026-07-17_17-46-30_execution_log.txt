@@ -1,0 +1,2 @@
+2026-07-17 15:46:34 - Duplicate key in file 'src/sample/style.mplstyle', line 68 ('axes.labelsize : 6.0')
+2026-07-17 15:46:34 - Duplicate key in file 'src/sample/style.mplstyle', line 69 ('legend.fontsize: 5.0')

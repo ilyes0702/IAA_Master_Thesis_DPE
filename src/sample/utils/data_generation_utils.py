@@ -6,6 +6,160 @@ import pandas as pd
 from src.sample.utils.saving_utils import save_df_to_csv, save_training_dataset
 from src.sample.utils.plotting_utils import plot_signals, plot_stacked
 
+import numpy as np
+import pandas as pd
+from fastdtw import fastdtw
+from scipy.spatial.distance import euclidean
+
+def compute_mimo_dtw_distance(seq_A, seq_B):
+    """
+    Computes multivariate DTW distance between two sequence arrays 
+    of shape [Seq_Len, Channels].
+    """
+    # fastdtw handles multidimensional trajectories using Euclidean distance point-by-point
+    distance, path = fastdtw(seq_A, seq_B, dist=euclidean)
+    return distance
+
+def compute_pairwise_dtw_matrix(sequences):
+    """
+    Computes symmetric pairwise DTW distance matrix across N sequences.
+    
+    Args:
+        sequences: numpy array of shape [Num_Seqs, Seq_Len, Channels]
+    Returns:
+        dist_matrix: [Num_Seqs, Num_Seqs] symmetrical distance matrix
+    """
+    n_seqs = len(sequences)
+    dist_matrix = np.zeros((n_seqs, n_seqs))
+    
+    print(f"📊 Computing pairwise DTW distance matrix for {n_seqs} sequences...")
+    for i in range(n_seqs):
+        for j in range(i + 1, n_seqs):
+            d = compute_mimo_dtw_distance(sequences[i], sequences[j])
+            dist_matrix[i, j] = d
+            dist_matrix[j, i] = d
+            
+    return dist_matrix
+
+def summarize_dtw_characterization(dist_matrix, signal_name="Signal"):
+    """
+    Extracts statistical summary metrics from a DTW distance matrix.
+    """
+    n_seqs = dist_matrix.shape[0]
+    
+    # Upper triangle indices (excluding diagonal self-distance 0)
+    triu_indices = np.triu_indices(n_seqs, k=1)
+    pairwise_distances = dist_matrix[triu_indices]
+    
+    # Sequence Medoid: The sequence with the lowest average distance to all others
+    mean_distances_per_seq = dist_matrix.mean(axis=1)
+    medoid_idx = int(np.argmin(mean_distances_per_seq))
+    outlier_idx = int(np.argmax(mean_distances_per_seq))
+    
+    metrics = {
+        "signal": signal_name,
+        "mean_dtw_dist": np.mean(pairwise_distances),
+        "std_dtw_dist": np.std(pairwise_distances),
+        "min_dtw_dist": np.min(pairwise_distances),
+        "max_dtw_dist": np.max(pairwise_distances),
+        "medoid_seq_index": medoid_idx,
+        "outlier_seq_index": outlier_idx,
+    }
+    
+    print(f"\n--- DTW Summary: {signal_name} ---")
+    print(f"  • Diversity (Mean DTW Distance) : {metrics['mean_dtw_dist']:.2f} ± {metrics['std_dtw_dist']:.2f}")
+    print(f"  • Most Typical Sequence (Medoid): Index {medoid_idx}")
+    print(f"  • Most Unique Sequence (Outlier): Index {outlier_idx}")
+    
+    return metrics
+
+
+
+from sklearn.cluster import DBSCAN
+
+def cluster_dtw_dbscan(dtw_matrix, eps=5.0, min_samples=3):
+    """
+    Discovers natural clusters and detects outlier sequences using DBSCAN.
+    """
+    db = DBSCAN(eps=eps, min_samples=min_samples, metric='precomputed')
+    labels = db.fit_predict(dtw_matrix)
+    
+    # label == -1 means the trajectory is an outlier/anomaly
+    num_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+    num_outliers = list(labels).count(-1)
+    
+    print(f"Discovered {num_clusters} clusters with {num_outliers} outlier sequences.")
+    return labels
+
+
+def cluster_and_plot_dbscan(
+    dtw_matrix, 
+    sequences, 
+    time_axis, 
+    eps=15.0, 
+    min_samples=2, 
+    channel_idx=0, 
+    dirname="dbscan_clusters"
+):
+    """
+    Clusters DTW matrix using DBSCAN and renders each cluster using plot_signals.
+    
+    Args:
+        dtw_matrix: [N, N] precomputed DTW distance matrix
+        sequences: Numpy array [N_seqs, Seq_Len, N_channels]
+        time_axis: 1D array of time steps (t)
+        eps: Max DTW distance between two sequences to be considered neighbors
+        min_samples: Min sequences required to form a dense region (cluster)
+        channel_idx: Channel index to plot (e.g., 0 for u1)
+        dirname: Directory to save cluster images via plot_signals
+    """
+    # 1. Run DBSCAN on the precomputed DTW distance matrix
+    db = DBSCAN(eps=eps, min_samples=min_samples, metric='precomputed')
+    cluster_labels = db.fit_predict(dtw_matrix)
+    
+    unique_clusters = np.unique(cluster_labels)
+    n_clusters = len(unique_clusters) - (1 if -1 in unique_clusters else 0)
+    n_outliers = np.sum(cluster_labels == -1)
+    
+    print(f"\n🔍 DBSCAN Discovered {n_clusters} clusters and {n_outliers} outlier sequences (eps={eps}, min_samples={min_samples}).")
+
+    cluster_images = []
+
+    # 2. Iterate through each cluster (including outliers at -1) and plot
+    for cluster_id in unique_clusters:
+        seq_indices = np.where(cluster_labels == cluster_id)[0]
+        
+        # Extract 1D trajectory arrays for the target channel
+        cluster_signals = [sequences[idx, :, channel_idx] for idx in seq_indices]
+        
+        # Build cluster label descriptor
+        if cluster_id == -1:
+            cluster_name = f"Outliers / Noise ({len(seq_indices)} seqs)"
+            filename = f"dbscan_outliers_channel_{channel_idx + 1}.png"
+        else:
+            cluster_name = f"Cluster {cluster_id} ({len(seq_indices)} seqs)"
+            filename = f"dbscan_cluster_{cluster_id}_channel_{channel_idx + 1}.png"
+            
+        # Optional trace labels if group is small
+        labels = [f"Seq {idx}" for idx in seq_indices] if len(seq_indices) <= 8 else None
+
+        # 3. Render using your plot_signals utility
+        img = plot_signals(
+            t=time_axis,
+            signals=cluster_signals,
+            labels=labels,
+            title=f"DBSCAN {cluster_name} — Channel u_{channel_idx + 1}",
+            xlabel="Time (h)",
+            ylabel=f"u_{channel_idx + 1}",
+            figsize=(6, 4),
+            show=True,
+            filename=filename,
+            dirname=dirname,
+            asp=0.5
+        )
+        cluster_images.append(img)
+
+    return cluster_labels, cluster_images
 
 def generate_signal_single(hyperparam_config, channel_idx=1):
     """
@@ -51,10 +205,10 @@ def generate_signal_single(hyperparam_config, channel_idx=1):
     v_norm = 2 * (v_train - v_min) / (v_max - v_min + 1e-8) - 1
     
     # Dynamic Channel-Specific Center Value Extraction
-    c_min = plant_cfg.get(f"u_{channel_idx}_D_center_min")
+    c_min = plant_cfg[f"u_{channel_idx}_D_center_min"]
     
         
-    c_max = plant_cfg.get(f"u_{channel_idx}_D_center_max")
+    c_max = plant_cfg[f"u_{channel_idx}_D_center_max"]
     
 
     # Read channel-specific hard boundaries or fall back to system defaults
@@ -63,13 +217,14 @@ def generate_signal_single(hyperparam_config, channel_idx=1):
     
     u_hard_max = plant_cfg.get(f"u_{channel_idx}_hard_max")
     
-    
+    #print("c_min", c_min)
+    #print("c_max", c_max)
     # Generate random baseline centers across the channel-specific configured range
     u_center = torch.rand((batch_size, 1), device=device) * (c_max - c_min) + c_min
     
     # 🎯 ACTIVE SHIELDING: Calculate exact allowable deviation limits per trajectory row
-    print("u_hard_max:", u_hard_max)
-    print("u_center", u_center)
+    #print("u_hard_max:", u_hard_max)
+    #print("u_center", u_center)
     dist_to_max = u_hard_max - u_center
     dist_to_min = u_center - u_hard_min
     max_safe_p = torch.minimum(dist_to_max, dist_to_min)
@@ -93,11 +248,12 @@ def generate_signals(hyperparam_config):
 
     batch_size = train_cfg["batch_size"]
     output_dim = plant_cfg["output_dim"] 
+    input_dim = plant_cfg["input_dim"]
 
     u_buffer = []
     D_center_list = []
 
-    for i in range(output_dim):
+    for i in range(input_dim):
         # Pass 1-based index to resolve channel configurations cleanly
         u_single, D_center = generate_signal_single(hyperparam_config, channel_idx=i+1)
         u_buffer.append(u_single.unsqueeze(-1))
@@ -281,7 +437,7 @@ def generate_and_save_dataset(
                 seq_has_violation = True
 
         # 🕹️ DYNAMIC CONTROL INPUTS (u) BOUNDS CHECK
-        for i in range(output_dim):
+        for i in range(input_dim):
             single_seq_u = u[:, i]
             h_min = plant_cfg.get(f"f_u_{i+1}_hard_min") or plant_cfg.get(f"u_{i+1}_hard_min")
             h_max = plant_cfg.get(f"f_u_{i+1}_hard_max") or plant_cfg.get(f"u_{i+1}_hard_max")
@@ -324,7 +480,7 @@ def generate_and_save_dataset(
         drop_due_to_correlation = False
         min_correlation_threshold = hyperparam_config["train"]["min_correlation_threshold"]
         
-        for u_idx in range(output_dim):
+        for u_idx in range(input_dim):
             single_u_curve = u[:, u_idx]
             for y_idx in range(input_dim):
                 single_y_curve = y_t[:, y_idx]
@@ -355,10 +511,10 @@ def generate_and_save_dataset(
         time_axis = np.arange(len(u)) * dt
         columns, values = ["t"], [time_axis]
 
-        for i in range(input_dim):
+        for i in range(output_dim):
             columns.append(f"y_{i+1}")
             values.append(y_t[:, i])
-        for i in range(output_dim):
+        for i in range(input_dim):
             columns.append(f"u_{i+1}")
             values.append(u[:, i])
         for i in range(state_dim):
@@ -366,7 +522,7 @@ def generate_and_save_dataset(
             values.append(states[:, i])
 
         d_center = np.squeeze(batch_d_centers_np[s_idx])
-        for i in range(output_dim):
+        for i in range(input_dim):
             columns.append(f"D_center_u_{i+1}")
             d_val = float(d_center[i]) if output_dim > 1 else float(d_center)
             values.append(np.full(len(time_axis), d_val))
@@ -397,7 +553,7 @@ def generate_and_save_dataset(
 
             for idx in range(y_t.shape[1]):
                 signals_to_plot.append(y_t[:, idx])
-                labels_to_plot.append(["Output"])
+                labels_to_plot.append([None])
                 ylabels_to_plot.append(y_config["labels"][idx] if y_config else rf"Output $y_{{{idx+1}}}$")
 
             dynamic_asp = [0.33] * len(signals_to_plot)
@@ -472,7 +628,32 @@ def generate_and_save_dataset(
     if per_sequence_correlations:
         per_seq_df = pd.DataFrame(per_sequence_correlations)
         save_df_to_csv(per_seq_df, dirname=dirname, filename="mimo_per_sequence_correlations.csv")
+    # # =================================================================
+    # # 4. DTW CHARACTERIZATION OF VALID SEQUENCES
+    # # =================================================================
+    # if hyperparam_config.get("train", {}).get("run_dtw_analysis", True):
+    #     print("\n" + "="*60)
+    #     print("📈 RUNNING DTW SEQUENCE CHARACTERIZATION")
+    #     print("="*60)
+        
+    #     # 1. Characterize Control Inputs (u)
+    #     u_valid_np = final_u_tensor.cpu().numpy()
+    #     u_dtw_matrix = compute_pairwise_dtw_matrix(u_valid_np)
+    #     u_metrics = summarize_dtw_characterization(u_dtw_matrix, signal_name="Control_Inputs_u")
+        
+    #     # 2. Characterize System Outputs (y)
+    #     y_valid_np = final_y_tensor.cpu().numpy()
+    #     y_dtw_matrix = compute_pairwise_dtw_matrix(y_valid_np)
+    #     y_metrics = summarize_dtw_characterization(y_dtw_matrix, signal_name="System_Outputs_y")
 
+    #     os.makedirs(dirname, exist_ok=True)
+
+    #     # Save matrices and summaries to disk
+    #     np.save(os.path.join(dirname, "dtw_matrix_u.npy"), u_dtw_matrix)
+    #     np.save(os.path.join(dirname, "dtw_matrix_y.npy"), y_dtw_matrix)
+        
+    #     dtw_summary_df = pd.DataFrame([u_metrics, y_metrics])
+    #     save_df_to_csv(dtw_summary_df, dirname=dirname, filename="dtw_characterization_summary.csv")
     # Save to disk as a combined dictionary containing the continuous states
     data_to_save = {
         "u": final_u_tensor.cpu(),
@@ -481,7 +662,31 @@ def generate_and_save_dataset(
     }
     save_training_dataset(data_to_save, dirname=dirname)
     
-    print(f"🎉 Raw continuous tracking MIMO dataset generated successfully ({valid_sequences_count} valid traces preserved).")
+    # print(f"🎉 Raw continuous tracking MIMO dataset generated successfully ({valid_sequences_count} valid traces preserved).")
+
+    # # Ensure export folder exists
+    # cluster_dir = os.path.join(dirname, "dbscan_clusters")
+    # os.makedirs(cluster_dir, exist_ok=True)
+
+    # time_axis = np.arange(u_valid_np.shape[1]) * dt
+
+    # # Run DBSCAN + Plot via plot_signals
+    # cluster_labels_u, _ = cluster_and_plot_dbscan(
+    #     dtw_matrix=u_dtw_matrix,
+    #     sequences=u_valid_np,
+    #     time_axis=time_axis,
+    #     eps=12.0,         # Adjust based on your average DTW distances
+    #     min_samples=2,    # Min sequences to form a regime
+    #     channel_idx=0,    # First control input (u1)
+    #     dirname=cluster_dir
+    # )
+
+    # # Log cluster IDs alongside per-sequence metrics
+    # for idx, cluster_id in enumerate(cluster_labels_u):
+    #     if idx < len(per_sequence_correlations):
+    #         per_sequence_correlations[idx]["dbscan_cluster_u"] = int(cluster_id)
+
+    return data_to_save
 
 def generate_and_save_dataset_marcia(
     plant,

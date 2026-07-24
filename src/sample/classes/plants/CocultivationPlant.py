@@ -53,7 +53,7 @@ class CoCultivationPlant:
 
         if randomize:
             # Randomization within ±5% boundaries
-            rand_scale = 0.95 + 0.10 * torch.rand((batch_size, 5), device=self.device)
+            rand_scale = 0.99 + 0.02 * torch.rand((batch_size, 5), device=self.device)
             states = states * rand_scale
             
         return states
