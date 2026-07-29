@@ -26,9 +26,6 @@ import os
 import numpy as np
 import torch
 
-import numpy as np
-import torch
-
 def create_inverse_controller_dataset(Y_trajectories, U_trajectories, n_y, n_u):
     """
     Slices raw batch continuous MIMO trajectories into history-windowed features 
@@ -124,12 +121,14 @@ def train_controller(
 ):
     # --- EXTRACT HYPERPARAMETERS ---
     train_cfg = hyperparam_config["train"]
-    epochs = train_cfg["epochs"]
+    
     device = train_cfg["device"]
-    lr = train_cfg["lr"]
+    
     dt = hyperparam_config["signal"]["dt"]
     k_folds = train_cfg["k_folds"]
 
+    lr = train_cfg["lr"]
+    epochs = train_cfg["epochs"]
     n_y = train_cfg["n_y"]
     n_u = train_cfg["n_u"]
     batch_size = 1

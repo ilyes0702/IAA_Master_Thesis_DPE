@@ -115,14 +115,19 @@ def plot_clustered_signals_pil(
     asp=0.5
 ):
     """
-    Plots a dataset of time series colored by cluster assignment using the 
+    Plots a dataset of time series colored by cluster assignment using the
     PIL-buffer architecture of `plot_signals`.
+
+    Compatible with both KMeans-style labels (0..k-1) and DBSCAN-style
+    labels (0..k-1 plus -1 for noise/outlier points).
 
     Parameters:
     - t (numpy.ndarray or list): Time axis array [Seq_Len].
     - X (torch.Tensor or numpy.ndarray): Signals array of shape [N, Seq_Len, 1] or [N, Seq_Len].
     - cluster_labels (list or numpy.ndarray): Cluster IDs assigned to each sequence [N].
+      DBSCAN noise points should be labeled -1.
     - centroids (numpy.ndarray, optional): Cluster barycenters of shape [n_clusters, Seq_Len, 1].
+      Should NOT include an entry for noise -- only real clusters (0..k-1).
     - title, xlabel, ylabel, figsize, show, filename, dirname, asp: Forwarded to plot_signals architecture.
 
     Returns:
@@ -133,35 +138,43 @@ def plot_clustered_signals_pil(
         X_np = X.cpu().numpy()
     else:
         X_np = np.array(X)
-        
+
     X_2d = np.squeeze(X_np)  # Ensures shape is [N, Seq_Len]
     cluster_labels = np.array(cluster_labels)
     unique_clusters = np.unique(cluster_labels)
 
-    # 2. Set up colormap across distinct cluster IDs
-    cmap = plt.cm.get_cmap("tab10", max(len(unique_clusters), 1))
-    
+    # 2. Set up colormap across distinct cluster IDs (excluding noise, which
+    #    gets its own fixed gray color instead of a tab10 slot)
+    real_clusters = [c for c in unique_clusters if c != -1]
+    cmap = plt.cm.get_cmap("tab10", max(len(real_clusters), 1))
+    NOISE_COLOR = "lightgray"
+
     # 3. Build signals and labels list matching `plot_signals` input structure
     signals_list = []
     labels_list = []
-    
+
     # We maintain a tracker to ensure each Cluster ID only creates ONE legend entry
     added_to_legend = set()
 
     # Pack individual time series traces
     for seq, label in zip(X_2d, cluster_labels):
         signals_list.append(seq)
-        
+
         if label not in added_to_legend:
-            labels_list.append(f"Cluster {label}")
+            labels_list.append("Noise" if label == -1 else f"Cluster {label}")
             added_to_legend.add(label)
         else:
             labels_list.append(None)  # Hides duplicate trace entries in legend
 
-    # 4. Optional: Append Centroid trajectories (thick dashed lines)
+    # 4. Optional: Append Centroid trajectories (thick dashed lines).
+    #    Noise (-1) has no centroid and is skipped -- without this check,
+    #    NumPy's negative indexing would silently plot the LAST real
+    #    cluster's centroid a second time, mislabeled "Centroid -1".
     if centroids is not None:
         centroids_2d = np.squeeze(centroids)
         for c_idx in unique_clusters:
+            if c_idx == -1:
+                continue
             if c_idx < len(centroids_2d):
                 signals_list.append(centroids_2d[c_idx])
                 labels_list.append(f"Centroid {c_idx}")
@@ -170,13 +183,13 @@ def plot_clustered_signals_pil(
     fig, ax = plt.subplots(figsize=figsize, layout="constrained")
 
     num_traces = len(X_2d)
-    
+
     # Render individual sequence curves
     for i in range(num_traces):
         cluster_id = cluster_labels[i]
-        color = cmap(cluster_id % 10)
+        color = NOISE_COLOR if cluster_id == -1 else cmap(cluster_id % 10)
         label_text = labels_list[i]
-        
+
         ax.plot(t, signals_list[i], color=color, alpha=0.45, linewidth=1.2, label=label_text)
 
     # Render centroid lines if provided
@@ -215,7 +228,7 @@ def plot_clustered_signals_pil(
     plt.close()
 
     image = Image.open(buf)
-    
+
     # Process custom storage if save_plot_image is available in scope
     if "save_plot_image" in globals():
         save_plot_image(image=image, filename=filename, dirname=dirname)

@@ -155,31 +155,74 @@ class TrophophasePlant:
         dx2dt = -(1.0 / self.p1) * mu * x1 - self.m_S * x1 + self.p2 * u1
         return dx1dt, dx2dt
 
-    def step(self, state, u1, t, dt):
+    def step(self, state, u, t, dt):
         """
-        4th Order Runge-Kutta integration accounting for explicitly time-dependent dynamics.
+        Dormand-Prince (RK45) integration accounting for explicitly time-dependent dynamics.
         """
         x1, x2 = state[:, 0:1], state[:, 1:2]
         
         # k1 at t
-        dx1_1, ds1_1 = self.dynamics(x1, x2, u1, t)
+        dx1_1, ds1_1 = self.dynamics(x1, x2, u, t)
         
-        # k2 at t + 0.5*dt
-        dx1_2, ds1_2 = self.dynamics(x1 + 0.5*dt*dx1_1, x2 + 0.5*dt*ds1_1, u1, t + 0.5*dt)
+        # k2 at t + (1/5)*dt
+        x1_2 = x1 + dt * (1/5 * dx1_1)
+        x2_2 = x2 + dt * (1/5 * ds1_1)
+        dx1_2, ds1_2 = self.dynamics(x1_2, x2_2, u, t + 0.2 * dt)
         
-        # k3 at t + 0.5*dt
-        dx1_3, ds1_3 = self.dynamics(x1 + 0.5*dt*dx1_2, x2 + 0.5*dt*ds1_2, u1, t + 0.5*dt)
+        # k3 at t + (3/10)*dt
+        x1_3 = x1 + dt * (3/40 * dx1_1 + 9/40 * dx1_2)
+        x2_3 = x2 + dt * (3/40 * ds1_1 + 9/40 * ds1_2)
+        dx1_3, ds1_3 = self.dynamics(x1_3, x2_3, u, t + 0.3 * dt)
         
-        # k4 at t + dt
-        dx1_4, ds1_4 = self.dynamics(x1 + dt*dx1_3, x2 + dt*ds1_3, u1, t + dt)
+        # k4 at t + (4/5)*dt
+        x1_4 = x1 + dt * (44/45 * dx1_1 - 56/15 * dx1_2 + 32/9 * dx1_3)
+        x2_4 = x2 + dt * (44/45 * ds1_1 - 56/15 * ds1_2 + 32/9 * ds1_3)
+        dx1_4, ds1_4 = self.dynamics(x1_4, x2_4, u, t + 0.8 * dt)
         
-        x1_next = x1 + (dt / 6.0) * (dx1_1 + 2.0*dx1_2 + 2.0*dx1_3 + dx1_4)
-        x2_next = x2 + (dt / 6.0) * (ds1_1 + 2.0*ds1_2 + 2.0*ds1_3 + ds1_4)
+        # k5 at t + (8/9)*dt
+        x1_5 = x1 + dt * (19372/6561 * dx1_1 - 25360/2187 * dx1_2 + 64448/6561 * dx1_3 - 212/729 * dx1_4)
+        x2_5 = x2 + dt * (19372/6561 * ds1_1 - 25360/2187 * ds1_2 + 64448/6561 * ds1_3 - 212/729 * ds1_4)
+        dx1_5, ds1_5 = self.dynamics(x1_5, x2_5, u, t + (8/9) * dt)
         
+        # k6 at t + dt
+        x1_6 = x1 + dt * (9017/3168 * dx1_1 - 355/33 * dx1_2 + 46732/5247 * dx1_3 + 49/176 * dx1_4 - 5103/18656 * dx1_5)
+        x2_6 = x2 + dt * (9017/3168 * ds1_1 - 355/33 * ds1_2 + 46732/5247 * ds1_3 + 49/176 * ds1_4 - 5103/18656 * ds1_5)
+        dx1_6, ds1_6 = self.dynamics(x1_6, x2_6, u, t + dt)
+
+        # 5th-order accurate state update
+        x1_next = x1 + dt * (35/384 * dx1_1 + 500/1113 * dx1_3 + 125/192 * dx1_4 - 2187/6784 * dx1_5 + 11/84 * dx1_6)
+        x2_next = x2 + dt * (35/384 * ds1_1 + 500/1113 * ds1_3 + 125/192 * ds1_4 - 2187/6784 * ds1_5 + 11/84 * ds1_6)
+
         state_next = torch.cat([x1_next, x2_next], dim=1)
         
-        # Return next state and the corresponding tracking output at time t + dt
+        # Return next state and tracking output evaluated at t + dt
         return state_next, self.get_y(state_next, t + dt)
+
+    # def step(self, state, u, t, dt):
+    #     """
+    #     4th Order Runge-Kutta integration accounting for explicitly time-dependent dynamics.
+    #     """
+    #     x1, x2 = state[:, 0:1], state[:, 1:2]
+        
+    #     # k1 at t
+    #     dx1_1, ds1_1 = self.dynamics(x1, x2, u, t)
+        
+    #     # k2 at t + 0.5*dt
+    #     dx1_2, ds1_2 = self.dynamics(x1 + 0.5*dt*dx1_1, x2 + 0.5*dt*ds1_1, u, t + 0.5*dt)
+        
+    #     # k3 at t + 0.5*dt
+    #     dx1_3, ds1_3 = self.dynamics(x1 + 0.5*dt*dx1_2, x2 + 0.5*dt*ds1_2, u, t + 0.5*dt)
+        
+    #     # k4 at t + dt
+    #     dx1_4, ds1_4 = self.dynamics(x1 + dt*dx1_3, x2 + dt*ds1_3, u, t + dt)
+        
+    #     x1_next = x1 + (dt / 6.0) * (dx1_1 + 2.0*dx1_2 + 2.0*dx1_3 + dx1_4)
+    #     x2_next = x2 + (dt / 6.0) * (ds1_1 + 2.0*ds1_2 + 2.0*ds1_3 + ds1_4)
+        
+    #     state_next = torch.cat([x1_next, x2_next], dim=1)
+        
+    #     # Return next state and the corresponding tracking output at time t + dt
+    #     return state_next, self.get_y(state_next, t + dt)
 
     def get_plot_config(self):
         return [
@@ -242,26 +285,45 @@ hyperparam_config_TrophophasePlant = {
         "dt": 0.01
     },
     "train": {
-        "k_folds": 5,
-        "epochs": 100,
-        "batch_size": 2000,
-        "lr": 1e-3,
-        "device": "cuda", # if torch.cuda.is_available() else "cpu",
+        # Hyperparameters to be constant
+        "device": "cuda", 
         "delay_steps": 1,
         "loss_function": "MSELoss()", 
         "lr_decay_rate":1,
+        "k_folds": 2,
+        "lr": 1e-3,
+
+        "batch_size": 2000,
+
+        # Hyperparameters for tuning
+        "epochs": 100,
         "min_correlation_threshold": -1.1,
         "constant_signal_probability": 0.0,
         "n_u": 2,
-        "n_y": 2
+        "n_y": 2,
+        "val_patience_epochs": 3,
+        "val_min_delta": 0.0001,
+        "lookback_offset": 2
     },
     "mamba": {
-        "expand": 16,
+        "expand": 8,
         "d_state": 16,
         "input_dim": 1,  # y
         "output_dim": 1,  # u
         "n_u": 2,
         "n_y": 2
+    },
+    "mamba_param_space" : {
+    "mamba.d_conv":  {"type": "int", "low": 1, "high": 10},
+    "mamba.d_state": {"type": "int", "low": 1, "high": 64},
+    "mamba.expand":  {"type": "int", "low": 1, "high": 10},
+    "mamba.n_layer": {"type": "int", "low": 1, "high": 5},
+    "train.lr":      {"type": "float", "low": 1e-4, "high": 1e-2, "log": True} # Logarithmic scale
+    },
+    "transformer_param_space":  {
+    "transformer.nhead":           {"type": "categorical", "choices": [1, 2, 3]}, # Must divide d_model
+    "transformer.num_layers":      {"type": "int", "low": 1, "high": 4},
+    "transformer.dim_feedforward": {"type": "categorical", "choices": [64, 128, 256]},
     },
     "simulate": {
         "batch_size": 10,

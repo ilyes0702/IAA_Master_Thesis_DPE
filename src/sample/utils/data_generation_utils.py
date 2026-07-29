@@ -370,12 +370,62 @@ def generate_training_batch(plant, hyperparam_config):
 # =====================================================================
 # 3. Clean Dataset Compilation and Disk Exporter
 # =====================================================================
+import matplotlib.pyplot as plt
+
+def plot_all_signals_overlay(signal_tensor, dt, dirname, signal_type, show_plot=True):
+    """
+    Plots all validated sequences overlaid on a single multi-channel plot.
+    
+    signal_tensor shape: [Num_Valid_Seqs, Seq_Len, Channels]
+    signal_type: "Inputs_u" or "Outputs_y"
+    """
+    sig_np = signal_tensor.cpu().numpy()
+    num_seqs, seq_len, num_channels = sig_np.shape
+    time_axis = np.arange(seq_len) * dt
+
+    prefix = "u" if "u" in signal_type.lower() else "y"
+    #title_label = "Control Inputs ($u$)" if prefix == "u" else "System Outputs ($y$)"
+
+    fig, axes = plt.subplots(num_channels, 1, figsize=(10, 3 * num_channels), sharex=True)
+    if num_channels == 1:
+        axes = [axes]  # Ensure axes list is iterable for 1D cases
+
+    for i in range(num_channels):
+        ax = axes[i]
+        # Overlay each validated sequence with soft transparency
+        for s_idx in range(num_seqs):
+            ax.plot(time_axis, sig_np[s_idx, :, i], alpha=0.30, linewidth=1.1)
+
+        # Highlight the ensemble average trajectory
+        mean_sig = np.mean(sig_np[:, :, i], axis=0)
+        ax.plot(time_axis, mean_sig, color="black", linestyle="--", linewidth=2.0, label="Ensemble Mean")
+
+        ax.set_ylabel(rf"${prefix}_{{{i+1}}}$")
+        #ax.grid(True, linestyle=":", alpha=0.6)
+        ax.legend(loc="upper right")
+
+    axes[-1].set_xlabel(rf"$t \; / \; \mathrm{{h}}$")
+    #fig.suptitle(f"All Validated {title_label} — Ensembles ($N={num_seqs}$ Sequences)", fontsize=12, fontweight="bold")
+    plt.tight_layout()
+
+    # Save to disk
+    os.makedirs(dirname, exist_ok=True)
+    save_path = os.path.join(dirname, f"all_{signal_type.lower()}_sequences_overlay.png")
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    
+    if show_plot:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    print(f"🖼️ Overlay plot of all {num_seqs} {signal_type} saved to: {save_path}")
 
 def generate_and_save_dataset(
     plant,
     hyperparam_config,
     dirname,
     show_plots=False,
+    show_overlay_plot=False,
     save_logs=False
 ):
     """
@@ -623,38 +673,30 @@ def generate_and_save_dataset(
     final_u_tensor = torch.stack(valid_u_list, dim=0).to(device)
     final_y_tensor = torch.stack(valid_y_list, dim=0).to(device)
     final_state_tensor = torch.stack(valid_states_list, dim=0).to(device)
+
+    # 📈 NEW: Plot all validated u trajectories in one figure
+    if show_overlay_plot and valid_sequences_count > 0:
+        plot_all_signals_overlay(
+            signal_tensor=final_u_tensor,
+            dt=dt,
+            dirname=plots_dir,
+            signal_type="Inputs_u",
+            show_plot=show_plots
+        )
+
+        plot_all_signals_overlay(
+            signal_tensor=final_y_tensor,
+            dt=dt,
+            dirname=plots_dir,
+            signal_type="Outputs_y",
+            show_plot=show_plots
+        )
     
     # Save global stats
     if per_sequence_correlations:
         per_seq_df = pd.DataFrame(per_sequence_correlations)
         save_df_to_csv(per_seq_df, dirname=dirname, filename="mimo_per_sequence_correlations.csv")
-    # # =================================================================
-    # # 4. DTW CHARACTERIZATION OF VALID SEQUENCES
-    # # =================================================================
-    # if hyperparam_config.get("train", {}).get("run_dtw_analysis", True):
-    #     print("\n" + "="*60)
-    #     print("📈 RUNNING DTW SEQUENCE CHARACTERIZATION")
-    #     print("="*60)
-        
-    #     # 1. Characterize Control Inputs (u)
-    #     u_valid_np = final_u_tensor.cpu().numpy()
-    #     u_dtw_matrix = compute_pairwise_dtw_matrix(u_valid_np)
-    #     u_metrics = summarize_dtw_characterization(u_dtw_matrix, signal_name="Control_Inputs_u")
-        
-    #     # 2. Characterize System Outputs (y)
-    #     y_valid_np = final_y_tensor.cpu().numpy()
-    #     y_dtw_matrix = compute_pairwise_dtw_matrix(y_valid_np)
-    #     y_metrics = summarize_dtw_characterization(y_dtw_matrix, signal_name="System_Outputs_y")
-
-    #     os.makedirs(dirname, exist_ok=True)
-
-    #     # Save matrices and summaries to disk
-    #     np.save(os.path.join(dirname, "dtw_matrix_u.npy"), u_dtw_matrix)
-    #     np.save(os.path.join(dirname, "dtw_matrix_y.npy"), y_dtw_matrix)
-        
-    #     dtw_summary_df = pd.DataFrame([u_metrics, y_metrics])
-    #     save_df_to_csv(dtw_summary_df, dirname=dirname, filename="dtw_characterization_summary.csv")
-    # Save to disk as a combined dictionary containing the continuous states
+    
     data_to_save = {
         "u": final_u_tensor.cpu(),
         "y": final_y_tensor.cpu(),
@@ -662,29 +704,7 @@ def generate_and_save_dataset(
     }
     save_training_dataset(data_to_save, dirname=dirname)
     
-    # print(f"🎉 Raw continuous tracking MIMO dataset generated successfully ({valid_sequences_count} valid traces preserved).")
-
-    # # Ensure export folder exists
-    # cluster_dir = os.path.join(dirname, "dbscan_clusters")
-    # os.makedirs(cluster_dir, exist_ok=True)
-
-    # time_axis = np.arange(u_valid_np.shape[1]) * dt
-
-    # # Run DBSCAN + Plot via plot_signals
-    # cluster_labels_u, _ = cluster_and_plot_dbscan(
-    #     dtw_matrix=u_dtw_matrix,
-    #     sequences=u_valid_np,
-    #     time_axis=time_axis,
-    #     eps=12.0,         # Adjust based on your average DTW distances
-    #     min_samples=2,    # Min sequences to form a regime
-    #     channel_idx=0,    # First control input (u1)
-    #     dirname=cluster_dir
-    # )
-
-    # # Log cluster IDs alongside per-sequence metrics
-    # for idx, cluster_id in enumerate(cluster_labels_u):
-    #     if idx < len(per_sequence_correlations):
-    #         per_sequence_correlations[idx]["dbscan_cluster_u"] = int(cluster_id)
+    
 
     return data_to_save
 

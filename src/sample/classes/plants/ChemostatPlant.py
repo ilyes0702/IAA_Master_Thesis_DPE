@@ -38,24 +38,66 @@ class ChemostatPlant:
         dsdt = u * (self.sR - s) - (mu * x / self.Y)
         return dxdt, dsdt
 
+    # def step(self, state, u, t, dt):
+    #     """
+    #     Standard Runge-Kutta 4th Order numerical integration execution block.
+    #     """
+    #     x, s = state[:, 0:1], state[:, 1:2]
+        
+    #     # k1
+    #     dx1, ds1 = self.dynamics(x, s, u)
+    #     # k2
+    #     dx2, ds2 = self.dynamics(x + 0.5*dt*dx1, s + 0.5*dt*ds1, u)
+    #     # k3
+    #     dx3, ds3 = self.dynamics(x + 0.5*dt*dx2, s + 0.5*dt*ds2, u)
+    #     # k4
+    #     dx4, ds4 = self.dynamics(x + dt*dx3, s + dt*ds3, u)
+        
+    #     x_next = x + (dt/6.0) * (dx1 + 2*dx2 + 2*dx3 + dx4)
+    #     s_next = s + (dt/6.0) * (ds1 + 2*ds2 + 2*ds3 + ds4)
+        
+    #     state_next = torch.cat([x_next, s_next], dim=1)
+    #     return state_next, self.get_y(state_next)
+
     def step(self, state, u, t, dt):
         """
-        Standard Runge-Kutta 4th Order numerical integration execution block.
+        Dormand-Prince (RK45) numerical integration execution block.
         """
         x, s = state[:, 0:1], state[:, 1:2]
         
+        # Butcher tableau coefficients for Dormand-Prince
         # k1
         dx1, ds1 = self.dynamics(x, s, u)
+        
         # k2
-        dx2, ds2 = self.dynamics(x + 0.5*dt*dx1, s + 0.5*dt*ds1, u)
+        x2 = x + dt * (1/5 * dx1)
+        s2 = s + dt * (1/5 * ds1)
+        dx2, ds2 = self.dynamics(x2, s2, u)
+        
         # k3
-        dx3, ds3 = self.dynamics(x + 0.5*dt*dx2, s + 0.5*dt*ds2, u)
+        x3 = x + dt * (3/40 * dx1 + 9/40 * dx2)
+        s3 = s + dt * (3/40 * ds1 + 9/40 * ds2)
+        dx3, ds3 = self.dynamics(x3, s3, u)
+        
         # k4
-        dx4, ds4 = self.dynamics(x + dt*dx3, s + dt*ds3, u)
+        x4 = x + dt * (44/45 * dx1 - 56/15 * dx2 + 32/9 * dx3)
+        s4 = s + dt * (44/45 * ds1 - 56/15 * ds2 + 32/9 * ds3)
+        dx4, ds4 = self.dynamics(x4, s4, u)
         
-        x_next = x + (dt/6.0) * (dx1 + 2*dx2 + 2*dx3 + dx4)
-        s_next = s + (dt/6.0) * (ds1 + 2*ds2 + 2*ds3 + ds4)
+        # k5
+        x5 = x + dt * (19372/6561 * dx1 - 25360/2187 * dx2 + 64448/6561 * dx3 - 212/729 * dx4)
+        s5 = s + dt * (19372/6561 * ds1 - 25360/2187 * ds2 + 64448/6561 * ds3 - 212/729 * ds4)
+        dx5, ds5 = self.dynamics(x5, s5, u)
         
+        # k6
+        x6 = x + dt * (9017/3168 * dx1 - 355/33 * dx2 + 46732/5247 * dx3 + 49/176 * dx4 - 5103/18656 * dx5)
+        s6 = s + dt * (9017/3168 * ds1 - 355/33 * ds2 + 46732/5247 * ds3 + 49/176 * ds4 - 5103/18656 * ds5)
+        dx6, ds6 = self.dynamics(x6, s6, u)
+
+        # 5th-order accurate update (Primary step)
+        x_next = x + dt * (35/384 * dx1 + 500/1113 * dx3 + 125/192 * dx4 - 2187/6784 * dx5 + 11/84 * dx6)
+        s_next = s + dt * (35/384 * ds1 + 500/1113 * ds3 + 125/192 * ds4 - 2187/6784 * ds5 + 11/84 * ds6)
+
         state_next = torch.cat([x_next, s_next], dim=1)
         return state_next, self.get_y(state_next)
 
@@ -116,21 +158,21 @@ hyperparam_config_ChemostatPlant = {
 
     },
     "signal": {
-        "lambd": 15,
-        "p": 0.15,
+        "lambd": 20,
+        "p": 0.01,
         "seq_len": 1001,
         "dt": 0.1
     },
     "train": {
         "k_folds": 2,
-        "epochs": 100,
-        "batch_size": 100,
+        "epochs": 10,
+        "batch_size": 1000,
         "lr": 1e-3,
         "device": "cuda", # if torch.cuda.is_available() else "cpu",
         "delay_steps": 1,
         "loss_function": "MSELoss()", 
         "lr_decay_rate":1,
-        "min_correlation_threshold": 0.7,
+        "min_correlation_threshold": -10, #0.7,
         "val_patience_epochs": 3,
         "val_min_delta": 0.0005,
 
