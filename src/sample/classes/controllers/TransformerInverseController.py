@@ -18,11 +18,11 @@ class TransformerInverseController(nn.Module):
         self.output_dim = hyperparam_config["plant"]["output_dim"] # Dimension of plant control u
         
         # Transformer-specific hyperparams with sensible fallbacks
-        trans_cfg = hyperparam_config.get("transformer", {})
-        self.nhead = trans_cfg.get("nhead", 2)
-        self.num_layers = trans_cfg.get("num_layers", 2)
-        self.dim_feedforward = trans_cfg.get("dim_feedforward", 256)
-        self.max_seq_len = trans_cfg.get("max_seq_len", 2000) # Maximum horizon for positional embedding
+        trans_cfg = hyperparam_config["transformer"]
+        self.nhead = trans_cfg["nhead"]
+        self.num_layers = trans_cfg["num_layers"]
+        self.dim_feedforward = trans_cfg["dim_feedforward"]
+        self.max_seq_len = trans_cfg["max_seq_len"] # Maximum horizon for positional embedding
         
         # 2. Compute dynamic input dimension based on sliding window sizes
         if feature_dim is not None:

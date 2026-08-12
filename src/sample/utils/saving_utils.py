@@ -52,7 +52,7 @@ def save_model(model, dirname, hyperparam_config, filename="trained_controller")
     timestamp = default_date_and_time # e.g., "2026-04-29_11-22"
 
     # Construct the directory and filename logic
-    model_dir = f"models/{global_date}/{timestamp}/{dirname}/"
+    model_dir = f"results/{global_date}/{timestamp}/{dirname}/"
     save_filename = f"{timestamp}_{filename}.pt"
 
     

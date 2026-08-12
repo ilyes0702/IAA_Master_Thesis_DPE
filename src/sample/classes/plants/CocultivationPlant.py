@@ -241,6 +241,36 @@ hyperparam_config_CoCultivationPlant = {
         "lr_decay_rate": 1,
         "min_correlation_threshold": -1.1
     },
+    "training_data_generation_config": {
+        "u_1_D_center_min": 0.5,
+        "u_1_D_center_max": 2.0,
+        "u_2_D_center_min": 0.5,
+        "u_2_D_center_max": 2.0,
+        "u_1_hard_min": 0.0,
+        "u_1_hard_max": 5.0,
+        "u_2_hard_min": 0.0,
+        "u_2_hard_max": 5.0,
+        "x_1_hard_min": 0.0,
+        "x_1_hard_max": None,
+        "x_2_hard_min": 0.0,
+        "x_2_hard_max": None,
+        "y_1_hard_min": 0.0,
+        "y_1_hard_max": None,
+        "y_2_hard_min": 0.0,
+        "y_2_hard_max": None,
+
+        "u_1_p" : 0.5,
+        "u_1_lambd" : 4,
+        "u_2_p" : 0.5,
+        "u_2_lambd" : 4,
+
+        "dt" : 0.01,
+        "min_correlation_threshold": -1.1,
+        "batch_size": 1000, 
+        "seq_len": 2001,
+        "input_dim": 2,         # Matches tracking output [X1, X2]
+        "output_dim": 2         # Matches structural light input [I1, I2
+    },
     "mamba": {
         "expand": 32,
         "d_state": 16,

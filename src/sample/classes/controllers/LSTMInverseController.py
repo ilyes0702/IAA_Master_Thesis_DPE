@@ -19,10 +19,10 @@ class LSTMInverseController(nn.Module):
         self.output_dim = hyperparam_config["plant"]["output_dim"] # Dimension of plant control u
         
         # LSTM-specific hyperparams with sensible fallbacks
-        lstm_cfg = hyperparam_config.get("lstm", {})
-        self.hidden_dim = lstm_cfg.get("hidden_dim", 128)
-        self.num_layers = lstm_cfg.get("num_layers", 2)
-        self.dropout = lstm_cfg.get("dropout", 0.0) if self.num_layers > 1 else 0.0
+        lstm_cfg = hyperparam_config["lstm"]
+        self.hidden_dim = lstm_cfg["hidden_size"]
+        self.num_layers = lstm_cfg["num_layers"]
+        self.dropout = lstm_cfg["dropout"] if self.num_layers > 1 else 0.0
         
         # 2. Compute dynamic input dimension based on sliding window sizes
         if feature_dim is not None:

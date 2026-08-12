@@ -143,38 +143,38 @@ class IdiophasePlant:
             {
                 "cols": ["x1", "x2", "x3", "x4"],
                 "labels": [
-                    r"$X$ / $\mathrm{mg}$", 
-                    r"$S$ / $\mathrm{g}$", 
-                    r"$M_{\mathrm{pre}}$ / $\mathrm{g}$", 
-                    r"$M_{\mathrm{pen}}$ / $\mathrm{g}$"
+                    r"$X$ [$\mathrm{mg}$]", 
+                    r"$S$ [$\mathrm{g}$]", 
+                    r"$M_{\mathrm{pre}}$ [$\mathrm{g}$]", 
+                    r"$M_{\mathrm{pen}}$ [$\mathrm{g}$]"
                 ],
                 "ylabel": [
-                    r"$X$ / $\mathrm{mg}$", 
-                    r"$S$ / $\mathrm{g}$", 
-                    r"$M_{\mathrm{pre}}$ / $\mathrm{g}$", 
-                    r"$M_{\mathrm{pen}}$ / $\mathrm{g}$"
+                    r"$X$ [$\mathrm{mg}$]", 
+                    r"$S$ [$\mathrm{g}$]", 
+                    r"$M_{\mathrm{pre}}$ [$\mathrm{g}$]", 
+                    r"$M_{\mathrm{pen}}$ [$\mathrm{g}$]"
                 ]
             },
             {
                 "cols": ["y1", "y2"],
                 "labels": [
-                    r"$\mu$ / $\mathrm{h}^{-1}$", 
-                    r"$c_{\mathrm{pre}}$ / $\mathrm{g}\,\mathrm{L}^{-1}$"
+                    r"$\mu$ [$\mathrm{h}^{-1}$]", 
+                    r"$c_{\mathrm{pre}}$ [$\mathrm{g}\,\mathrm{L}^{-1}$]"
                 ],
                 "ylabel": [
-                    r"$\mu$ / $\mathrm{h}^{-1}$", 
-                    r"$c_{\mathrm{pre}}$ / $\mathrm{g}\,\mathrm{L}^{-1}$"
+                    r"$\mu$ [$\mathrm{h}^{-1}$]", 
+                    r"$c_{\mathrm{pre}}$ [$\mathrm{g}\,\mathrm{L}^{-1}$]"
                 ]
             },
             {
                 "cols": ["u1", "u2"],
                 "labels": [
-                    r"$F_{\mathrm{glu}}$ / $\mathrm{L}\,\mathrm{h}^{-1}$", 
-                    r"$F_{\mathrm{pre}}$ / $\mathrm{L}\,\mathrm{h}^{-1}$"
+                    r"$F_{\mathrm{glu}}$ [$\mathrm{L}\,\mathrm{h}^{-1}$]", 
+                    r"$F_{\mathrm{pre}}$ [$\mathrm{L}\,\mathrm{h}^{-1}$]"
                 ],
                 "ylabel": [
-                    r"$F_{\mathrm{glu}}$ / $\mathrm{L}\,\mathrm{h}^{-1}$", 
-                    r"$F_{\mathrm{pre}}$ / $\mathrm{L}\,\mathrm{h}^{-1}$"
+                    r"$F_{\mathrm{glu}}$ [$\mathrm{L}\,\mathrm{h}^{-1}$]", 
+                    r"$F_{\mathrm{pre}}$ [$\mathrm{L}\,\mathrm{h}^{-1}$]"
                 ]
             }
         ]
@@ -270,6 +270,75 @@ hyperparam_config_IdiophasePlant = {
             
             "input_dim": 2,  # y1, y2
             "output_dim": 2  # u1, u2
+        },
+        "training_data_generation_config": {
+            "u_1_D_center_min": 0.6,
+            "u_1_D_center_max": 0.9,
+
+            "u_1_hard_min": 0.0,
+            "u_1_hard_max": 1,
+
+            "x_1_hard_min": 0,
+            "x_1_hard_max": None,
+
+            "y_1_hard_min": 0,
+            "y_1_hard_max": 0.12,
+
+            "input_dim": 2,  # y
+            "output_dim": 2,  # u
+
+            "u_1_p" : 0.5,
+            "u_1_lambd" : 4,
+
+            "u_2_p" : 0.5,
+            "u_2_lambd" : 4,
+
+            "u_2_D_center_min": 0.0,
+            "u_2_D_center_max": 0.5,
+
+            "u_2_hard_min": 0.0,
+            "u_2_hard_max": 1,
+
+            "dt" : 0.01,
+
+            "batch_size": 2000,
+            "seq_len":    2001,
+
+            "min_correlation_threshold": -1.1
+        },
+        "training_data_cfg" : {
+            "batch_size": 2000,
+            "seq_len": 2001,
+            "dt": 0.01,
+            "min_correlation_threshold": -1.1,
+            "delay_steps": 1,
+
+            "u_1_D_center_min": 0.6,
+            "u_1_D_center_max": 0.9,
+
+            "u_1_hard_min": 0.0,
+            "u_1_hard_max": 1,
+
+            "x_1_hard_min": 0,
+            "x_1_hard_max": None,
+
+            "y_1_hard_min": 0,
+            "y_1_hard_max": 0.12,
+
+            "input_dim": 2,  # y
+            "output_dim": 2,  # u
+
+            "u_1_p" : 0.5,
+            "u_1_lambd" : 4,
+
+            "u_2_p" : 0.5,
+            "u_2_lambd" : 4,
+
+            "u_2_D_center_min": 0.0,
+            "u_2_D_center_max": 0.5,
+
+            "u_2_hard_min": 0.0,
+            "u_2_hard_max": 1,
         },
         "mamba": {
             "expand": 1,

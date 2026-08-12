@@ -36,6 +36,49 @@ def load_scaler(scaler_dir):
     print(f"✅ Successfully loaded scalers from {scaler_dir}")
     return scaler
 
+
+def compute_trajectory_metrics(y_true, y_pred, dt, eps=1e-8):
+    """
+    Computes trajectory error metrics averaged across time steps and features.
+    
+    Args:
+        y_true: np.ndarray of shape (N_samples, seq_len, dim) or (seq_len, dim)
+        y_pred: np.ndarray of shape (N_samples, seq_len, dim) or (seq_len, dim)
+        dt: float, time step interval
+        eps: small constant to avoid division by zero
+        
+    Returns:
+        dict containing MSE, RMSE, MAE, MAPE, NRMSE, IAE, and ISE
+    """
+    error = y_true - y_pred
+    abs_error = np.abs(error)
+    sq_error = error ** 2
+
+    # Pointwise trajectory metrics (full float precision)
+    mse = float(np.mean(sq_error))
+    rmse = float(np.sqrt(mse))
+    mae = float(np.mean(abs_error))
+    mape = float(np.mean(abs_error / (np.abs(y_true) + eps)) * 100.0)
+    
+    # Normalized RMSE by standard deviation of ground truth
+    std_true = float(np.std(y_true))
+    nrmse = float(rmse / (std_true + eps))
+    
+    # Integral metrics per trajectory sequence, averaged across trajectories and features
+    iae = float(np.mean(np.sum(abs_error, axis=-2) * dt))
+    ise = float(np.mean(np.sum(sq_error, axis=-2) * dt))
+
+    return {
+        "MSE": mse,
+        "RMSE": rmse,
+        "MAE": mae,
+        "MAPE": mape,
+        "NRMSE": nrmse,
+        "IAE": iae,
+        "ISE": ise
+    }
+
+    
 #=== FUNCTION TO COMPUTE AND SAVE TRACKING METRICS ===#
 def compute_and_save_tracking_metrics(
     y_np,        # Actual output [steps, batch_size]
@@ -43,28 +86,11 @@ def compute_and_save_tracking_metrics(
     dt,
     dirname,
     settle_tol=0.05, # Band for "tracking error"
-    suffix = None
+    suffix=None
 ):
     """
-    Pure tracking metrics for curve comparison.
+    Pure tracking metrics for curve comparison including MAPE.
     Calculates how well the plant output follows a dynamic reference.
-
-    Parameters:
-    - y_np (numpy.ndarray): Actual plant output values, shaped [steps, batch_size].
-    - ref_np (numpy.ndarray or float): Reference trajectory targets to match.
-    - dt (float): Sampling time increment between steps.
-    - dirname (str): Directory pathway where metrics reports will be saved.
-    - settle_tol (float): Tolerance threshold scale defining acceptable error bands (default: 0.05).
-
-    Returns:
-    - df (pandas.DataFrame): Evaluated performance data broken down for every individual trajectory sequence.
-
-    The function standardizes dimensions between the plant output configurations and the reference target 
-    signals. It executes transient step error calculations to extract statistical benchmarks including 
-    Mean Absolute Error (MAE), Mean Squared Error (MSE), Root Mean Squared Error (RMSE), Integral Absolute 
-    Error (IAE), and Integral Square Error (ISE). Additionally, it isolates transient maximum errors and 
-    determines the overall percentage of processing duration spent within the defined settling tolerance band, 
-    writing raw and summary analytical files to disk.
     """
     steps, batch_size = y_np.shape
     
@@ -77,27 +103,29 @@ def compute_and_save_tracking_metrics(
     error = y_np - ref_np
     abs_error = np.abs(error)
 
-    # --- Integral Metrics (Total Tracking Performance) ---
+    # Small epsilon to prevent division by zero for near-zero references
+    denom = np.abs(ref_np) + 1e-8
+
+    # --- Integral & Percentage Metrics ---
     mae = abs_error.mean(axis=0)
+    mape = (abs_error / denom).mean(axis=0) * 100.0  # MAPE in %
     mse = (error ** 2).mean(axis=0)
     rmse = np.sqrt(mse)
     iae = abs_error.sum(axis=0) * dt
     ise = (error ** 2).sum(axis=0) * dt
 
     # --- Dynamic Tracking Metrics ---
-    # Max Tracking Error: The single biggest deviation during the run
     max_error = np.max(abs_error, axis=0)
     
     # Time spent within tolerance band (%)
-    # How much of the sequence was the error < 5% of the reference?
-    denom = np.abs(ref_np) + 1e-8
     within_band = abs_error <= (settle_tol * denom)
-    time_in_band_pct = (np.sum(within_band, axis=0) / steps) * 100
+    time_in_band_pct = (np.sum(within_band, axis=0) / steps) * 100.0
 
     # --- Assemble DataFrame ---
     df = pd.DataFrame({
         "trajectory": np.arange(batch_size),
         "MAE": mae,
+        "MAPE_%": mape,
         "MSE": mse,
         "RMSE": rmse,
         "IAE": iae,
@@ -111,11 +139,9 @@ def compute_and_save_tracking_metrics(
     summary_df.columns = ['metric', 'mean', 'std', 'min', 'max']
 
     # --- Save ---
-
     file_ext = f"_{suffix}" if suffix else ""
-    
-    save_df_to_csv(df, dirname, "tracking_metrics_per_trajectory")
-    save_df_to_csv(summary_df, dirname, "tracking_metrics_summary")
+    save_df_to_csv(df, dirname, f"tracking_metrics_per_trajectory{file_ext}")
+    save_df_to_csv(summary_df, dirname, f"tracking_metrics_summary{file_ext}")
 
     return df
 
@@ -204,11 +230,11 @@ def generate_reference_trajectory(steps, dt, device, mode="constant", constant_v
         
         # Use tanh to sharpen the curve into a "soft" rectangle with an upward linear drift
 
-        noise = np.random.uniform(-0.005, 0.005, size=time_axis.shape)
+        noise = 0 #np.random.uniform(-0.005, 0.005, size=time_axis.shape)
 
         #r_trajectory_np = 0.25 + 0.04 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism #chemostat
 
-        r_trajectory_np = 0.1 + 0.05 * np.tanh(gain * sine_base) - 0.00 * time_axis   # Add small random noise for realism
+        r_trajectory_np = 0.02 + 0.005 * np.tanh(gain * sine_base) - 0.00 * time_axis +noise  # Add small random noise for realism
         
         # Convert the structural numpy baseline into a target PyTorch tensor array
         r_trajectory = torch.tensor(r_trajectory_np, device=device, dtype=torch.float32).unsqueeze(1)
@@ -1246,13 +1272,13 @@ def simulate_tracking_esn(
     Simulates a controlled MIMO plant using torchdiffeq adaptive-step integration 
     over a specified time horizon while tracking separate reference trajectories using an ESN.
     """
-    sig_cfg = hyperparam_config["signal"]
+    training_data_cfg = hyperparam_config["training_data_cfg"]
     sim_cfg = hyperparam_config["simulate"]
     esn_cfg = hyperparam_config.get("esn", hyperparam_config.get("plant", {}))
     plant_cfg = hyperparam_config["plant"]
 
     steps = sim_cfg["seq_len"]
-    dt = sig_cfg["dt"]
+    dt = training_data_cfg["dt"]
     batch_size = sim_cfg["batch_size"]
     
     # ESN runs on CPU via NumPy, but torchdiffeq can still use your configured device
@@ -2116,6 +2142,260 @@ import os
 import torch
 import numpy as np
 import pandas as pd
+from typing import Dict, Any, List
+def simulate_tracking_stateful_multi_model(
+    models_dict: Dict[str, Dict[str, Any]],  # {"Model_Name": {"model": m, "x_scaler": x_s, "y_scaler": y_s}}
+    plant: Any,
+    r_trajectories: List[torch.Tensor],       # List of reference trajectories [steps] for each output dim
+    hyperparam_config: Dict[str, Any],
+    dirname: str,
+    plot_individual_plots: bool = False
+) -> Dict[str, Any]:
+    """
+    Simulates and compares multiple controlled MIMO plant inverse models over a 
+    specified time horizon using stateful, step-by-step inference on identical initial conditions.
+    """
+    # Extract global configurations
+    train_cfg = hyperparam_config["train"]
+    training_data_cfg = hyperparam_config["training_data_cfg"]
+    sim_cfg = hyperparam_config["simulate"]
+    plant_cfg = hyperparam_config["plant"]
+
+    steps = sim_cfg["seq_len"]
+    dt = training_data_cfg["dt"]
+    batch_size = sim_cfg["batch_size"]
+    device = train_cfg["device"]
+    input_dim = plant_cfg["input_dim"]    # Plant outputs (y1, y2, ...)
+    output_dim = plant_cfg["output_dim"]  # Plant inputs / control actions (u1, u2, ...)
+
+    n_y = train_cfg["n_y"]
+    n_u = train_cfg["n_u"]
+    warmup_steps = 10
+
+    # Instantiate Plant
+    plant_instance = plant(hyperparam_config) if isinstance(plant, type) else plant
+
+    # Validate and prepare reference trajectory
+    if len(r_trajectories) != input_dim:
+        raise ValueError(f"Expected {input_dim} reference trajectories, got {len(r_trajectories)}")
+    
+    r_trajectory = torch.stack(r_trajectories, dim=1).to(device)  # [steps, input_dim]
+    r_np = r_trajectory.cpu().numpy()
+
+    # Capture canonical baseline initial state across ALL model runs for absolute fairness
+    baseline_initial_state = plant_instance.get_initial_state(batch_size)
+    sample_state = plant_instance.get_initial_state(1)
+    state_dim = sample_state.shape[-1]
+
+    # Data structures to store results for every model
+    model_results = {}
+
+    # =========================================================================
+    # 1. RUN SIMULATION FOR EACH MODEL SEPARATELY
+    # =========================================================================
+    for model_name, model_meta in models_dict.items():
+        print(f"\n🚀 Simulating Model: [{model_name}] ({batch_size} trajectories x {steps} steps)...")
+        
+        model = model_meta["model"]
+        x_scaler = model_meta["x_scaler"]
+        y_scaler = model_meta["y_scaler"]
+
+        model.eval()
+        
+        # Agnostic state/memory reset call
+        if hasattr(model, "reset_memory"):
+            model.reset_memory(batch_size=batch_size, device=device)
+        elif hasattr(model, "reset_hidden_states"):
+            model.reset_hidden_states(batch_size=batch_size, device=device)
+
+        if hasattr(model, "core") and hasattr(model.core, "return_bc"):
+            model.core.return_bc = True
+
+        # Copy identical initial plant state
+        state = baseline_initial_state.clone() if torch.is_tensor(baseline_initial_state) else baseline_initial_state.copy()
+
+        # Allocate storage buffers for this model
+        all_y = torch.zeros((steps, batch_size, input_dim), device=device)
+        all_u = torch.zeros((steps, batch_size, output_dim), device=device)
+        all_states = torch.zeros((steps, batch_size, state_dim), device=device)
+
+        # Seed signal history buffers
+        initial_y = plant_instance.get_y(state, 0.0).cpu().numpy()
+        y_histories = [[initial_y[b].copy()] for b in range(batch_size)]
+        u_histories = [[np.zeros(output_dim)] for b in range(batch_size)]
+
+        with torch.no_grad():
+            for i in range(steps):
+                t = i * dt
+                y_current = plant_instance.get_y(state, t)
+                y_curr_np = y_current.cpu().numpy()
+
+                # Update output window history
+                for b in range(batch_size):
+                    y_histories[b].append(y_curr_np[b])
+                    if len(y_histories[b]) > (n_y + 1):
+                        y_histories[b].pop(0)
+
+                # Look-ahead target reference
+                next_idx = min(i + 1, steps - 1)
+                target_r = r_trajectory[next_idx].expand(batch_size, input_dim)
+                tgt_r_np = target_r.cpu().numpy()
+
+                if i < warmup_steps:
+                    # Warmup Phase
+                    u_unscaled = 0.5 * np.ones((batch_size, output_dim))
+                    u = torch.tensor(u_unscaled, dtype=torch.float32, device=device)
+                else:
+                    # Model Control Phase
+                    v_k_batch_raw = []
+                    for b in range(batch_size):
+                        y_window = np.array(y_histories[b])
+                        y_hist_reversed = y_window[::-1].flatten()
+
+                        u_window = np.array(u_histories[b]) if n_u > 0 else np.array([])
+                        u_hist_reversed = u_window[::-1].flatten() if n_u > 0 else np.array([])
+
+                        v_k_single = np.concatenate([tgt_r_np[b], y_hist_reversed, u_hist_reversed])
+                        v_k_batch_raw.append(v_k_single)
+
+                    v_k_batch_raw = np.array(v_k_batch_raw)
+                    v_k_scaled = x_scaler.transform(v_k_batch_raw)
+                    v_k_tensor = torch.tensor(v_k_scaled, dtype=torch.float32, device=device)
+
+                    # Model Step (Works for Mamba, LSTMs, Transformers, MLPs)
+                    if hasattr(model, "step"):
+                        u_norm_tensor = model.step(v_k_tensor)
+                    else:
+                        u_norm_tensor = model(v_k_tensor)
+
+                    u_norm_np = u_norm_tensor.cpu().numpy()
+                    u_unscaled = y_scaler.inverse_transform(u_norm_np)
+
+                    # Clip to physical limits
+                    u_unscaled = np.clip(u_unscaled, plant_cfg["u_1_hard_min"], plant_cfg["u_1_hard_max"])
+                    u = torch.tensor(u_unscaled, dtype=torch.float32, device=device)
+
+                # Update control action history window
+                for b in range(batch_size):
+                    u_histories[b].append(u_unscaled[b])
+                    if len(u_histories[b]) > n_u:
+                        u_histories[b].pop(0)
+
+                # Step physical plant
+                if output_dim == 1:
+                    state, _ = plant_instance.step(state=state, u=u[:, 0:1], t=t, dt=dt)
+                else:
+                    try:
+                        state, _ = plant_instance.step(state=state, u=u, t=t, dt=dt)
+                    except TypeError:
+                        kwargs = {f"u{j+1}": u[:, j:j+1] for j in range(output_dim)}
+                        state, _ = plant_instance.step(state=state, t=t, dt=dt, **kwargs)
+
+                # Store sequence history
+                all_y[i] = y_current
+                all_u[i] = u
+                all_states[i] = state
+
+        # Save model trajectory results
+        model_results[model_name] = {
+            "y": all_y.cpu().numpy(),       # [steps, batch_size, input_dim]
+            "u": all_u.cpu().numpy(),       # [steps, batch_size, output_dim]
+            "states": all_states.cpu().numpy()  # [steps, batch_size, state_dim]
+        }
+
+    # =========================================================================
+    # 2. OVERLAYED PLOTTING ACROSS MODELS
+    # =========================================================================
+    time_axis = np.arange(steps) * dt
+    plot_metadata = plant_instance.get_plot_config() if hasattr(plant_instance, "get_plot_config") else []
+
+    output_meta = next((c for c in plot_metadata if any(col.startswith("y") for col in c["cols"])), {})
+    control_meta = next((c for c in plot_metadata if any(col.startswith("u") for col in c["cols"])), {})
+    state_meta = next((c for c in plot_metadata if any(col.startswith("x") for col in c["cols"])), {})
+
+    # --- 2A. Stacked Output Tracking Comparison Plot ---
+    signals_to_plot, labels_to_plot, ylabels_to_plot = [], [], []
+
+    for i in range(input_dim):
+        row_signals, row_labels = [], []
+        
+        # Add Reference Curve
+        row_signals.append(r_np[:, i])
+        row_labels.append("Reference Target")
+
+        # Add mean response trajectory for each model
+        for model_name, res in model_results.items():
+            mean_y_traj = res["y"][:, :, i].mean(axis=1)  # Average over batch
+            row_signals.append(mean_y_traj)
+            row_labels.append(f"{model_name}")
+
+        signals_to_plot.append(row_signals)
+        labels_to_plot.append(row_labels)
+        
+        y_labels_list = output_meta.get("ylabel", [])
+        row_ylabel = y_labels_list[i] if isinstance(y_labels_list, list) and i < len(y_labels_list) else f"Output {i+1}"
+        ylabels_to_plot.append(row_ylabel)
+
+    plot_stacked(
+        t=time_axis,
+        signals=signals_to_plot,
+        labels=labels_to_plot,
+        xlabel=rf"$t \; / \; \mathrm{{s}}$",
+        ylabel=ylabels_to_plot,
+        asp=[0.33] * len(signals_to_plot),
+        dirname=dirname,
+        filename="models_comparison_outputs_stacked.png",
+        show=True
+    )
+
+    # --- 2B. Stacked Control Actions Comparison Plot ---
+    signals_to_plot, labels_to_plot, ylabels_to_plot = [], [], []
+
+    for i in range(output_dim):
+        row_signals, row_labels = [], []
+
+        for model_name, res in model_results.items():
+            mean_u_traj = res["u"][:, :, i].mean(axis=1)
+            row_signals.append(mean_u_traj)
+            row_labels.append(f"{model_name}")
+
+        signals_to_plot.append(row_signals)
+        labels_to_plot.append(row_labels)
+
+        y_labels_list = control_meta.get("ylabel", [])
+        row_ylabel = y_labels_list[i] if isinstance(y_labels_list, list) and i < len(y_labels_list) else f"Action {i+1}"
+        ylabels_to_plot.append(row_ylabel)
+
+    plot_stacked(
+        t=time_axis,
+        signals=signals_to_plot,
+        labels=labels_to_plot,
+        xlabel=rf"$t \; / \; \mathrm{{s}}$",
+        ylabel=ylabels_to_plot,
+        asp=[0.33] * len(signals_to_plot),
+        dirname=dirname,
+        filename="models_comparison_controls_stacked.png",
+        show=True
+    )
+
+    # =========================================================================
+    # 3. METRICS COMPILATION FOR ALL MODELS
+    # =========================================================================
+    comparison_metrics = {}
+    for model_name, res in model_results.items():
+        comparison_metrics[model_name] = {}
+        for i in range(input_dim):
+            y_traj = res["y"][:, :, i]
+            r_traj = r_np[:, i]
+            metrics = compute_and_save_tracking_metrics(
+                y_traj, r_traj, dt, dirname=os.path.join(dirname, model_name), suffix=f"y_{i+1}"
+            )
+            comparison_metrics[model_name][f"y_{i+1}"] = metrics
+
+    return {
+        "model_results": model_results,
+        "metrics": comparison_metrics
+    }
 
 def simulate_tracking_stateful(
     model,
@@ -2136,7 +2416,7 @@ def simulate_tracking_stateful(
     """
     # Extract configuration sub-dictionaries
     train_cfg = hyperparam_config["train"]
-    sig_cfg = hyperparam_config["signal"]
+    training_data_cfg = hyperparam_config["training_data_cfg"]
     sim_cfg = hyperparam_config["simulate"]
     plant_cfg = hyperparam_config["plant"]
 
@@ -2144,7 +2424,7 @@ def simulate_tracking_stateful(
     
     # Unpack specific parameters
     steps = sim_cfg["seq_len"]
-    dt = sig_cfg["dt"]
+    dt = training_data_cfg["dt"]
     batch_size = sim_cfg["batch_size"]
     device = train_cfg["device"]
     input_dim = plant_cfg["input_dim"]    # Number of plant outputs (y1, y2, ...)

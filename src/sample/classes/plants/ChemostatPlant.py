@@ -1,6 +1,15 @@
 import torch
 
 class ChemostatPlant:
+    VARIABLE_UNITS = {
+        "x": "g L⁻¹",      # Biomass concentration
+        "biomass": "g L⁻¹",
+        "s": "g L⁻¹",      # Substrate concentration
+        "substrate": "g L⁻¹",
+        "y": "h⁻¹",        # Growth rate (mu)
+        "mu": "h⁻¹",
+        "u": "h⁻¹",        # Dilution rate (D)
+    }
     def __init__(self, hyperparam_config):
         self.device = hyperparam_config["train"]["device"]
         self.dt = hyperparam_config["signal"]["dt"]
@@ -10,7 +19,7 @@ class ChemostatPlant:
         self.Ks = torch.tensor(hyperparam_config["plant"]["Ks"], device=self.device)
         self.Y = torch.tensor(hyperparam_config["plant"]["Y"], device=self.device)
         self.sR = torch.tensor(hyperparam_config["plant"]["sR"], device=self.device)
-        
+        self.hyperparam_config = hyperparam_config
 
     def get_initial_state(self, batch_size):
         """
@@ -105,19 +114,19 @@ class ChemostatPlant:
         return [
             {
                 "cols": ["x1", "x2"],
-                "labels": [r"$X$ / $\mathrm{g}\,\mathrm{L}^{-1}$", r"$S$ / $\mathrm{g}\,\mathrm{L}^{-1}$"],
+                "labels": [r"$X$ [$\mathrm{g}\,\mathrm{L}^{-1}$]", r"$S$ [$\mathrm{g}\,\mathrm{L}^{-1}$]"],
                 "title": "Chemostat State Evolution",
                 "ylabel": "Concentration [g/L]"
             },
             {
                 "cols": ["y"],
-                "labels": [r"$\mu/\mathrm{h}^{-1}$"],
+                "labels": [r"$\mu$ [$\mathrm{h}^{-1}$]"],
                 "title": "Growth Rate Inverse Learning",
                 "ylabel": "Growth Rate [1/h]"
             },
             {
                 "cols": ["u"],
-                "labels": [r"$D / \mathrm{L}\,\mathrm{h}^{-1}$"],
+                "labels": [r"$D$ [$\mathrm{L}\,\mathrm{h}^{-1}$]"],
                 "title": "Control Input (D)",
                 "ylabel": "Dilution Rate [1/h]"
             }
@@ -137,9 +146,57 @@ hyperparam_config_ChemostatPlant = {
         "Ks": 0.2,          # Half-saturation constant 
         "Y": 0.6,           # Yield coefficient
         "sR": 1.0,
+        "input_dim": 1,   # number of plant outputs
+        "output_dim": 1,   # number of plant control inputs
+        "u_1_hard_min": 0.0,
+        "u_1_hard_max": 1,
+
+        "x_1_hard_min" : 0,
+        "x_2_hard_min" : None,
+
+        "x_1_hard_min" : 0,
+        "x_2_hard_min" : None,
+
+        "y_1_hard_min": 0,
+        "y_1_hard_max": 0.5,
+
+        
+
+    },
+    "signal": {
+        
+        "dt": 0.1
+    },
+    "train": {
+        "k_folds": 2,
+        "epochs": 20,
+        "lr": 1e-3,
+        "device": "cuda", # if torch.cuda.is_available() else "cpu",
+        
+        "mini_batch_size": 1,
+        
+        
+        "loss_function": "MSELoss", 
+        "lr_decay_rate":1,
+        
+        "val_patience_epochs": 3,
+        "val_min_delta": 0.0005,
+
+        "n_u": 2,
+        "n_y": 2,
+        "lookback_offset": 2
+
+        
+    },
+    "training_data_cfg" : {
+        "batch_size": 10,
+        "seq_len": 501,
+        "dt": 0.1,
+        "min_correlation_threshold": -10, #0.7,
+        "delay_steps": 1,
 
         "u_1_D_center_min": 0.15,
-        "u_1_D_center_max": 0.8,
+        "u_1_D_center_max": 0.2,
 
         "u_1_hard_min": 0.0,
         "u_1_hard_max": 1,
@@ -154,37 +211,33 @@ hyperparam_config_ChemostatPlant = {
         "y_1_hard_max": 0.5,
 
         "input_dim": 1,   # number of plant outputs
-        "output_dim": 1   # number of plant control inputs
+        "output_dim": 1,   # number of plant control inputs,
+        "u_1_lambd": 20,
+        "u_1_p": 0.05,
 
-    },
-    "signal": {
-        "lambd": 20,
-        "p": 0.01,
-        "seq_len": 1001,
-        "dt": 0.1
-    },
-    "train": {
-        "k_folds": 2,
-        "epochs": 10,
-        "batch_size": 1000,
-        "lr": 1e-3,
-        "device": "cuda", # if torch.cuda.is_available() else "cpu",
-        "delay_steps": 1,
-        "loss_function": "MSELoss()", 
-        "lr_decay_rate":1,
-        "min_correlation_threshold": -10, #0.7,
-        "val_patience_epochs": 3,
-        "val_min_delta": 0.0005,
-
-        "n_u": 2,
-        "n_y": 2,
-        "lookback_offset": 2
     },
     "mamba": {
         "d_state": 1,
-        "expand": 1
+        "expand": 1,
+        "d_conv" : 1
     },
 
+    "mamba_param_space" : {
+        "mamba.d_conv":  {"type": "int", "low": 1, "high": 10},
+        "mamba.d_state": {"type": "int", "low": 1, "high": 64},
+        "mamba.expand":  {"type": "int", "low": 1, "high": 10},
+        },
+
+    "lstm": {
+        "hidden_size": 64,
+        "num_layers": 2,
+        "dropout": 0.1,
+    },
+    "lstm_param_space" : {
+        "lstm.hidden_size": {"type": "int", "low": 16, "high": 128},
+        "lstm.num_layers": {"type": "int", "low": 1, "high": 4},
+        "lstm.dropout": {"type": "float", "low": 0.0, "high": 0.5},
+    },
     "esn": {
         "units": 200,   
         "lr": 0.5,

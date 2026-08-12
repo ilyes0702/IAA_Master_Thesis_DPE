@@ -284,6 +284,37 @@ hyperparam_config_IndForProteinProductionPlant = {
         "val_min_delta": 0.0001,
         "lookback_offset": 10,
     },
+    "training_data_generation_config": {
+        "u_1_D_center_min": 0.05,
+        "u_1_D_center_max": 0.80,
+        "u_2_D_center_min": 0.00,
+        "u_2_D_center_max": 0.25,
+        "u_1_hard_min": 0.0,
+        "u_1_hard_max": 1.5,
+        "u_2_hard_min": 0.0,
+        "u_2_hard_max": 0.5,
+        "x_1_hard_min": 0.0,
+        "x_1_hard_max": None,
+        "x_2_hard_min": 0.0,
+        "x_3_hard_min": 0.0,
+        "x_4_hard_min": 0.0,
+        "x_5_hard_min": 0.0,    
+        "x_6_hard_min": 0.0,
+        "x_6_hard_max": None,
+        "x_7_hard_min": 0.0,
+        "x_7_hard_max": None, 
+
+        "u_1_lambd": 4,
+        "u_2_lambd": 4,
+        "u_1_p": 0.5,
+        "u_2_p": 0.5, 
+        "input_dim": 2,            # Dim(u) = [u1, u2]
+        "output_dim": 3,           # Dim(y) = [x1, x2, x4]
+        "dt": 0.01,
+        "batch_size": 10000,
+        "seq_len": 1501,
+        "min_correlation_threshold": -1.1
+    },
     "mamba": {
         "d_state": 32,             # State expansion dimension space
         "expand": 1               # Core internal block expansion coefficient width

@@ -18,7 +18,7 @@ from src.sample.utils.general_utils import *
 from src.hyperparam_config import *
 from src.sample.classes.plants.IdiophasePlant import IdiophasePlant
 from src.sample.classes.plants.MassSpringDamperPlant import MassSpringDamperPlant
-from src.sample.classes.plants.TrophophasePlant import TrophophasePlant
+from src.sample.classes.plants.TrophophasePlant import *
 from src.sample.classes.plants.ChemostatPlant import *
 
 from src.sample.classes.controllers.MambaInverseController import *
@@ -37,8 +37,8 @@ def main():
     # run_description = get_run_description()
     # log_message(f"RUN DESCRIPTION: {run_description}")
 
-    hyperparam_config = hyperparam_config_ChemostatPlant   # Initialize the plant model using hyperparameters
-    plant = ChemostatPlant(hyperparam_config=hyperparam_config)
+    hyperparam_config = hyperparam_config_TrophophasePlant   # Initialize the plant model using hyperparameters
+    plant = TrophophasePlant(hyperparam_config=hyperparam_config)
 
     #plant = IdiophasePlant(hyperparam_config_IdiophasePlant)
     
@@ -46,16 +46,16 @@ def main():
    
     #print(torch.load(controller_path, map_location='cuda'))
 
-    controller_path = "ChemostatPlant_training/fold_3/best_fold_model.pkl"
+    controller_path = "TrophophasePlant_training/fold_1/best_fold_model.pkl"
     # Load the trained inverse controller
     loaded_controller = load_model_esn(ESNInverseController, controller_path)
 
     scaler_x = load_scaler(
-        "results/2026-07-08/2026-07-08_12-14-38/ChemostatPlant_training/fold_3/scalers/2026-07-08_12-14-38_scaler_x.pkl"
+        "results/2026-08-04/2026-08-04_12-13-21/TrophophasePlant_training/fold_1/scalers/2026-08-04_12-13-21_scaler_x.pkl"
     )
 
     scaler_y = load_scaler(
-        "results/2026-07-08/2026-07-08_12-14-38/ChemostatPlant_training/fold_3/scalers/2026-07-08_12-14-38_scaler_y.pkl"
+        "results/2026-08-04/2026-08-04_12-13-21/TrophophasePlant_training/fold_1/scalers/2026-08-04_12-13-21_scaler_y.pkl"
         )
     
 
@@ -70,13 +70,15 @@ def main():
 
     print(f"Means y: {means_y}")
     print(f"Standard Deviations y: {stds_y}")
+
+    
     
     # Example: Separate sine and cosine trajectories for y1 and y2
 
     # Generate a dynamic reference trajectory (time-varying target)
     r_dynamic = generate_reference_trajectory(
         steps=hyperparam_config["simulate"]["seq_len"],
-        dt=hyperparam_config["signal"]["dt"],
+        dt=hyperparam_config["training_data_cfg"]["dt"],
         device=hyperparam_config["train"]["device"],
         mode="dynamic",
         gain=1.2,      # sharper transition edges
@@ -85,7 +87,7 @@ def main():
 
     r_static_y_1 = generate_reference_trajectory(
         steps=hyperparam_config["simulate"]["seq_len"],
-        dt=hyperparam_config["signal"]["dt"],
+        dt=hyperparam_config["training_data_cfg"]["dt"],
         device=hyperparam_config["train"]["device"],
         mode="constant",
         constant_val=0.3,
@@ -93,14 +95,14 @@ def main():
 
     r_static_y_2 = generate_reference_trajectory(
         steps=hyperparam_config["simulate"]["seq_len"],
-        dt=hyperparam_config["signal"]["dt"],
+        dt=hyperparam_config["training_data_cfg"]["dt"],
         device=hyperparam_config["train"]["device"],
         mode="constant",
         constant_val=50,
     )
 
     r_smooth = generate_smooth_profile_trajectory(
-        time_axis=torch.arange(hyperparam_config["simulate"]["seq_len"]) * hyperparam_config["signal"]["dt"],
+        time_axis=torch.arange(hyperparam_config["simulate"]["seq_len"]) * hyperparam_config["training_data_cfg"]["dt"],
         config={
             'y_floor': 0.35,
             'y_peak': 0.8,
@@ -112,7 +114,7 @@ def main():
     )
     # Define parameters for the smooth decay profile
     seq_len = hyperparam_config["simulate"]["seq_len"]
-    dt = hyperparam_config["signal"]["dt"]
+    dt = hyperparam_config["training_data_cfg"]["dt"]
     sim_device = hyperparam_config["train"]["device"]
 
     r_smooth_decay = generate_exponential_decay_trajectory(

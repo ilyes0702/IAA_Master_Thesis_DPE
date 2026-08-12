@@ -15,7 +15,7 @@ from src.sample.classes.plants.IdiophasePlant import IdiophasePlant
 from src.sample.classes.plants.MassSpringDamperPlant import MassSpringDamperPlant
 from src.sample.classes.plants.BajpaiReussPlant import BajpaiReussPlant
 
-from src.sample.classes.plants.TrophophasePlant import TrophophasePlant
+from src.sample.classes.plants.TrophophasePlant import *
 from src.hyperparam_config import *
 import matplotlib.pyplot as plt
 from src.sample.classes.plants.PenicillinPlantBirol2002 import PenicillinPlantBirol2002
@@ -33,15 +33,15 @@ def main() -> None:
 	"""
 
 	#hyperparam_config = hyperparam_config_BajpaiReussPlant
-	hyperparam_config = hyperparam_config_ChemostatPlant
-
-	plant = ChemostatPlant(hyperparam_config=hyperparam_config)
+	hyperparam_config = hyperparam_config_TrophophasePlant
+	print(hyperparam_config)
+	plant = TrophophasePlant(hyperparam_config=hyperparam_config)
 
 	#plant = IdiophasePlant(hyperparam_config)
 	dirname = plant.__class__.__name__ + "_training_data"
 
     # Generate and save MIMO dataset with delays
-	generate_and_save_dataset(
+	generate_and_save_dataset_marcia(
         plant,
         hyperparam_config,
         dirname=dirname,
@@ -49,7 +49,6 @@ def main() -> None:
         save_logs=True
 		)
 
-	print()
 
 if __name__ == "__main__":
 	main()

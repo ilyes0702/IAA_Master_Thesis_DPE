@@ -4,7 +4,7 @@ import torchode
 class TrophophasePlant:
     def __init__(self, hyperparam_config):
         self.device = hyperparam_config["train"]["device"]
-        self.dt = hyperparam_config["signal"]["dt"]
+        self.dt = hyperparam_config["training_data_cfg"]["dt"]
         self.plant_cfg = hyperparam_config["plant"]
 
         # Biological and physical parameters from Table 1
@@ -228,18 +228,18 @@ class TrophophasePlant:
         return [
             {
                 "cols": ["x_1", "x_2"],
-                "labels": [r"$X$ / $\mathrm{g}\,\mathrm{L}^{-1}$", r"$S$ / $\mathrm{g}\,\mathrm{L}^{-1}$"],
-                "ylabel": [r"$X$ / $\mathrm{g}\,\mathrm{L}^{-1}$", r"$S$ / $\mathrm{g}\,\mathrm{L}^{-1}$"]
+                "labels": [r"$X$ [$\mathrm{g}\,\mathrm{L}^{-1}$]", r"$S$ [$\mathrm{g}\,\mathrm{L}^{-1}$]"],
+                "ylabel": [r"$X$ [$\mathrm{g}\,\mathrm{L}^{-1}$]", r"$S$ [$\mathrm{g}\,\mathrm{L}^{-1}$]"]
             },
             {
                 "cols": ["y"],
-                "labels": [r"$\mu$ / $\mathrm{h}^{-1}$"],
-                "ylabel": r"$\mu$ / $\mathrm{h}^{-1}$"
+                "labels": [r"$\mu$ [$\mathrm{h}^{-1}$]"],
+                "ylabel": r"$\mu$ [$\mathrm{h}^{-1}$]"
             },
             {
                 "cols": ["u"],
-                "labels": [r"$F$ / $\mathrm{L}\,\mathrm{h}^{-1}$"],
-                "ylabel": r"$F$ / $\mathrm{L}\,\mathrm{h}^{-1}$"
+                "labels": [r"$F$ [$\mathrm{L}\,\mathrm{h}^{-1}$]"],
+                "ylabel": r"$F$ [$\mathrm{L}\,\mathrm{h}^{-1}$]"
             }
         ]
 
@@ -254,7 +254,7 @@ hyperparam_config_TrophophasePlant = {
     "plant" :{
         "mu_max": 0.12,
         "Ks": 50,
-        "m_S": 23.0, #0
+        "m_S": 23.0, 
         "p1": 0.00047,
         "p2": 200000.0,
         
@@ -278,12 +278,34 @@ hyperparam_config_TrophophasePlant = {
 
         
     },
-    "signal": {
-        "lambd": 4,
-        "p": 0.5,
-        "seq_len": 2001,
-        "dt": 0.01
+    "training_data_cfg" : {
+        "u_1_D_center_min": 0.6,
+        "u_1_D_center_max": 0.9,
+
+        "u_1_hard_min": 0.0,
+        "u_1_hard_max": 1,
+
+        "x_1_hard_min": 0,
+        "x_1_hard_max": None,
+
+        "y_1_hard_min": 0,
+        "y_1_hard_max": 0.12,
+
+        "input_dim": 1,  # y
+        "output_dim": 1,  # u
+
+        "u_1_p" : 0.5,
+        "u_1_lambd" : 4,
+
+        "dt" : 0.01,
+
+        "batch_size": 2000,
+        "seq_len":    2001,
+
+        "min_correlation_threshold": -1.1
+
     },
+
     "train": {
         # Hyperparameters to be constant
         "device": "cuda", 
@@ -303,28 +325,41 @@ hyperparam_config_TrophophasePlant = {
         "n_y": 2,
         "val_patience_epochs": 3,
         "val_min_delta": 0.0001,
-        "lookback_offset": 2
+        "lookback_offset": 20
     },
+
     "mamba": {
-        "expand": 8,
-        "d_state": 16,
-        "input_dim": 1,  # y
-        "output_dim": 1,  # u
-        "n_u": 2,
-        "n_y": 2
+        "expand": 9,
+        "d_state": 31,
+        "d_conv": 9,
+        "n_layer": 5
     },
+
+    "esn": {
+            "units": 200,   
+            "lr": 0.5,
+            "sr": 0.9,
+            "ridge": 1e-7,    # Regularization coefficient  
+        },
+
     "mamba_param_space" : {
     "mamba.d_conv":  {"type": "int", "low": 1, "high": 10},
     "mamba.d_state": {"type": "int", "low": 1, "high": 64},
     "mamba.expand":  {"type": "int", "low": 1, "high": 10},
-    "mamba.n_layer": {"type": "int", "low": 1, "high": 5},
-    "train.lr":      {"type": "float", "low": 1e-4, "high": 1e-2, "log": True} # Logarithmic scale
+    },
+
+    "transformer": {
+        "nhead" : 2,
+        "num_layers" : 6,
+        "dim_feedforward" : 256,
+        "max_seq_len" : 2000
     },
     "transformer_param_space":  {
     "transformer.nhead":           {"type": "categorical", "choices": [1, 2, 3]}, # Must divide d_model
     "transformer.num_layers":      {"type": "int", "low": 1, "high": 4},
     "transformer.dim_feedforward": {"type": "categorical", "choices": [64, 128, 256]},
     },
+
     "simulate": {
         "batch_size": 10,
         "seq_len": 2001,

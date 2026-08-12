@@ -161,36 +161,34 @@ def cluster_and_plot_dbscan(
 
     return cluster_labels, cluster_images
 
-def generate_signal_single(hyperparam_config, channel_idx=1):
+def generate_signal_single(training_data_cfg, channel_idx=1):
     """
     Generate smooth, band-limited control signals using an Active Shielding methodology
     to guarantee that each unique MIMO channel stays completely within its hard limits,
     utilizing independent, channel-specific lambda (bandwidth) and p (amplitude) settings.
     """
-    sig_cfg = hyperparam_config["signal"]
-    train_cfg = hyperparam_config["train"]
-    plant_cfg = hyperparam_config["plant"]
+
     
-    batch_size = train_cfg["batch_size"]
-    seq_len = sig_cfg["seq_len"]
-    device = train_cfg["device"]
+    batch_size = training_data_cfg["batch_size"]
+    seq_len = training_data_cfg["seq_len"]
+    device = "cuda"
     
     # 🎯 NEW: Dynamic Channel-Specific Lambda (Bandwidth) Extraction
-    lambd = sig_cfg.get(f"u_{channel_idx}_lambd")
+    lambd = training_data_cfg[f"u_{channel_idx}_lambd"]
     if lambd is None: 
-        lambd = sig_cfg["lambd"]  # Global fallback
+        lambd = training_data_cfg["lambd"]  # Global fallback
     
     # 🎯 NEW: Dynamic Channel-Specific Configured Amplitude Extraction
-    configured_p = sig_cfg.get(f"u_{channel_idx}_p")
+    configured_p = training_data_cfg[f"u_{channel_idx}_p"]
     if configured_p is None: 
-        configured_p = sig_cfg["p"]  # Global fallback
+        configured_p = training_data_cfg["p"]  # Global fallback
     
     # Step 1: Sample values from a uniform distribution [-1, 1]
     raw = torch.rand((batch_size, seq_len), device=device) * 2 - 1
     
     # Step 2: Fourier-transform to frequency domain
     fft_sig = torch.fft.rfft(raw, dim=1)
-    freqs = torch.fft.rfftfreq(seq_len, d=sig_cfg["dt"])
+    freqs = torch.fft.rfftfreq(seq_len, d=training_data_cfg["dt"])
     
     # Step 3: Drop frequencies above 1/lambda using the channel-specific lambda
     cutoff = 1.0 / lambd
@@ -205,17 +203,17 @@ def generate_signal_single(hyperparam_config, channel_idx=1):
     v_norm = 2 * (v_train - v_min) / (v_max - v_min + 1e-8) - 1
     
     # Dynamic Channel-Specific Center Value Extraction
-    c_min = plant_cfg[f"u_{channel_idx}_D_center_min"]
+    c_min = training_data_cfg[f"u_{channel_idx}_D_center_min"]
     
         
-    c_max = plant_cfg[f"u_{channel_idx}_D_center_max"]
+    c_max = training_data_cfg[f"u_{channel_idx}_D_center_max"]
     
 
     # Read channel-specific hard boundaries or fall back to system defaults
-    u_hard_min = plant_cfg.get(f"u_{channel_idx}_hard_min")
+    u_hard_min = training_data_cfg[f"u_{channel_idx}_hard_min"]
     
     
-    u_hard_max = plant_cfg.get(f"u_{channel_idx}_hard_max")
+    u_hard_max = training_data_cfg[f"u_{channel_idx}_hard_max"]
     
     #print("c_min", c_min)
     #print("c_max", c_max)
@@ -240,22 +238,20 @@ def generate_signal_single(hyperparam_config, channel_idx=1):
     return u_buffer, u_center
 
 
-def generate_signals(hyperparam_config):
+def generate_signals(training_data_cfg):
     """Generate independent MIMO control vectors using index-aware tracking."""
-    train_cfg = hyperparam_config["train"]
-    mamba_cfg = hyperparam_config["mamba"]
-    plant_cfg = hyperparam_config["plant"]
-
-    batch_size = train_cfg["batch_size"]
-    output_dim = plant_cfg["output_dim"] 
-    input_dim = plant_cfg["input_dim"]
+    
+    #batch_size = training_data_cfg["batch_size"]
+    
+    #output_dim = training_data_cfg["output_dim"] 
+    input_dim = training_data_cfg["input_dim"]
 
     u_buffer = []
     D_center_list = []
 
     for i in range(input_dim):
         # Pass 1-based index to resolve channel configurations cleanly
-        u_single, D_center = generate_signal_single(hyperparam_config, channel_idx=i+1)
+        u_single, D_center = generate_signal_single(training_data_cfg, channel_idx=i+1)
         u_buffer.append(u_single.unsqueeze(-1))
         D_center_list.append(D_center)
 
@@ -313,7 +309,7 @@ def generate_signals_mix(hyperparam_config):
 
     return u_buffer, D_center
 
-def generate_training_batch(plant, hyperparam_config):
+def generate_training_batch(plant, training_data_cfg):
     """
     Simulates the system and returns raw, continuous time-series arrays.
     No sliding window or derivative slicing is performed here.
@@ -324,19 +320,18 @@ def generate_training_batch(plant, hyperparam_config):
         - raw_states: [batch_size, seq_len, state_dim]
         - D_center: [batch_size, output_dim]
     """
-    sig_cfg = hyperparam_config["signal"]
-    train_cfg = hyperparam_config["train"]
-
-    seq_len = int(sig_cfg["seq_len"])
-    dt = sig_cfg["dt"]
-    batch_size = int(train_cfg["batch_size"])
-    device = train_cfg["device"]
+    
+    dt = training_data_cfg["dt"]
+    seq_len = training_data_cfg["seq_len"]
+    
+    batch_size = int(training_data_cfg["batch_size"])
+    device = "cuda"
 
     # Initialize plant state
     state = plant.get_initial_state(batch_size)
 
     # Generate smooth input signals (u)
-    u_buffer, D_center = generate_signals(hyperparam_config)
+    u_buffer, D_center = generate_signals(training_data_cfg)
 
     raw_y_history = []
     raw_u_history = []
@@ -422,7 +417,7 @@ def plot_all_signals_overlay(signal_tensor, dt, dirname, signal_type, show_plot=
 
 def generate_and_save_dataset(
     plant,
-    hyperparam_config,
+    training_data_cfg,
     dirname,
     show_plots=False,
     show_overlay_plot=False,
@@ -434,15 +429,15 @@ def generate_and_save_dataset(
     
     Excludes any out-of-bounds curves from the final dataset.
     """
-    sig_cfg = hyperparam_config["signal"]
-    train_cfg = hyperparam_config["train"]
-    plant_cfg = hyperparam_config["plant"]
-    device = train_cfg["device"]
-    dt = sig_cfg["dt"]
+
     
-    input_dim = plant_cfg["input_dim"]   # e.g., (y1, y2)
-    output_dim = plant_cfg["output_dim"] # e.g., (u1, u2)
-    total_sequences = int(train_cfg["batch_size"])
+
+    device = "cuda"
+    dt = training_data_cfg["dt"]
+    
+    input_dim = training_data_cfg["input_dim"]   # e.g., (y1, y2)
+    output_dim = training_data_cfg["output_dim"] # e.g., (u1, u2)
+    total_sequences = int(training_data_cfg["batch_size"])
     
     logs_dir = os.path.join(dirname, "dataset_logs")
     plots_dir = os.path.join(dirname, "dataset_plots")
@@ -450,7 +445,7 @@ def generate_and_save_dataset(
     print(f"🚀 Running batch simulation for {total_sequences} sequences...")
     
     # 1. Fetch raw, un-sliced continuous histories from the simulation engine
-    u_raw, y_raw, state_raw, batch_d_centers = generate_training_batch(plant, hyperparam_config)
+    u_raw, y_raw, state_raw, batch_d_centers = generate_training_batch(plant, training_data_cfg)
 
     u_np = u_raw.cpu().numpy()          # Shape: [Total_Seqs, Seq_Len, output_dim]
     y_np = y_raw.cpu().numpy()          # Shape: [Total_Seqs, Seq_Len, input_dim]
@@ -473,8 +468,8 @@ def generate_and_save_dataset(
         # 📊 DYNAMIC OUTPUTS (y) BOUNDS CHECK
         for i in range(input_dim):
             single_seq_y = y_t[:, i]
-            h_min = plant_cfg.get(f"y_{i+1}_hard_min")
-            h_max = plant_cfg.get(f"y_{i+1}_hard_max")
+            h_min = training_data_cfg.get(f"y_{i+1}_hard_min")
+            h_max = training_data_cfg.get(f"y_{i+1}_hard_max")
             
             if h_min is not None and np.min(single_seq_y) < h_min:
                 print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] Output y_{i+1} dropped below limit! "
@@ -489,8 +484,8 @@ def generate_and_save_dataset(
         # 🕹️ DYNAMIC CONTROL INPUTS (u) BOUNDS CHECK
         for i in range(input_dim):
             single_seq_u = u[:, i]
-            h_min = plant_cfg.get(f"f_u_{i+1}_hard_min") or plant_cfg.get(f"u_{i+1}_hard_min")
-            h_max = plant_cfg.get(f"f_u_{i+1}_hard_max") or plant_cfg.get(f"u_{i+1}_hard_max")
+            h_min = training_data_cfg.get(f"f_u_{i+1}_hard_min") or training_data_cfg.get(f"u_{i+1}_hard_min")
+            h_max = training_data_cfg.get(f"f_u_{i+1}_hard_max") or training_data_cfg.get(f"u_{i+1}_hard_max")
             
             if h_min is not None and np.min(single_seq_u) < h_min:
                 print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] Input u_{i+1} dropped below limit! "
@@ -506,8 +501,8 @@ def generate_and_save_dataset(
         state_dim = states.shape[-1] 
         for i in range(state_dim):
             single_state_seq = states[:, i]
-            x_min = plant_cfg.get(f"x_{i+1}_hard_min")
-            x_max = plant_cfg.get(f"x_{i+1}_hard_max")
+            x_min = training_data_cfg.get(f"x_{i+1}_hard_min")
+            x_max = training_data_cfg.get(f"x_{i+1}_hard_max")
             
             if x_min is not None and np.min(single_state_seq) < x_min:
                 print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] State variable x_{i+1} dropped below limit! "
@@ -528,7 +523,7 @@ def generate_and_save_dataset(
         # 📈 Calculate Pearson Correlation for filtering
         seq_corr_metrics = {"sequence_index": valid_idx_counter}
         drop_due_to_correlation = False
-        min_correlation_threshold = hyperparam_config["train"]["min_correlation_threshold"]
+        min_correlation_threshold = training_data_cfg["min_correlation_threshold"]
         
         for u_idx in range(input_dim):
             single_u_curve = u[:, u_idx]
@@ -611,7 +606,7 @@ def generate_and_save_dataset(
                 t=time_axis,
                 signals=signals_to_plot,
                 labels=labels_to_plot,
-                xlabel=rf"$t \; / \; \mathrm{{h}}$",
+                xlabel=rf"$t$ [$\mathrm{{h}}$]",
                 ylabel=ylabels_to_plot,
                 asp=dynamic_asp,
                 dirname=plots_dir,
@@ -643,11 +638,31 @@ def generate_and_save_dataset(
                 t=time_axis,
                 signals=state_signals,
                 labels=state_labels,
-                xlabel=rf"$t \; / \; \mathrm{{h}}$",
+                xlabel=rf"$t$ [$\mathrm{{h}}$]",
                 ylabel=state_ylabels,
                 asp=state_asp,
                 dirname=plots_dir,
                 filename=f"{filename_base}_states_plot.png",
+                show=True
+            )
+
+            # =================================================================
+            # 3. CONSOLIDATED STACKED PLOT FOR ALL SIGNALS (u, y, and x)
+            # =================================================================
+            all_signals = signals_to_plot + state_signals
+            all_labels = labels_to_plot + state_labels
+            all_ylabels = ylabels_to_plot + state_ylabels
+            all_asp = [0.33] * len(all_signals)
+
+            plot_stacked(
+                t=time_axis,
+                signals=all_signals,
+                labels=all_labels,
+                xlabel=rf"$t$ [$\mathrm{{h}}$]",
+                ylabel=all_ylabels,
+                asp=all_asp,
+                dirname=plots_dir,
+                filename=f"{filename_base}_all_stacked_plot.png",
                 show=True
             )
 
@@ -723,16 +738,14 @@ def generate_and_save_dataset_marcia(
     
     EXCLUDES any out-of-bounds curves from the final training dataset and stats.
     """
-    sig_cfg = hyperparam_config["signal"]
-    train_cfg = hyperparam_config["train"]
-    mamba_cfg = hyperparam_config["mamba"]
-    plant_cfg = hyperparam_config["plant"]
-    device = train_cfg["device"]
-    dt = sig_cfg["dt"]
     
-    input_dim = plant_cfg["input_dim"]   # e.g., (y1, y2)
-    output_dim = plant_cfg["output_dim"] # e.g., (u1, u2)
-    total_sequences = int(train_cfg["batch_size"])
+    training_data_cfg = hyperparam_config["training_data_cfg"]
+    device = "cuda"
+    dt = training_data_cfg["dt"]
+    
+    input_dim = training_data_cfg["input_dim"]   # e.g., (y1, y2)
+    output_dim = training_data_cfg["output_dim"] # e.g., (u1, u2)
+    total_sequences = int(training_data_cfg["batch_size"])
     
     logs_dir = os.path.join(dirname, "dataset_logs")
     plots_dir = os.path.join(dirname, "dataset_plots")
@@ -740,7 +753,7 @@ def generate_and_save_dataset_marcia(
     print(f"🚀 Running batch simulation for {total_sequences} sequences...")
     
     # Capturing the raw continuous state trajectory matrix from your generation engine
-    x_tensor_raw, y_target_raw, batch_d_centers, state_tensor_raw = generate_training_batch(plant, hyperparam_config)
+    x_tensor_raw, y_target_raw, batch_d_centers, state_tensor_raw = generate_training_batch_marcia(plant, hyperparam_config)
 
     x_np = x_tensor_raw.cpu().numpy()  
     y_np = y_target_raw.cpu().numpy()  
@@ -765,8 +778,8 @@ def generate_and_save_dataset_marcia(
         # 📊 1. DYNAMIC OUTPUTS (y) BOUNDS CHECK
         for i in range(input_dim):
             single_seq_y = y_t[:, i]
-            h_min = plant_cfg.get(f"y_{i+1}_hard_min")
-            h_max = plant_cfg.get(f"y_{i+1}_hard_max")
+            h_min = training_data_cfg.get(f"y_{i+1}_hard_min")
+            h_max = training_data_cfg.get(f"y_{i+1}_hard_max")
             
             if h_min is not None and np.min(single_seq_y) < h_min:
                 print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] Output y_{i+1} dropped below limit! "
@@ -782,8 +795,8 @@ def generate_and_save_dataset_marcia(
         for i in range(output_dim):
             
             single_seq_u = u[:, i]
-            h_min = plant_cfg.get(f"f_u_{i+1}_hard_min") or plant_cfg.get(f"u_{i+1}_hard_min")
-            h_max = plant_cfg.get(f"f_u_{i+1}_hard_max") or plant_cfg.get(f"u_{i+1}_hard_max")
+            h_min = training_data_cfg.get(f"f_u_{i+1}_hard_min") or training_data_cfg.get(f"u_{i+1}_hard_min")
+            h_max = training_data_cfg.get(f"f_u_{i+1}_hard_max") or training_data_cfg.get(f"u_{i+1}_hard_max")
             
             if h_min is not None and np.min(single_seq_u) < h_min:
                 print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] Input u_{i+1} dropped below limit! "
@@ -800,8 +813,8 @@ def generate_and_save_dataset_marcia(
 
         for i in range(state_dim):
             single_state_seq = states[:, i]
-            x_min = plant_cfg.get(f"x_{i+1}_hard_min")
-            x_max = plant_cfg.get(f"x_{i+1}_hard_max")
+            x_min = training_data_cfg.get(f"x_{i+1}_hard_min")
+            x_max = training_data_cfg.get(f"x_{i+1}_hard_max")
             
             if x_min is not None and np.min(single_state_seq) < x_min:
                 print(f"\033[93m⚠️ WARNING: [Seq {s_idx}] State variable x_{i+1} dropped below limit! "
@@ -1053,11 +1066,11 @@ def generate_training_batch_marcia(plant, hyperparam_config):
     Slices perfectly to match only y_t and y_next. Also tracks and returns 
     the raw plant continuous state history [x1, x2, x3, x4] for validation clipping.
     """
-    sig_cfg = hyperparam_config["signal"]
+    training_data_cfg = hyperparam_config["training_data_cfg"]
     train_cfg = hyperparam_config["train"]
 
-    seq_len = int(sig_cfg["seq_len"])
-    dt = sig_cfg["dt"]
+    seq_len = int(training_data_cfg["seq_len"])
+    dt = training_data_cfg["dt"]
     batch_size = int(train_cfg["batch_size"])
     delta_steps = int(train_cfg["delay_steps"]) # Step lookahead window length
     device = train_cfg["device"]
@@ -1067,7 +1080,7 @@ def generate_training_batch_marcia(plant, hyperparam_config):
 
     # Extend seq_len long enough to pull clean future states (y_next)
     extended_config = copy.deepcopy(hyperparam_config)
-    extended_config["signal"]["seq_len"] = seq_len + delta_steps
+    extended_config["training_data_cfg"]["seq_len"] = seq_len + delta_steps
     u_buffer, D_center = generate_signals(extended_config)
 
     raw_y_history = []

@@ -26,6 +26,7 @@ class MambaInverseController(nn.Module):
         self.output_dim = hyperparam_config["plant"]["output_dim"] # Dimension of plant control u (e.g. 2)
         self.d_state = hyperparam_config["mamba"]["d_state"]
         self.expand = hyperparam_config["mamba"]["expand"]
+        self.d_conv = hyperparam_config["mamba"]["d_conv"]
         
         # 2. Compute dynamic input dimension based on sliding window sizes
         if feature_dim is not None:
@@ -44,7 +45,7 @@ class MambaInverseController(nn.Module):
         self.core = Mamba(
             d_model=self.d_model,
             d_state=self.d_state,
-            d_conv=4,
+            d_conv=self.d_conv,
             expand=self.expand
         )
         
