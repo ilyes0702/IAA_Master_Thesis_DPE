@@ -38,8 +38,9 @@ def main():
     # log_message(f"RUN DESCRIPTION: {run_description}")
 
     # Initialize the plant model
-    hyperparam_config = hyperparam_config_ChemostatPlant   
-    # plant = ChemostatPlant(hyperparam_config=hyperparam_config)
+    dirname = "results/run_1"
+    hyperparam_config = hyperparam_config_TrophophasePlant   
+    plant = TrophophasePlant(hyperparam_config=hyperparam_config)
 
     # controller_path = "models/2026-07-29/2026-07-29_22-53-39/TrophophasePlant_training/fold_1/2026-07-29_22-53-39_best_fold_model.pt"
     # Load the trained inverse controller
@@ -148,14 +149,29 @@ def main():
     #     dirname=plant.__class__.__name__,
     #     plot_individual_plots = False
     # ) 
-
-    comparison_summary = simulate_tracking_stateful_multi_model(
-        models_dict=models_dict_1,
-        plant=ChemostatPlant,
-        r_trajectories=[r_static_y_1.squeeze()],
+    val_data = torch.load("results/2026-08-17/2026-08-17_23-08-14/results/run_1/dataset/2026-08-17_23-08-14_val_data.pt", weights_only=False)
+    model = load_model(MambaInverseController, "results/2026-08-17/2026-08-17_23-08-14/results/run_1/2026-08-17_23-08-14_best_model.pt")
+    x_scaler = load_scaler("results/2026-08-17/2026-08-17_23-08-14/results/run_1/scalers/2026-08-17_23-08-14_scaler_x.pkl")
+    y_scaler = load_scaler("results/2026-08-17/2026-08-17_23-08-14/results/run_1/scalers/2026-08-17_23-08-14_scaler_y.pkl")
+    simulate_tracking_stateful(
+        model=model,
+        plant=plant,
+        val_data=val_data,  # Tuple (Y_val, U_val, [X_val]) or Dict {"y": ..., "u": ...}
         hyperparam_config=hyperparam_config,
-        dirname="results/model_benchmark_comparison"
+        x_scaler=x_scaler,
+        y_scaler=y_scaler,
+        dirname=dirname,
+        mode="closed_loop",  # Options: "open_loop" or "closed_loop"
+        plot_individual_plots=True,
     )
+
+    # comparison_summary = simulate_tracking_stateful_multi_model(
+    #     models_dict=models_dict_1,
+    #     plant=ChemostatPlant,
+    #     r_trajectories=[r_static_y_1.squeeze()],
+    #     hyperparam_config=hyperparam_config,
+    #     dirname="results/model_benchmark_comparison"
+    # )
 
 
 if __name__ == "__main__":

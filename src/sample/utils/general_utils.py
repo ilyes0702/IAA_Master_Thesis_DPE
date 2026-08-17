@@ -2397,7 +2397,7 @@ def simulate_tracking_stateful_multi_model(
         "metrics": comparison_metrics
     }
 
-def simulate_tracking_stateful(
+def simulate_tracking_stateful_classical(
     model,
     plant,
     r_trajectories,  # List of reference trajectories, one for each output dimension. Shape: [steps] for each trajectory.
@@ -2767,7 +2767,626 @@ def simulate_tracking_stateful(
         "simulated_outputs": y_np,
         "simulated_controls": all_u.cpu().numpy()
     }
+#sara
+import os
+import numpy as np
+import pandas as pd
+import torch
 
+
+from io import BytesIO
+import os
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from PIL import Image
+import torch
+
+
+def simulate_tracking_stateful(
+    model,
+    plant,
+    val_data,  # Tuple (Y_val, U_val, X_val) or Dict {"y": ..., "u": ..., "x": ...}
+    hyperparam_config,
+    x_scaler,
+    y_scaler,
+    dirname,
+    mode="closed_loop",  # Options: "open_loop" or "closed_loop"
+    plot_individual_plots=True,
+):
+    """Simulates trajectory tracking using validation data sequences in either
+
+    Open-Loop or Closed-Loop mode, compares outputs, inputs, and state
+    trajectories, and generates stacked comparison plots.
+
+    Parameters:
+    -----------
+    model : nn.Module
+        Trained inverse controller model.
+    plant : class or object instance
+        Physical plant model simulation environment.
+    val_data : tuple or dict
+        Validation set containing reference trajectories Y_val, controls U_val,
+        and state trajectories X_val.
+    hyperparam_config : dict
+        Hyperparameter configuration dictionary.
+    x_scaler, y_scaler : StandardScaler
+        Fitted scalers for inputs (v_k features) and outputs (control signals
+        u).
+    dirname : str
+        Directory path to save reports and figures.
+    mode : str
+        'closed_loop' (iterative prediction with real-time plant feedback) or
+        'open_loop' (direct batch sequence prediction).
+    plot_individual_plots : bool
+        Whether to generate stacked comparison plots for every validation
+        sequence.
+    """
+    # --- 1. UNPACK VALIDATION DATA ---
+    X_val = None
+    if isinstance(val_data, dict):
+        Y_val = val_data["y"]
+        U_val = val_data.get("u", None)
+        X_val = val_data.get("x", None)
+    elif isinstance(val_data, (tuple, list)):
+        Y_val = val_data[0]
+        U_val = val_data[1] if len(val_data) > 1 else None
+        X_val = val_data[2] if len(val_data) > 2 else None
+    else:
+        raise ValueError(
+            "val_data must be a tuple/list (Y_val, U_val, X_val) or dict with 'y', 'u', 'x' keys."
+        )
+
+    # Ensure Y_val tensor format: [batch_size, steps, input_dim]
+    if not isinstance(Y_val, torch.Tensor):
+        Y_val = torch.tensor(Y_val, dtype=torch.float32)
+
+    batch_size, steps, input_dim = Y_val.shape
+
+    # Format U_val and X_val if provided
+    if U_val is not None and not isinstance(U_val, torch.Tensor):
+        U_val = torch.tensor(U_val, dtype=torch.float32)
+
+    if X_val is not None and not isinstance(X_val, torch.Tensor):
+        X_val = torch.tensor(X_val, dtype=torch.float32)
+
+    # Extract configuration
+    train_cfg = hyperparam_config["train"]
+    plant_cfg = hyperparam_config["plant"]
+    training_data_cfg = hyperparam_config["training_data_cfg"]
+
+    dt = training_data_cfg["dt"]
+    device = train_cfg["device"]
+    output_dim = plant_cfg["output_dim"]
+    n_y = train_cfg["n_y"]
+    n_u = train_cfg["n_u"]
+
+    model.eval()
+
+    # --- 2. HANDLE PLANT INSTANTIATION & INITIAL STATE ---
+    if isinstance(plant, type):
+        plant_instance = plant(hyperparam_config)
+    else:
+        plant_instance = plant
+
+    # Initialize initial state x_0 using X_val[:, 0, :] if available
+    if X_val is not None:
+        init_state = X_val[:, 0, :].to(device=device, dtype=torch.float32)
+    else:
+        init_state = plant_instance.get_initial_state(batch_size)
+
+    sample_state = plant_instance.get_initial_state(1)
+    state_dim = sample_state.shape[-1]
+
+    print(f"\n🚀 Running Validation Tracking ({mode.upper()} MODE)")
+    print(
+        f"📊 Evaluating {batch_size} validation trajectories over {steps} time steps..."
+    )
+    if X_val is not None:
+        print(f"🔍 Ground truth states detected (state_dim = {state_dim})")
+
+    # =========================================================================
+    # MODE A: OPEN-LOOP VALIDATION
+    # =========================================================================
+    if mode.lower() == "open_loop":
+        if hasattr(model, "core") and hasattr(model.core, "return_bc"):
+            model.core.return_bc = False
+
+        # Build windowed input sequences from reference data
+        v_seqs_raw = []
+        for b in range(batch_size):
+            y_ref = Y_val[b].cpu().numpy()
+            u_gt = (
+                U_val[b].cpu().numpy()
+                if U_val is not None
+                else np.zeros((steps, output_dim))
+            )
+
+            v_traj = []
+            for i in range(steps):
+                next_idx = min(i + 1, steps - 1)
+                r_target = y_ref[next_idx]
+
+                y_window = y_ref[max(0, i - n_y) : i + 1]
+                if len(y_window) < (n_y + 1):
+                    pad_len = (n_y + 1) - len(y_window)
+                    y_window = np.pad(
+                        y_window, ((pad_len, 0), (0, 0)), mode="edge"
+                    )
+
+                y_hist_rev = y_window[::-1].flatten()
+
+                if n_u > 0:
+                    u_window = u_gt[max(0, i - n_u) : i]
+                    if len(u_window) < n_u:
+                        pad_len = n_u - len(u_window)
+                        u_window = np.pad(
+                            u_window, ((pad_len, 0), (0, 0)), mode="edge"
+                        )
+                    u_hist_rev = u_window[::-1].flatten()
+                else:
+                    u_hist_rev = np.array([])
+
+                v_k = np.concatenate([r_target, y_hist_rev, u_hist_rev])
+                v_traj.append(v_k)
+
+            v_seqs_raw.append(np.array(v_traj))
+
+        v_seqs_raw = np.array(v_seqs_raw)  # [batch_size, steps, v_dim]
+
+        # Standardize features
+        b_idx, s_idx, d_idx = v_seqs_raw.shape
+        v_flat = v_seqs_raw.reshape(-1, d_idx)
+        v_scaled = x_scaler.transform(v_flat).reshape(b_idx, s_idx, d_idx)
+        v_tensor = torch.tensor(v_scaled, dtype=torch.float32, device=device)
+
+        # Batch sequence prediction
+        with torch.no_grad():
+            if hasattr(model, "reset_memory"):
+                model.reset_memory(batch_size=batch_size, device=device)
+
+            u_pred_norm = model(v_tensor)
+            u_pred_np = u_pred_norm.cpu().numpy()
+
+        u_pred_flat = u_pred_np.reshape(-1, output_dim)
+        u_unscaled_flat = y_scaler.inverse_transform(u_pred_flat)
+        u_unscaled = u_unscaled_flat.reshape(batch_size, steps, output_dim)
+        u_unscaled = np.clip(
+            u_unscaled,
+            plant_cfg["u_1_hard_min"],
+            plant_cfg["u_1_hard_max"],
+        )
+
+        # Simulate state and output responses in open-loop
+        all_y = torch.zeros((steps, batch_size, input_dim), device=device)
+        all_states = torch.zeros(
+            (steps, batch_size, state_dim), device=device
+        )
+        all_u = torch.tensor(
+            u_unscaled, dtype=torch.float32, device=device
+        ).permute(1, 0, 2)
+
+        state = init_state.clone()
+        with torch.no_grad():
+            for i in range(steps):
+                t = i * dt
+                y_curr = plant_instance.get_y(state, t)
+                all_y[i] = y_curr
+                all_states[i] = state
+
+                u_step = all_u[i]
+                if output_dim == 1:
+                    state, _ = plant_instance.step(
+                        state=state, u=u_step[:, 0:1], t=t, dt=dt
+                    )
+                else:
+                    state, _ = plant_instance.step(
+                        state=state, u=u_step, t=t, dt=dt
+                    )
+
+    # =========================================================================
+    # MODE B: CLOSED-LOOP VALIDATION
+    # =========================================================================
+    elif mode.lower() == "closed_loop":
+        if hasattr(model, "core") and hasattr(model.core, "return_bc"):
+            model.core.return_bc = True
+
+        all_y = torch.zeros((steps, batch_size, input_dim), device=device)
+        all_u = torch.zeros((steps, batch_size, output_dim), device=device)
+        all_states = torch.zeros(
+            (steps, batch_size, state_dim), device=device
+        )
+
+        state = init_state.clone()
+
+        if hasattr(model, "reset_memory"):
+            model.reset_memory(batch_size=batch_size, device=device)
+
+        warmup_steps = 10
+        initial_y = plant_instance.get_y(state, 0.0).cpu().numpy()
+        y_histories = [[initial_y[b].copy()] for b in range(batch_size)]
+        u_histories = [[np.zeros(output_dim)] for b in range(batch_size)]
+
+        with torch.no_grad():
+            for i in range(steps):
+                t = i * dt
+                y_current = plant_instance.get_y(state, t)
+                y_curr_np = y_current.cpu().numpy()
+
+                for b in range(batch_size):
+                    y_histories[b].append(y_curr_np[b])
+                    if len(y_histories[b]) > (n_y + 1):
+                        y_histories[b].pop(0)
+
+                next_idx = min(i + 1, steps - 1)
+                tgt_r_np = Y_val[:, next_idx, :].cpu().numpy()
+
+                if i < warmup_steps:
+                    u_unscaled = 0.5 * np.ones((batch_size, output_dim))
+                    u = torch.tensor(
+                        u_unscaled, dtype=torch.float32, device=device
+                    )
+                else:
+                    v_k_batch_raw = []
+                    for b in range(batch_size):
+                        y_window = np.array(y_histories[b])
+                        y_hist_reversed = y_window[::-1].flatten()
+
+                        u_window = (
+                            np.array(u_histories[b])
+                            if n_u > 0
+                            else np.array([])
+                        )
+                        u_hist_reversed = (
+                            u_window[::-1].flatten()
+                            if n_u > 0
+                            else np.array([])
+                        )
+
+                        v_k_single = np.concatenate(
+                            [tgt_r_np[b], y_hist_reversed, u_hist_reversed]
+                        )
+                        v_k_batch_raw.append(v_k_single)
+
+                    v_k_batch_raw = np.array(v_k_batch_raw)
+                    v_k_scaled = x_scaler.transform(v_k_batch_raw)
+                    v_k_tensor = torch.tensor(
+                        v_k_scaled, dtype=torch.float32, device=device
+                    )
+
+                    u_norm_tensor = model.step(v_k_tensor)
+                    u_norm_np = u_norm_tensor.cpu().numpy()
+                    u_unscaled = y_scaler.inverse_transform(u_norm_np)
+
+                    u_unscaled = np.clip(
+                        u_unscaled,
+                        plant_cfg["u_1_hard_min"],
+                        plant_cfg["u_1_hard_max"],
+                    )
+                    u = torch.tensor(
+                        u_unscaled, dtype=torch.float32, device=device
+                    )
+
+                for b in range(batch_size):
+                    u_histories[b].append(u_unscaled[b])
+                    if len(u_histories[b]) > n_u:
+                        u_histories[b].pop(0)
+
+                if output_dim == 1:
+                    state, _ = plant_instance.step(
+                        state=state, u=u[:, 0:1], t=t, dt=dt
+                    )
+                else:
+                    try:
+                        state, _ = plant_instance.step(
+                            state=state, u=u, t=t, dt=dt
+                        )
+                    except TypeError:
+                        kwargs = {
+                            f"u{j+1}": u[:, j : j + 1] for j in range(output_dim)
+                        }
+                        state, _ = plant_instance.step(
+                            state=state, t=t, dt=dt, **kwargs
+                        )
+
+                all_y[i] = y_current
+                all_u[i] = u
+                all_states[i] = state
+    else:
+        raise ValueError("mode parameter must be 'open_loop' or 'closed_loop'.")
+
+    # =========================================================================
+    # --- 3. METRICS, PLOTTING, & EXPORT ---
+    # =========================================================================
+    time_axis = np.arange(steps) * dt
+    trajectory_reports = []
+    trajectory_images = []
+
+    y_np = all_y.cpu().numpy()  # [steps, batch_size, input_dim]
+    u_np = all_u.cpu().numpy()  # [steps, batch_size, output_dim]
+    s_np = all_states.cpu().numpy()  # [steps, batch_size, state_dim]
+
+    # Reorder to [batch_size, steps, dim]
+    s_sim_batch = np.transpose(s_np, (1, 0, 2))
+    u_sim_batch = np.transpose(u_np, (1, 0, 2))
+    y_sim_batch = np.transpose(y_np, (1, 0, 2))
+
+    r_gt_batch = Y_val.cpu().numpy()  # [batch_size, steps, input_dim]
+    u_gt_batch = U_val.cpu().numpy() if U_val is not None else None
+    x_gt_batch = X_val.cpu().numpy() if X_val is not None else None
+
+    # --- Generate DataFrames & Plots for each sequence ---
+    for b in range(batch_size):
+        state_dirname = os.path.join(dirname, f"{mode}_val_sequence_{b}")
+        os.makedirs(state_dirname, exist_ok=True)
+
+        y_traj_sim = y_sim_batch[b]  # [steps, input_dim]
+        u_traj_sim = u_sim_batch[b]  # [steps, output_dim]
+        s_traj_sim = s_sim_batch[b]  # [steps, state_dim]
+
+        total_stacked_blocks = input_dim + output_dim
+        df_data = {
+            "time": np.tile(time_axis, total_stacked_blocks),
+            "signal_type": np.repeat(
+                [f"y_{i+1}" for i in range(input_dim)]
+                + [f"u_{i+1}" for i in range(output_dim)],
+                steps,
+            ),
+            "value": np.concatenate(
+                [y_traj_sim[:, i] for i in range(input_dim)]
+                + [u_traj_sim[:, i] for i in range(output_dim)]
+            ),
+        }
+
+        # Append simulated states
+        for i in range(state_dim):
+            df_data[f"state_sim_{i+1}"] = np.tile(
+                s_traj_sim[:, i], total_stacked_blocks
+            )
+
+        # Append ground-truth states
+        if x_gt_batch is not None:
+            s_traj_gt = x_gt_batch[b]
+            for i in range(state_dim):
+                df_data[f"state_gt_{i+1}"] = np.tile(
+                    s_traj_gt[:, i], total_stacked_blocks
+                )
+
+        df_traj = pd.DataFrame(df_data)
+        save_df_to_csv(
+            df_traj, dirname=state_dirname, filename="state_report"
+        )
+        trajectory_reports.append(df_traj)
+
+        # --- Stacked Plot Generation via plot_stacked ---
+        if plot_individual_plots:
+            signals = []
+            labels = []
+            ylabels = []
+
+            # 1. Fetch plot configuration from plant (or model) if available
+            plot_config = None
+            if hasattr(plant, "get_plot_config"):
+                plot_config = plant.get_plot_config()
+            elif hasattr(model, "get_plot_config"):
+                plot_config = model.get_plot_config()
+
+            def get_config_ylabel(var_prefix, idx, fallback):
+                if not plot_config:
+                    return fallback
+                for cfg in plot_config:
+                    cols = cfg.get("cols", [])
+                    if (
+                        var_prefix in cols
+                        or f"{var_prefix}_{idx+1}" in cols
+                        or any(c.startswith(var_prefix) for c in cols)
+                    ):
+                        yl = cfg.get("ylabel")
+                        if isinstance(yl, (list, tuple)):
+                            return yl[idx] if idx < len(yl) else " / ".join(yl)
+                        elif isinstance(yl, str):
+                            return yl
+                return fallback
+
+            xlabel = "Time [s]"
+            if plot_config:
+                for cfg in plot_config:
+                    if "xlabel" in cfg:
+                        xl = cfg["xlabel"]
+                        xlabel = xl[0] if isinstance(xl, (list, tuple)) else xl
+                        break
+
+            # 2. Output Signals
+            for i in range(input_dim):
+                signals.append([y_traj_sim[:, i], r_gt_batch[b, :, i]])
+                labels.append(["Simulated", "Reference"])
+                ylabels.append(get_config_ylabel("y", i, f"$y_{{{i+1}}}$"))
+
+            # 3. Control Signals
+            for j in range(output_dim):
+                if u_gt_batch is not None:
+                    signals.append([u_traj_sim[:, j], u_gt_batch[b, :, j]])
+                    labels.append(["Simulated", "Ground Truth"])
+                else:
+                    signals.append(u_traj_sim[:, j])
+                    labels.append(["Simulated"])
+                ylabels.append(get_config_ylabel("u", j, f"$u_{{{j+1}}}$"))
+
+            # 4. State Signals
+            for k in range(state_dim):
+                if x_gt_batch is not None:
+                    signals.append([s_traj_sim[:, k], x_gt_batch[b, :, k]])
+                    labels.append(["Simulated", "Ground Truth"])
+                else:
+                    signals.append(s_traj_sim[:, k])
+                    labels.append(["Simulated"])
+                ylabels.append(get_config_ylabel("x", k, f"$x_{{{k+1}}}$"))
+
+            plot_filename = f"tracking_stacked_plot_seq_{b}"
+            img = plot_stacked(
+                t=time_axis,
+                signals=signals,
+                labels=labels,
+                xlabel=xlabel,
+                ylabel=ylabels,
+                filename=plot_filename,
+                dirname=state_dirname,
+                asp=0.33,
+                hspace=0.08,
+            )
+            trajectory_images.append(img)
+
+    # =========================================================================
+    # --- 4. COMPUTE PER-SEQUENCE METRICS AND DATASET AVERAGES ---
+    # =========================================================================
+    per_sequence_results = []
+
+    for b in range(batch_size):
+        seq_metrics = {
+            "sequence_id": b,
+            "outputs": {},
+            "controls": {},
+            "states": {},
+        }
+
+        # <<< PASTE / REPLACE HERE >>>
+        # 1. Output tracking metrics (y_sim vs y_ref)
+        for i in range(input_dim):
+            y_sim = y_sim_batch[b, :, i][:, None]  # Reshape from (steps,) to (steps, 1)
+            y_ref = r_gt_batch[b, :, i][:, None]
+            seq_metrics["outputs"][f"y_{i+1}"] = compute_and_save_tracking_metrics(
+                y_sim, y_ref, dt, dirname=None, suffix=f"y_{i+1}_seq_{b}"
+            )
+
+        # 2. Control signal metrics (u_sim vs u_gt)
+        if u_gt_batch is not None:
+            for j in range(output_dim):
+                u_sim = u_sim_batch[b, :, j][:, None]  # Reshape to (steps, 1)
+                u_gt = u_gt_batch[b, :, j][:, None]
+                seq_metrics["controls"][f"u_{j+1}"] = compute_and_save_tracking_metrics(
+                    u_sim, u_gt, dt, dirname=None, suffix=f"u_{j+1}_seq_{b}"
+                )
+
+        # 3. State tracking metrics (x_sim vs x_gt)
+        if x_gt_batch is not None:
+            for k in range(state_dim):
+                x_sim = s_sim_batch[b, :, k][:, None]  # Reshape to (steps, 1)
+                x_gt = x_gt_batch[b, :, k][:, None]
+                seq_metrics["states"][f"state_{k+1}"] = compute_and_save_tracking_metrics(
+                    x_sim, x_gt, dt, dirname=None, suffix=f"state_{k+1}_seq_{b}"
+                )
+        # <<< END PASTE >>>
+
+        per_sequence_results.append(seq_metrics)
+
+    # Calculate dataset-wide average metrics across all sequences
+    dataset_averages = {"outputs": {}, "controls": {}, "states": {}}
+
+    for category in ["outputs", "controls", "states"]:
+        # Find all signal keys present for this category
+        signal_keys = set()
+        for seq in per_sequence_results:
+            signal_keys.update(seq[category].keys())
+
+        for sig_key in signal_keys:
+            # Collect metric values for this signal across all batches
+            all_metric_keys = per_sequence_results[0][category][sig_key].keys()
+            avg_metrics = {}
+            for m_key in all_metric_keys:
+                vals = [
+                    seq[category][sig_key][m_key]
+                    for seq in per_sequence_results
+                    if sig_key in seq[category] and m_key in seq[category][sig_key]
+                ]
+                avg_metrics[m_key] = float(np.mean(vals)) if len(vals) > 0 else np.nan
+
+            dataset_averages[category][sig_key] = avg_metrics
+
+    # =========================================================================
+    # --- 5. BUILD & SAVE DATAFRAMES ---
+    # =========================================================================
+    # 1. Detailed per-sequence metrics DataFrame
+    per_seq_rows = []
+    for seq in per_sequence_results:
+        seq_id = seq["sequence_id"]
+        for category in ["outputs", "controls", "states"]:
+            for signal_name, metrics in seq[category].items():
+                per_seq_rows.append(
+                    {"sequence_id": seq_id, "category": category, "signal": signal_name, **metrics}
+                )
+
+    df_per_sequence = pd.DataFrame(per_seq_rows)
+
+    # 2. Overall dataset averages DataFrame
+    avg_rows = []
+    for category, category_dict in dataset_averages.items():
+        for signal_name, metrics in category_dict.items():
+            avg_rows.append(
+                {"category": category, "signal": signal_name, **metrics}
+            )
+
+    df_averages = pd.DataFrame(avg_rows)
+
+    # 3. Save CSV summary reports to the main mode directory (`dirname`)
+    save_df_to_csv(
+        df=df_per_sequence,
+        dirname=dirname,
+        filename=f"tracking_metrics_per_sequence_{mode}",
+    )
+
+    save_df_to_csv(
+        df=df_averages,
+        dirname=dirname,
+        filename=f"tracking_metrics_dataset_averages_{mode}",
+    )
+
+    return {
+        "mode": mode,
+        "trajectory_dataframes": trajectory_reports,
+        "trajectory_images": trajectory_images,
+        "per_sequence_metrics": per_sequence_results,
+        "dataset_averages": dataset_averages,
+        "simulated_outputs": y_sim_batch,
+        "simulated_controls": u_sim_batch,
+        "simulated_states": s_sim_batch,
+        "gt_states": x_gt_batch,
+    }
+def compute_metrics(y_true, y_pred, eps=1e-8):
+    """Computes MSE, RMSE, NRMSE (range-normalized), and MAPE.
+
+    Parameters:
+    -----------
+    y_true : np.ndarray
+        Ground truth sequence of shape (T,) or (T, dim)
+    y_pred : np.ndarray
+        Simulated/predicted sequence of shape (T,) or (T, dim)
+
+    Returns:
+    --------
+    dict with keys: 'MSE', 'RMSE', 'NRMSE', 'MAPE'
+    """
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+
+    # 1. Mean Squared Error
+    mse = np.mean((y_true - y_pred) ** 2)
+
+    # 2. Root Mean Squared Error
+    rmse = np.sqrt(mse)
+
+    # 3. Normalized RMSE (Range-normalized: RMSE / (max - min))
+    val_range = np.max(y_true) - np.min(y_true)
+    nrmse = rmse / (val_range + eps)
+
+    # 4. Mean Absolute Percentage Error (percentage scale)
+    mape = np.mean(np.abs((y_true - y_pred) / (np.abs(y_true) + eps))) * 100.0
+
+    return {
+        "MSE": float(mse),
+        "RMSE": float(rmse),
+        "NRMSE": float(nrmse),
+        "MAPE": float(mape),
+    }
 
 import torch
 import torch.nn as nn

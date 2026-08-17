@@ -358,8 +358,8 @@ def generate_training_batch(plant, training_data_cfg):
     return raw_u, raw_y, raw_states, D_center
 
 
-
-
+import matplotlib.pyplot as plt
+plt.style.use("src/sample/style.mplstyle")
 
 
 # =====================================================================
@@ -367,7 +367,153 @@ def generate_training_batch(plant, training_data_cfg):
 # =====================================================================
 import matplotlib.pyplot as plt
 
-def plot_all_signals_overlay(signal_tensor, dt, dirname, signal_type, show_plot=True):
+def plot_all_signals_overlay(
+    u_tensor,
+    y_tensor,
+    dt,
+    dirname,
+    x_tensor=None,
+    plot_config=None,
+    xlim=None,
+    show_plot=True,
+    filename="all_signals_overlay.png",
+):
+    """Plots input ($u$) and output ($y$) overlay sequences stacked vertically,
+
+    sharing a unified horizontal time axis.
+
+    Parameters:
+    -----------
+    u_tensor : torch.Tensor or np.ndarray
+        Control inputs tensor of shape [Num_Seqs, Seq_Len, u_Channels] or [Num_Seqs, Seq_Len].
+    y_tensor : torch.Tensor or np.ndarray
+        System outputs tensor of shape [Num_Seqs, Seq_Len, y_Channels] or [Num_Seqs, Seq_Len].
+    dt : float
+        Sampling time step.
+    dirname : str
+        Directory where the figure will be saved.
+    x_tensor : torch.Tensor or np.ndarray, optional
+        Optional state tensor of shape [Num_Seqs, Seq_Len, x_Channels].
+    plot_config : list of dict, optional
+        Config dictionary array returned by plant.get_plot_config().
+    xlim : tuple of (float, float), optional
+        Limits for the shared x-axis (e.g., (-1, 25)).
+    show_plot : bool, optional
+        Whether to display the plot via plt.show() or close the figure.
+    filename : str, optional
+        Name of the saved image file.
+    """
+
+    # Helper function to convert PyTorch Tensors to 3D NumPy arrays [Seqs, Len, Channels]
+    def _to_numpy(tensor):
+        if hasattr(tensor, "cpu"):
+            arr = tensor.cpu().numpy()
+        else:
+            arr = np.asarray(tensor)
+        if arr.ndim == 2:
+            arr = arr[:, :, np.newaxis]
+        return arr
+
+    u_np = _to_numpy(u_tensor)
+    y_np = _to_numpy(y_tensor)
+
+    num_seqs, seq_len, u_channels = u_np.shape
+    time_axis = np.arange(seq_len) * dt
+
+    # Helper function to extract channel y-labels from plant.get_plot_config()
+    def _get_labels(type_key, num_channels):
+        if plot_config is not None:
+            for cfg in plot_config:
+                if any(type_key in col.lower() for col in cfg["cols"]):
+                    ylabels = cfg["ylabel"]
+                    if isinstance(ylabels, list):
+                        return ylabels
+                    return [ylabels]
+        return [rf"${type_key}_{{{i+1}}}$" for i in range(num_channels)]
+
+    # Build ordered list of (data_channel_slice, y_label) tuples
+    # Order: Inputs (u) -> Outputs (y) -> States (x, if provided)
+    plot_channels = []
+
+    # 1. Inputs (u)
+    u_labels = _get_labels("u", u_channels)
+    for c in range(u_channels):
+        plot_channels.append((u_np[:, :, c], u_labels[c]))
+
+    # 2. Outputs (y)
+    y_channels = y_np.shape[2]
+    y_labels = _get_labels("y", y_channels)
+    for c in range(y_channels):
+        plot_channels.append((y_np[:, :, c], y_labels[c]))
+
+    # 3. States (x) - optional
+    if x_tensor is not None:
+        x_np = _to_numpy(x_tensor)
+        x_channels = x_np.shape[2]
+        x_labels = _get_labels("x", x_channels)
+        for c in range(x_channels):
+            plot_channels.append((x_np[:, :, c], x_labels[c]))
+
+    total_subplots = len(plot_channels)
+
+    # Create vertically stacked subplots sharing the time axis
+    fig, axes = plt.subplots(
+        total_subplots, 1, figsize=(10, 2.8 * total_subplots), sharex=True
+    )
+    if total_subplots == 1:
+        axes = [axes]
+
+    # Plot each channel
+    for idx, (sig_data, ylabel) in enumerate(plot_channels):
+        ax = axes[idx]
+
+        # Overlay individual sequence trajectories
+        for s_idx in range(num_seqs):
+            label = "Validated Sequences" if s_idx == 0 else None
+            ax.plot(
+                time_axis,
+                sig_data[s_idx, :],
+                color="tab:blue",
+                alpha=0.25,
+                linewidth=1.0,
+                label=label,
+            )
+
+        # Highlight ensemble mean trajectory
+        mean_sig = np.mean(sig_data, axis=0)
+        ax.plot(
+            time_axis,
+            mean_sig,
+            color="black",
+            linestyle="--",
+            linewidth=2.0,
+            label="Ensemble Mean",
+        )
+
+        ax.set_ylabel(ylabel)
+        ax.grid(False)
+        ax.legend(loc="upper right", framealpha=0.9)
+
+    # Set x-label and x-limits on the bottom shared axis
+    axes[-1].set_xlabel(r"$t \; [\mathrm{h}]$")
+    if xlim is not None:
+        axes[-1].set_xlim(xlim)
+
+    plt.tight_layout()
+
+    # Save to disk
+    os.makedirs(dirname, exist_ok=True)
+    save_path = os.path.join(dirname, filename)
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+
+    if show_plot:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    print(f"🖼️ Stacked overlay plot saved to: {save_path}")
+
+def plot_all_signals_overlay_paola(signal_tensor, dt, dirname, signal_type, show_plot=True):
     """
     Plots all validated sequences overlaid on a single multi-channel plot.
     
@@ -688,24 +834,19 @@ def generate_and_save_dataset(
     final_u_tensor = torch.stack(valid_u_list, dim=0).to(device)
     final_y_tensor = torch.stack(valid_y_list, dim=0).to(device)
     final_state_tensor = torch.stack(valid_states_list, dim=0).to(device)
-
+    plot_config = plant.get_plot_config()
     # 📈 NEW: Plot all validated u trajectories in one figure
     if show_overlay_plot and valid_sequences_count > 0:
         plot_all_signals_overlay(
-            signal_tensor=final_u_tensor,
-            dt=dt,
-            dirname=plots_dir,
-            signal_type="Inputs_u",
-            show_plot=show_plots
+            u_tensor=final_u_tensor,  # Control Inputs u (subplot 1)
+            y_tensor=final_y_tensor,  # System Outputs y (subplot 2)
+            dt=plant.dt,
+            dirname="plots",
+            plot_config=plot_config,
+            show_plot=True,
         )
 
-        plot_all_signals_overlay(
-            signal_tensor=final_y_tensor,
-            dt=dt,
-            dirname=plots_dir,
-            signal_type="Outputs_y",
-            show_plot=show_plots
-        )
+        
     
     # Save global stats
     if per_sequence_correlations:

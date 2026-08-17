@@ -1,0 +1,6 @@
+2026-08-17 21:39:58 - Duplicate key in file 'src/sample/style.mplstyle', line 31 ('ytick.labelsize: large')
+2026-08-17 21:39:58 - Duplicate key in file 'src/sample/style.mplstyle', line 47 ('xtick.labelsize: large')
+2026-08-17 21:39:58 - Duplicate key in file 'src/sample/style.mplstyle', line 78 ('legend.fontsize: small')
+2026-08-17 21:40:02 - Duplicate key in file 'src/sample/style.mplstyle', line 31 ('ytick.labelsize: large')
+2026-08-17 21:40:02 - Duplicate key in file 'src/sample/style.mplstyle', line 47 ('xtick.labelsize: large')
+2026-08-17 21:40:02 - Duplicate key in file 'src/sample/style.mplstyle', line 78 ('legend.fontsize: small')

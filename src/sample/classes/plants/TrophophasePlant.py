@@ -227,19 +227,24 @@ class TrophophasePlant:
     def get_plot_config(self):
         return [
             {
+                            "cols": ["t"],
+                            "labels": [r"$t$ [$\mathrm{h}$]"],
+                            "xlabel": [r"$t$ [$\mathrm{h}$]"]
+                        },
+            {
                 "cols": ["x_1", "x_2"],
-                "labels": [r"$X$ [$\mathrm{g}\,\mathrm{L}^{-1}$]", r"$S$ [$\mathrm{g}\,\mathrm{L}^{-1}$]"],
-                "ylabel": [r"$X$ [$\mathrm{g}\,\mathrm{L}^{-1}$]", r"$S$ [$\mathrm{g}\,\mathrm{L}^{-1}$]"]
+                "labels": [r"$x_1$ [$\mathrm{g}$]", r"$x_2$ [$\mathrm{mg}$]"],
+                "ylabel": [r"$x_1$ [$\mathrm{g}$]", r"$x_2$ [$\mathrm{mg}$]"]
             },
             {
                 "cols": ["y"],
-                "labels": [r"$\mu$ [$\mathrm{h}^{-1}$]"],
-                "ylabel": r"$\mu$ [$\mathrm{h}^{-1}$]"
+                "labels": [r"$y_1$ [$\mathrm{h}^{-1}$]"],
+                "ylabel": r"$y_1$ [$\mathrm{h}^{-1}$]"
             },
             {
                 "cols": ["u"],
-                "labels": [r"$F$ [$\mathrm{L}\,\mathrm{h}^{-1}$]"],
-                "ylabel": r"$F$ [$\mathrm{L}\,\mathrm{h}^{-1}$]"
+                "labels": [r"$u_1$ [$\mathrm{h}^{-1}$]"],
+                "ylabel": r"$u_1$ [$\mathrm{h}^{-1}$]"
             }
         ]
 
@@ -299,7 +304,7 @@ hyperparam_config_TrophophasePlant = {
 
         "dt" : 0.01,
 
-        "batch_size": 2000,
+        "batch_size": 100,
         "seq_len":    2001,
 
         "min_correlation_threshold": -1.1
@@ -315,7 +320,7 @@ hyperparam_config_TrophophasePlant = {
         "k_folds": 2,
         "lr": 1e-3,
 
-        "batch_size": 2000,
+        "mini_batch_size": 1,
 
         # Hyperparameters for tuning
         "epochs": 100,

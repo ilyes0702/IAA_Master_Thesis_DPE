@@ -3,16 +3,10 @@ import torch
 import pandas as pd
 import json
 
-import os
 from PIL import Image
-
 from src.sample.config import date as default_date
 from src.sample.config import date_and_time as default_date_and_time
-
 import pickle
-
-import pickle
-import os
 
 def save_model_esn(model, dirname, hyperparam_config, filename="best_fold_model"):
     """Saves the ESN model state and configuration to disk using pickle."""
@@ -95,7 +89,7 @@ def save_df_to_csv(df, dirname, filename, max_path_length=255):
     If the specified directory does not exist, it is created automatically.
     """
     # Round all float columns to 2 decimal places
-    df = df.round(4)
+    df = df.round(6)
     
      # Check full path length
     dirname = f"results/{default_date}/{default_date_and_time}/{dirname}/reports/"

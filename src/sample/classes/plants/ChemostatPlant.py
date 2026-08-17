@@ -12,7 +12,7 @@ class ChemostatPlant:
     }
     def __init__(self, hyperparam_config):
         self.device = hyperparam_config["train"]["device"]
-        self.dt = hyperparam_config["signal"]["dt"]
+        self.dt = hyperparam_config["training_data_cfg"]["dt"]
 
         # Biological Parameters from Config
         self.mu_max = torch.tensor(hyperparam_config["plant"]["mu-max"], device=self.device)

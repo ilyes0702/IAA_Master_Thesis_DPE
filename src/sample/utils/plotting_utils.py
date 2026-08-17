@@ -372,28 +372,56 @@ def plot_param_heatmap(
 def plot_stacked(
     t,
     signals,
-    labels=None,         
+    plot_config=None,  # Accepts output from get_plot_config()
+    labels=None,
     title=None,
     xlabel="Time",
-    ylabel="Value",         
+    ylabel="Value",
     save_path=None,
     show=False,
     filename=None,
     dirname=None,
-    asp=0.33,            # Can be a single float (applied to all) or a list/tuple
-    hspace=0.05          
+    asp=0.33,
+    hspace=0.05,
 ):
+    """Generic plotting function that stacks various subplots on top of each
+
+    other.
+
+    Can parse a `plot_config` list returned by plant/model config methods.
     """
-    Generic plotting function that stacks various subplots on top of each other.
-    """
+    # === 1. PARSE PLOT CONFIG IF PROVIDED ===
+    if plot_config is not None:
+        # Separate time/x-axis config from subplot configs
+        x_cfg = next(
+            (c for c in plot_config if "xlabel" in c or "t" in c.get("cols", [])),
+            None,
+        )
+        sub_cfgs = [c for c in plot_config if c != x_cfg]
+
+        # Extract xlabel
+        if x_cfg and "xlabel" in x_cfg:
+            raw_xl = x_cfg["xlabel"]
+            xlabel = raw_xl[0] if isinstance(raw_xl, (list, tuple)) else raw_xl
+
+        # Extract legend labels and ylabels for each subplot row
+        labels = [c.get("labels") for c in sub_cfgs]
+
+        extracted_ylabels = []
+        for c in sub_cfgs:
+            raw_yl = c.get("ylabel", "")
+            if isinstance(raw_yl, (list, tuple)):
+                raw_yl = " / ".join(raw_yl)  # Combines e.g. "$x_1$ [g] / $x_2$ [mg]"
+            extracted_ylabels.append(raw_yl)
+
+        ylabel = extracted_ylabels
+
     num_subplots = len(signals)
-    
+
     fig, axes = plt.subplots(
-        nrows=num_subplots, 
-        ncols=1, 
-        sharex=True
+        nrows=num_subplots, ncols=1, sharex=True, figsize=(7, 1 * num_subplots)
     )
-    
+
     if num_subplots == 1:
         axes = [axes]
 
@@ -402,42 +430,57 @@ def plot_stacked(
     # Iterate and render each subplot row
     for i, sig_group in enumerate(signals):
         ax = axes[i]
-        
-        is_multi = isinstance(sig_group, (list, tuple)) and not isinstance(sig_group[0], (int, float))
+
+        is_multi = isinstance(sig_group, (list, tuple)) and not isinstance(
+            sig_group[0], (int, float)
+        )
         curves = sig_group if is_multi else [sig_group]
         row_labels = labels[i] if labels is not None else None
-        
+
         if row_labels is not None:
             if not isinstance(row_labels, (list, tuple)):
                 row_labels = [row_labels]
-        
+
         for j, sig in enumerate(curves):
-            lbl = row_labels[j] if row_labels is not None and j < len(row_labels) else None
+            lbl = (
+                row_labels[j]
+                if row_labels is not None and j < len(row_labels)
+                else None
+            )
             ax.plot(t, sig, label=lbl)
-            
-        if row_labels is not None and any(lbl is not None for lbl in row_labels):
+
+        # === LEGEND ONLY ON TOP SUBPLOT ===
+        if (
+            i == 0
+            and row_labels is not None
+            and any(lbl is not None for lbl in row_labels)
+        ):
             ax.legend(loc="upper right")
 
-        # === ADJUSTABLE ASPECT RATIO === #
+        # === SET Y-AXIS LABEL ===
+        if isinstance(ylabel, (list, tuple)) and len(ylabel) == num_subplots:
+            current_ylabel = ylabel[i]
+        elif isinstance(ylabel, str):
+            current_ylabel = (
+                ylabel if num_subplots == 1 else f"{ylabel} {i+1}"
+            )
+        else:
+            current_ylabel = f"Signal {i+1}"
+
+        ax.set_ylabel(current_ylabel)
+
+        # === ASPECT RATIO ===
         if isinstance(asp, (list, tuple)) and len(asp) == num_subplots:
             current_asp = asp[i]
         else:
             current_asp = asp if isinstance(asp, (int, float)) else 0.33
 
-        x_range = np.diff(ax.get_xlim())[0]
-        y_range = np.diff(ax.get_ylim())[0]
-        if y_range > 0:  
-            range_ratio = x_range / y_range
-            ax.set_aspect(current_asp * range_ratio)
+        if current_asp is not None and hasattr(ax, "set_box_aspect"):
+            ax.set_box_aspect(current_asp)
 
-        # Handle y-axis labels
-        if isinstance(ylabel, list) and len(ylabel) == num_subplots:
-            ax.set_ylabel(ylabel[i])
-        else:
-            ax.set_ylabel(ylabel if isinstance(ylabel, str) else f"Signal {i+1}")
-
-        if hspace < 0.15 and i < num_subplots - 1:
-            ax.label_outer()
+        # === CLEAN UP X-TICK LABELS ===
+        if i < num_subplots - 1:
+            ax.tick_params(labelbottom=False)
 
     axes[-1].set_xlabel(xlabel)
 
@@ -456,9 +499,9 @@ def plot_stacked(
     plt.close(fig)
 
     image = Image.open(buf)
-    if 'save_plot_image' in globals():
+    if "save_plot_image" in globals():
         save_plot_image(image=image, filename=filename, dirname=dirname)
-        
+
     return image
     
 

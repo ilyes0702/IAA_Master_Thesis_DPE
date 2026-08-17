@@ -1115,7 +1115,474 @@ def train_controller_ol_and_cl(
         summary_results_df,
     )
 
-def train_controller_open_loop(
+import torch
+import numpy as np
+import pandas as pd
+
+def simulate_closed_loop(
+    model,
+    plant,
+    y_ref_trajectory,      # Shape: (T, dim_y)
+    u_gt_trajectory=None,  # Shape: (T, dim_u) - Ground truth control for warmup
+    x_initial=None,        # Initial plant state
+    scaler_x=None,
+    scaler_y=None,
+    n_y=1,
+    n_u=1,
+    dt=0.01,
+    u_min=None,
+    u_max=None,
+    device="cpu"
+):
+    """
+    Closed-loop plant simulation with warm-up buffer initialization and scaler feature matching.
+    
+    Feature Vector Layout per step k:
+        X(k) = [ y(k), y(k-1), ..., y(k - n_y + 1),   (n_y features)
+                 y_ref(k + 1),                        (1 target feature)
+                 u(k-1), u(k-2), ..., u(k - n_u) ]    (n_u features)
+        Total features = n_y + 1 + n_u
+    """
+    T, dim_y = y_ref_trajectory.shape
+    dim_u = u_gt_trajectory.shape[-1] if u_gt_trajectory is not None else 1
+    
+    # Minimum steps required before model takes over closed-loop control
+    k_warmup = max(n_y, n_u, n_y + n_u)
+
+    # Initialize plant state
+    if x_initial is not None:
+        plant_state = x_initial
+    elif hasattr(plant, 'get_initial_state'):
+        plant_state = plant.get_initial_state()
+    else:
+        plant_state = np.zeros_like(x_initial) if x_initial is not None else None
+
+    # Storage arrays for trajectory tracking
+    y_sim_hist = []
+    u_sim_hist = []
+    x_sim_hist = []
+
+    # Obtain initial output y(0)
+    if hasattr(plant, 'get_y'):
+        y_curr = plant.get_y(plant_state, 0)
+    else:
+        y_curr = y_ref_trajectory[0].copy()
+
+    for k in range(T):
+        # ----------------------------------------------------
+        # 1. WARM-UP PHASE (k < k_warmup)
+        # Apply ground truth u_gt to seed history buffers
+        # ----------------------------------------------------
+        if k < k_warmup:
+            if u_gt_trajectory is not None:
+                u_apply = u_gt_trajectory[k].copy()
+            else:
+                u_apply = np.zeros(dim_u)
+        
+        # ----------------------------------------------------
+        # 2. CLOSED-LOOP NEURAL CONTROL PHASE (k >= k_warmup)
+        # ----------------------------------------------------
+        else:
+            # Construct Past Output Window: [y(k), y(k-1), ..., y(k - n_y + 1)]
+            past_y_list = [y_sim_hist[k - i] for i in range(n_y)]
+            past_y_flat = np.concatenate(past_y_list, axis=-1)  # (n_y * dim_y,)
+
+            # Target reference output for next step: y_ref(k + 1)
+            k_ref = min(k + 1, T - 1)
+            target_y_flat = y_ref_trajectory[k_ref].flatten()    # (1 * dim_y,)
+
+            # Construct Past Input Window: [u(k-1), u(k-2), ..., u(k - n_u)]
+            past_u_list = [u_sim_hist[k - 1 - i] for i in range(n_u)]
+            past_u_flat = np.concatenate(past_u_list, axis=-1)  # (n_u * dim_u,)
+
+            # Concatenate features into exact shape expected by scaler_x:
+            # (n_y * dim_y) + (1 * dim_y) + (n_u * dim_u)
+            feat_vector = np.hstack([past_y_flat, target_y_flat, past_u_flat]).reshape(1, -1)
+
+            # Apply scaler transform
+            if scaler_x is not None:
+                feat_scaled = scaler_x.transform(feat_vector)
+            else:
+                feat_scaled = feat_vector
+
+            # Reshape into (batch_size=1, seq_len=1, feature_dim)
+            x_tensor = torch.tensor(feat_scaled, dtype=torch.float32).unsqueeze(0).to(device)
+
+            # Neural network prediction
+            with torch.no_grad():
+                if hasattr(model, 'reset_memory'):
+                    model.reset_memory(batch_size=1, device=device)
+                u_pred_scaled = model(x_tensor).cpu().numpy().reshape(1, -1)
+
+            # Inverse scale control output
+            if scaler_y is not None:
+                u_pred_unscaled = scaler_y.inverse_transform(u_pred_scaled).flatten()
+            else:
+                u_pred_unscaled = u_pred_scaled.flatten()
+
+            # Actuator output saturation / clipping
+            if u_min is not None or u_max is not None:
+                u_apply = np.clip(u_pred_unscaled, a_min=u_min, a_max=u_max)
+            else:
+                u_apply = u_pred_unscaled
+
+        # ----------------------------------------------------
+        # 3. STEP PLANT DYNAMICS FORWARD
+        # ----------------------------------------------------
+        if hasattr(plant, 'step'):
+            plant_state = plant.step(plant_state, u_apply, dt)
+            y_curr = plant.get_y(plant_state) if hasattr(plant, 'get_y') else plant_state[:dim_y]
+        else:
+            y_curr = y_ref_trajectory[k]  # Fallback dummy step
+
+        # Append step results to history
+        y_sim_hist.append(np.atleast_1d(y_curr))
+        u_sim_hist.append(np.atleast_1d(u_apply))
+        x_sim_hist.append(np.atleast_1d(plant_state) if plant_state is not None else np.array([]))
+
+    return np.array(y_sim_hist), np.array(u_sim_hist), np.array(x_sim_hist)
+
+
+import copy
+import torch
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
+
+def train_and_validate_controller(
+    model,
+    train_data,       # Tuple: (Y_train, U_train)
+    test_data,        # Tuple: (Y_test, U_test)
+    val_data,         # Tuple: (Y_val, U_val, X_val)
+    hyperparam_config,
+    plant=None,       # Plant object implementing get_initial_state, get_y, and step
+    dirname=".",
+    show_plots=False,
+    run_closed_loop_sim=True,
+    u_min=None,
+    u_max=None
+):
+    """
+    Plant-agnostic inverse neural controller training and dual-mode validation pipeline
+    with 3-row stacked plotting (Inputs u, Outputs y, States x).
+    """
+    # --- EXTRACT CONFIGURATION ---
+    train_cfg = hyperparam_config["train"]
+    device = train_cfg["device"]
+    dt = hyperparam_config["training_data_cfg"]["dt"]
+
+    lr = train_cfg["lr"]
+    epochs = train_cfg["epochs"]
+    n_y = train_cfg["n_y"]
+    n_u = train_cfg["n_u"]
+    mini_batch_size = train_cfg["mini_batch_size"]
+    val_patience = train_cfg["val_patience_epochs"]
+    min_delta = train_cfg["val_min_delta"]
+
+    Y_train, U_train = train_data
+    Y_test, U_test   = test_data
+    Y_val, U_val, X_val = val_data
+
+    # ==========================================
+    # 1. CREATE SLIDING WINDOW DATASETS
+    # ==========================================
+    print(f"🔄 Creating sliding window datasets (n_y={n_y}, n_u={n_u})...")
+    X_train_raw, Y_train_raw = create_inverse_controller_dataset(Y_trajectories=Y_train, U_trajectories=U_train, n_y=n_y, n_u=n_u)
+    X_test_raw,  Y_test_raw  = create_inverse_controller_dataset(Y_trajectories=Y_test,  U_trajectories=U_test,  n_y=n_y, n_u=n_u)
+    X_val_raw,   Y_val_raw   = create_inverse_controller_dataset(Y_trajectories=Y_val,   U_trajectories=U_val,   n_y=n_y, n_u=n_u)
+
+    N_train, seq_len, dim_x = X_train_raw.shape
+    dim_y = Y_train_raw.shape[-1]
+    N_test = X_test_raw.shape[0]
+    N_val  = X_val_raw.shape[0]
+
+    # ==========================================
+    # 2. FIT SCALERS (TRAINING SET ONLY)
+    # ==========================================
+    print("⚖️ Fitting StandardScalers on Training dataset...")
+    scaler_x = StandardScaler()
+    scaler_y = StandardScaler()
+
+    train_x_flat = X_train_raw.reshape(-1, dim_x)
+    train_y_flat = Y_train_raw.reshape(-1, dim_y)
+
+    scaler_x.fit(train_x_flat)
+    scaler_y.fit(train_y_flat)
+
+    save_scaler_object(scaler_x, dirname=dirname, filename="scaler_x")
+    save_scaler_object(scaler_y, dirname=dirname, filename="scaler_y")
+
+    # Transform all datasets
+    train_x = torch.tensor(scaler_x.transform(train_x_flat).reshape(N_train, seq_len, dim_x), dtype=torch.float32)
+    train_y = torch.tensor(scaler_y.transform(train_y_flat).reshape(N_train, seq_len, dim_y), dtype=torch.float32)
+
+    test_x = torch.tensor(scaler_x.transform(X_test_raw.reshape(-1, dim_x)).reshape(N_test, seq_len, dim_x), dtype=torch.float32)
+    test_y = torch.tensor(scaler_y.transform(Y_test_raw.reshape(-1, dim_y)).reshape(N_test, seq_len, dim_y), dtype=torch.float32)
+
+    val_x = torch.tensor(scaler_x.transform(X_val_raw.reshape(-1, dim_x)).reshape(N_val, seq_len, dim_x), dtype=torch.float32)
+    val_y = torch.tensor(scaler_y.transform(Y_val_raw.reshape(-1, dim_y)).reshape(N_val, seq_len, dim_y), dtype=torch.float32)
+
+    # ==========================================
+    # 3. TRAINING LOOP
+    # ==========================================
+    model.to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=train_cfg.get("lr_decay_rate", 1.0))
+
+    loss_name = train_cfg.get("loss_function", "MSELoss").replace("()", "")
+    criterion = NormalizedRMSELoss(reduction='none') if loss_name == "NormalizedRMSELoss" else torch.nn.MSELoss(reduction='none')
+
+    best_test_loss = float('inf')
+    patience_counter = 0
+    train_epoch_history, test_epoch_history = [], []
+
+    print("\n==========================================")
+    print("🎬 STARTING MODEL TRAINING")
+    print("==========================================")
+
+    for epoch in range(epochs):
+        model.train()
+        epoch_train_loss = 0.0
+        shuffled_indices = torch.randperm(N_train)
+
+        for i in range(0, N_train, mini_batch_size):
+            batch_idx = shuffled_indices[i : i + mini_batch_size]
+            b_x, b_y = train_x[batch_idx].to(device), train_y[batch_idx].to(device)
+
+            if hasattr(model, 'reset_memory'):
+                model.reset_memory(batch_size=len(b_x), device=device)
+
+            optimizer.zero_grad()
+            u_pred = model(b_x)
+            loss = criterion(u_pred, b_y).mean()
+            loss.backward()
+            optimizer.step()
+
+            epoch_train_loss += loss.item() * len(b_x)
+
+        scheduler.step()
+        mean_train_loss = epoch_train_loss / N_train
+
+        # Evaluation on test set
+        model.eval()
+        epoch_test_loss = 0.0
+        with torch.no_grad():
+            for i in range(0, N_test, mini_batch_size):
+                b_x, b_y = test_x[i : i + mini_batch_size].to(device), test_y[i : i + mini_batch_size].to(device)
+                if hasattr(model, 'reset_memory'):
+                    model.reset_memory(batch_size=len(b_x), device=device)
+
+                u_pred = model(b_x)
+                epoch_test_loss += criterion(u_pred, b_y).mean().item() * len(b_x)
+
+        mean_test_loss = epoch_test_loss / N_test
+        train_epoch_history.append(mean_train_loss)
+        test_epoch_history.append(mean_test_loss)
+
+        print(f"Epoch {epoch+1:03d}/{epochs:03d} | Train Loss: {mean_train_loss:.6f} | Test Loss: {mean_test_loss:.6f}")
+
+        # Checkpointing & Early Stopping
+        if mean_test_loss < (best_test_loss - min_delta):
+            best_test_loss = mean_test_loss
+            patience_counter = 0
+            save_model(model, dirname=dirname, hyperparam_config=hyperparam_config, filename="best_model")
+        else:
+            patience_counter += 1
+            if patience_counter >= val_patience:
+                print(f"🛑 Early stopping triggered at Epoch {epoch+1}.")
+                break
+
+    # Save Loss Curve
+    plot_signals(
+        t=np.arange(1, len(train_epoch_history) + 1),
+        signals=[np.array(train_epoch_history), np.array(test_epoch_history)],
+        labels=["Train Loss", "Test Loss"],
+        xlabel="Epochs", ylabel="Loss", dirname=dirname, filename="train_test_loss_curve"
+    )
+
+    model.eval()
+
+    # ==========================================
+    # 4. MODE 1: OPEN-LOOP VALIDATION
+    # ==========================================
+    print("\n==========================================")
+    print("🔍 EVALUATING MODE 1: OPEN-LOOP VALIDATION")
+    print("==========================================")
+
+    val_preds = []
+    with torch.no_grad():
+        for i in range(0, N_val, mini_batch_size):
+            b_x = val_x[i : i + mini_batch_size].to(device)
+            if hasattr(model, 'reset_memory'):
+                model.reset_memory(batch_size=len(b_x), device=device)
+            val_preds.append(model(b_x).cpu().numpy())
+
+    val_preds_flat = np.concatenate(val_preds, axis=0).reshape(-1, dim_y)
+    val_trues_flat = val_y.numpy().reshape(-1, dim_y)
+
+    u_val_pred_unscaled = scaler_y.inverse_transform(val_preds_flat).reshape(N_val, seq_len, dim_y)
+    u_val_true_unscaled = scaler_y.inverse_transform(val_trues_flat).reshape(N_val, seq_len, dim_y)
+
+    open_loop_metrics = compute_trajectory_metrics(u_val_true_unscaled, u_val_pred_unscaled, dt=dt)
+    open_loop_df = pd.DataFrame([{"split": "val", **open_loop_metrics}])
+    save_df_to_csv(open_loop_df, dirname=dirname, filename="open_loop_validation_metrics")
+
+    # --- MODE 1 STACKED PLOTS (Sample Trajectories) ---
+    if show_plots:
+        ol_curves_dir = f"{dirname}/open_loop_curves"
+        num_ol_samples = min(3, len(Y_val))
+
+        for traj_idx in range(num_ol_samples):
+            t_axis = np.arange(len(U_val[traj_idx])) * dt
+
+            # Row 1: Controls (u_true vs u_pred)
+            u_true_i = U_val[traj_idx]
+            u_pred_i = u_val_pred_unscaled[traj_idx] if traj_idx < len(u_val_pred_unscaled) else u_true_i
+
+            # Row 2: Reference Outputs (y_ref)
+            y_ref_i = Y_val[traj_idx]
+
+            # Row 3: True Plant States (x_true)
+            x_true_i = X_val[traj_idx] if X_val is not None else np.zeros((len(t_axis), 1))
+
+            signals_ol = [
+                [u_true_i, u_pred_i],  # Subplot 1: Control inputs
+                [y_ref_i],              # Subplot 2: Reference outputs
+                [x_true_i]              # Subplot 3: States
+            ]
+            labels_ol = [
+                ["True Control u", "Open-Loop Pred u"],
+                ["Reference Output y"],
+                ["Plant State x"]
+            ]
+            ylabels_ol = ["Control u", "Output y", "State x"]
+
+            plot_stacked(
+                t=t_axis,
+                signals=signals_ol,
+                labels=labels_ol,
+                ylabel=ylabels_ol,
+                title=f"Open-Loop Validation (Sample {traj_idx+1})",
+                xlabel="Time (s)",
+                dirname=ol_curves_dir,
+                filename=f"ol_stacked_sample_{traj_idx+1}",
+                show=False
+            )
+
+    # ==========================================
+    # 5. MODE 2: CLOSED-LOOP VALIDATION
+    # ==========================================
+    closed_loop_df = pd.DataFrame()
+    if run_closed_loop_sim and plant is not None:
+        print("\n==========================================")
+        print("🔄 EVALUATING MODE 2: CLOSED-LOOP VALIDATION")
+        print("==========================================")
+
+        closed_loop_records = []
+        cl_curves_dir = f"{dirname}/closed_loop_tracking_curves"
+
+        for traj_idx in range(len(Y_val)):
+            y_ref_traj = Y_val[traj_idx]
+            u_ref_traj = U_val[traj_idx] if U_val is not None else None
+            x_ref_traj = X_val[traj_idx] if X_val is not None else None
+            x_init     = x_ref_traj[0] if x_ref_traj is not None else None
+
+            # Closed-loop simulation with warm-up support
+            y_sim, u_sim, x_sim = simulate_closed_loop(
+                model=model,
+                plant=plant,
+                y_ref_trajectory=y_ref_traj,
+                u_gt_trajectory=u_ref_traj,  # <-- Seeding ground-truth for warmup steps
+                x_initial=x_init,
+                scaler_x=scaler_x,
+                scaler_y=scaler_y,
+                n_y=n_y,
+                n_u=n_u,
+                dt=dt,
+                u_min=u_min,
+                u_max=u_max,
+                device=device
+            )
+
+            # Compute tracking metrics (Y_ref vs Y_sim)
+            cl_metrics = compute_trajectory_metrics(
+                y_ref_traj.reshape(1, -1, y_sim.shape[-1]),
+                y_sim.reshape(1, -1, y_sim.shape[-1]),
+                dt=dt
+            )
+            closed_loop_records.append({"trajectory_id": traj_idx, **cl_metrics})
+
+            # --- MODE 2 STACKED PLOTS (Inputs u, Outputs y, States x) ---
+            if show_plots and traj_idx < 3:
+                t_axis = np.arange(len(y_ref_traj)) * dt
+
+                # Prepare signal components
+                u_signals = [u_sim]
+                u_labels  = ["Simulated Control u"]
+                if u_ref_traj is not None:
+                    u_signals.insert(0, u_ref_traj)
+                    u_labels.insert(0, "Ground Truth u")
+
+                y_signals = [y_ref_traj, y_sim]
+                y_labels  = ["Reference y_ref", "Closed-Loop Output y_sim"]
+
+                x_signals = [x_sim]
+                x_labels  = ["Simulated State x"]
+                if x_ref_traj is not None:
+                    x_signals.insert(0, x_ref_traj)
+                    x_labels.insert(0, "Ground Truth State x")
+
+                # Stack into [Inputs, Outputs, States]
+                signals_cl = [u_signals, y_signals, x_signals]
+                labels_cl  = [u_labels, y_labels, x_labels]
+                ylabels_cl = ["Control u", "Output y", "State x"]
+
+                plot_stacked(
+                    t=t_axis,
+                    signals=signals_cl,
+                    labels=labels_cl,
+                    ylabel=ylabels_cl,
+                    title=f"Closed-Loop Tracking (Trajectory {traj_idx+1})",
+                    xlabel="Time (s)",
+                    dirname=cl_curves_dir,
+                    filename=f"cl_stacked_sample_{traj_idx+1}",
+                    show=False
+                )
+
+        closed_loop_df = pd.DataFrame(closed_loop_records)
+        save_df_to_csv(closed_loop_df, dirname=dirname, filename="closed_loop_validation_metrics")
+
+        print("Closed-Loop Validation Summary (Mean across trajectories):")
+        print(closed_loop_df.mean(numeric_only=True).to_frame().T.to_string(index=False))
+
+    # ==========================================
+    # 6. SUMMARY METRICS REPORT
+    # ==========================================
+    summary_metrics = {
+        "Metric": [
+            "Best Train Loss",
+            "Best Test Loss",
+            "Open-Loop Control MSE",
+            "Closed-Loop Output Tracking MSE"
+        ],
+        "Value": [
+            train_epoch_history[np.argmin(test_epoch_history)],
+            best_test_loss,
+            open_loop_metrics.get("mse", np.nan),
+            closed_loop_df["mse"].mean() if not closed_loop_df.empty else np.nan
+        ]
+    }
+    summary_df = pd.DataFrame(summary_metrics)
+    save_df_to_csv(summary_df, dirname=dirname, filename="final_evaluation_summary")
+
+    print("\n==========================================")
+    print("📊 FINAL EVALUATION SUMMARY")
+    print("==========================================")
+    print(summary_df.to_string(index=False))
+
+    return model, scaler_x, scaler_y, summary_df
+
+def train_controller_open_loop_no_split(
     model,
     Y_trajectories,
     U_trajectories,
@@ -1527,7 +1994,242 @@ def train_controller_open_loop(
         summary_results_df,
     )
 
+#sara
 
+def train_controller_open_loop(
+    model,
+    train_data,
+    test_data,
+    hyperparam_config,
+    plant,
+    dirname,
+    show_plots=False,
+    run_simulation=True,
+    run_sim_with_plots=False,
+):
+    # --- EXTRACT HYPERPARAMETERS ---
+    train_cfg = hyperparam_config["train"]
+    device = train_cfg["device"]
+    dt = hyperparam_config["training_data_cfg"]["dt"]
+
+    lr = train_cfg["lr"]
+    epochs = train_cfg["epochs"]
+    n_y = train_cfg["n_y"]
+    n_u = train_cfg["n_u"]
+    mini_batch_size = train_cfg["mini_batch_size"]
+    patience = train_cfg.get("val_patience_epochs", 10)
+    min_delta = train_cfg.get("val_min_delta", 1e-4)
+
+    plant_cfg = hyperparam_config["plant"]
+    input_dim = plant_cfg["input_dim"]
+    output_dim = plant_cfg["output_dim"]
+
+    # Helper function to extract or slice dataset arrays
+    def _prepare_split(split_data, split_name):
+        arg1, arg2 = split_data
+        
+        print(
+            f"🔄 Slicing {split_name} trajectories with sliding windows (n_y={n_y}, n_u={n_u})..."
+            )
+        return create_inverse_controller_dataset(
+            Y_trajectories=arg1, U_trajectories=arg2, n_y=n_y, n_u=n_u
+        )
+            
+    # --- 1. PREPARE SPLITS ---
+    train_x_raw, train_y_raw = _prepare_split(train_data, "train")
+    test_x_raw, test_y_raw = _prepare_split(test_data, "test")
+
+    print(
+        f"📊 Dataset shapes -> Train: {train_x_raw.shape} | Test: {test_x_raw.shape}"
+    )
+
+    # --- 2. FIT SCALERS ON TRAIN DATA ONLY ---
+    print("⚖️ Fitting StandardScalers on Training Data...")
+    N_train, seq_len_train, dim_x = train_x_raw.shape
+    dim_y = train_y_raw.shape[-1]
+
+    train_x_flat = train_x_raw.reshape(-1, dim_x)
+    train_y_flat = train_y_raw.reshape(-1, dim_y)
+
+    scaler_x = StandardScaler()
+    scaler_y = StandardScaler()
+    scaler_x.fit(train_x_flat)
+    scaler_y.fit(train_y_flat)
+
+    # Transform Train
+    train_x = torch.tensor(
+        scaler_x.transform(train_x_flat).reshape(N_train, seq_len_train, dim_x),
+        dtype=torch.float32,
+    )
+    train_y = torch.tensor(
+        scaler_y.transform(train_y_flat).reshape(N_train, seq_len_train, dim_y),
+        dtype=torch.float32,
+    )
+
+    # Transform Test
+    N_test, seq_len_test, _ = test_x_raw.shape
+    test_x_flat = test_x_raw.reshape(-1, dim_x)
+    test_y_flat = test_y_raw.reshape(-1, dim_y)
+    test_x = torch.tensor(
+        scaler_x.transform(test_x_flat).reshape(N_test, seq_len_test, dim_x),
+        dtype=torch.float32,
+    )
+    test_y = torch.tensor(
+        scaler_y.transform(test_y_flat).reshape(N_test, seq_len_test, dim_y),
+        dtype=torch.float32,
+    )
+
+    # Save Config and Scalers
+    save_to_json(hyperparam_config, dirname, "hyperparam_config")
+    save_scaler_object(scaler_x, dirname=dirname, filename="scaler_x")
+    save_scaler_object(scaler_y, dirname=dirname, filename="scaler_y")
+
+    # --- SETUP MODEL, OPTIMIZER, & LOSS ---
+    model.to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(
+        optimizer, gamma=train_cfg["lr_decay_rate"]
+    )
+
+    loss_name = train_cfg["loss_function"].replace("()", "")
+    if loss_name == "NormalizedRMSELoss":
+        criterion = NormalizedRMSELoss(reduction="none")
+    elif loss_name == "MSELoss":
+        criterion = torch.nn.MSELoss(reduction="none")
+
+    train_epoch_history = []
+    test_epoch_history = []
+    train_batch_loss_history = []
+
+    best_test_loss = float("inf")
+    patience_counter = 0
+
+    # --- 3. TRAINING LOOP (TESTING PERFORMANCE EVERY EPOCH) ---
+    for epoch in range(epochs):
+        model.train()
+        epoch_train_loss_accum = 0.0
+
+        print(f"\n🎬 Starting Epoch {epoch+1}/{epochs}")
+        shuffled_train_indices = torch.randperm(N_train)
+
+        # Batch Training Pass
+        for i in range(0, N_train, mini_batch_size):
+            batch_indices = shuffled_train_indices[i : i + mini_batch_size]
+            current_batch_size = len(batch_indices)
+
+            batch_x = train_x[batch_indices].to(device)
+            batch_y = train_y[batch_indices].to(device)
+
+            if hasattr(model, "reset_memory"):
+                model.reset_memory(
+                    batch_size=current_batch_size, device=device
+                )
+
+            optimizer.zero_grad()
+            u_pred_batch = model(batch_x)
+            raw_loss = criterion(u_pred_batch, batch_y)
+            loss = raw_loss.mean()
+
+            loss.backward()
+            optimizer.step()
+
+            current_loss_val = loss.item()
+            epoch_train_loss_accum += current_loss_val * current_batch_size
+            train_batch_loss_history.append(current_loss_val)
+
+        scheduler.step()
+        mean_train_loss = epoch_train_loss_accum / N_train
+        train_epoch_history.append(mean_train_loss)
+
+        # --- TEST PASS EVERY EPOCH ---
+        model.eval()
+        epoch_test_loss_accum = 0.0
+
+        with torch.no_grad():
+            for i in range(0, N_test, mini_batch_size):
+                batch_test_x = test_x[i : i + mini_batch_size].to(device)
+                batch_test_y = test_y[i : i + mini_batch_size].to(device)
+                current_test_batch_size = len(batch_test_x)
+
+                if hasattr(model, "reset_memory"):
+                    model.reset_memory(
+                        batch_size=current_test_batch_size, device=device
+                    )
+
+                u_test_pred = model(batch_test_x)
+                raw_test_loss = criterion(u_test_pred, batch_test_y)
+                epoch_test_loss_accum += (
+                    raw_test_loss.mean().item() * current_test_batch_size
+                )
+
+        mean_test_loss = (
+            epoch_test_loss_accum / N_test if N_test > 0 else 0.0
+        )
+        test_epoch_history.append(mean_test_loss)
+
+        current_lr = optimizer.param_groups[0]["lr"]
+        print(
+            f"✨ Epoch {epoch+1} Summary | LR: {current_lr:.6e} | Train Loss: {mean_train_loss:.6f} | Test Loss: {mean_test_loss:.6f}"
+        )
+
+        # Checkpoint / Early Stopping on Test Set Performance
+        if mean_test_loss < (best_test_loss - min_delta):
+            best_test_loss = mean_test_loss
+            patience_counter = 0
+            save_model(
+                model,
+                dirname=dirname,
+                hyperparam_config=hyperparam_config,
+                filename="best_model",
+            )
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"🛑 Early stopping triggered at Epoch {epoch+1}.")
+                break
+
+    # --- 4. LOSS PLOTS ---
+    plot_signals(
+        t=np.arange(len(train_batch_loss_history)),
+        signals=[np.array(train_batch_loss_history)],
+        labels=["Batch Training Loss"],
+        xlabel="Optimization Steps",
+        ylabel="Loss",
+        dirname=dirname,
+        filename="granular_training_loss",
+    )
+
+    plot_signals(
+        t=np.arange(1, len(train_epoch_history) + 1),
+        signals=[np.array(train_epoch_history), np.array(test_epoch_history)],
+        labels=["Avg Train Loss", "Avg Test Loss"],
+        xlabel="Epochs",
+        ylabel="Loss",
+        dirname=dirname,
+        filename="epoch_loss_curves",
+    )
+
+    # --- SUMMARY METRICS ---
+    summary_metrics = {
+        "Metric": ["Best Training Loss", "Best Testing Loss"],
+        "Value": [min(train_epoch_history), best_test_loss],
+    }
+    summary_df = pd.DataFrame(summary_metrics)
+
+    print("\n==========================================")
+    print("📊 TRAINING SUMMARY")
+    print("==========================================")
+    print(summary_df.to_string(index=False))
+    print("==========================================\n")
+
+    save_df_to_csv(summary_df, dirname=dirname, filename="training_summary")
+
+    history = {
+        "train_loss": train_epoch_history,
+        "test_loss": test_epoch_history,
+    }
+
+    return model, history, summary_df
 
 def train_controller_sanem(
     model,
@@ -2609,9 +3311,37 @@ def train_controller_closed_loop_online(
                     print(f"🛑 Early stopping fold {fold+1} at Epoch {epoch+1}.")
                     break
 
-    # --- AGGREGATE RESULTS ---
-    fold_best_train_losses = [min(fold_histories[f]["train_loss"]) for f in range(k_folds)]
-    fold_best_val_losses = [min(fold_histories[f]["val_loss"]) for f in range(k_folds)]
+        # --- PLOT LOSS CURVES ---
+        epoch_axis = np.array(fold_histories[fold]["val_epochs"])
+
+        plot_signals(
+            t=np.array(fold_train_batch_indices),
+            signals=[np.array(fold_train_batch_loss)],
+            labels=[f"Fold {fold+1} Total Loss"],
+            xlabel="Optimization Steps",
+            ylabel="Loss",
+            dirname=fold_dir,
+            filename="granular_training_loss"
+        )
+
+        plot_signals(
+            t=epoch_axis,
+            signals=[np.array(fold_train_epoch_history), np.array(fold_val_epoch_history)],
+            labels=["Avg Train Loss", "Avg Val Loss"],
+            xlabel="Epochs",
+            ylabel="Loss",
+            dirname=fold_dir,
+            filename="epoch_validation_loss"
+        )
+
+    # --- AGGREGATE RESULTS ACROSS ALL FOLDS ---
+    fold_best_train_losses = []
+    fold_best_val_losses = []
+
+    for f in range(k_folds):
+        best_val_epoch_idx = np.argmin(fold_histories[f]["val_loss"])
+        fold_best_val_losses.append(fold_histories[f]["val_loss"][best_val_epoch_idx])
+        fold_best_train_losses.append(fold_histories[f]["train_loss"][best_val_epoch_idx])
 
     avg_best_train_loss = float(np.mean(fold_best_train_losses))
     avg_best_val_loss = float(np.mean(fold_best_val_losses))
@@ -2634,6 +3364,12 @@ def train_controller_closed_loop_online(
     print("==========================================")
     print(summary_results_df.to_string(index=False))
     print("==========================================\n")
+
+    save_df_to_csv(
+        summary_results_df,
+        dirname=dirname,
+        filename="k_fold_cross_validation_summary"
+    )
 
     return (
         fold_histories,
@@ -2792,6 +3528,7 @@ def train_controller_closed_loop_offline(
         best_val_loss = float("inf")
         patience_counter = 0
 
+        # --- TRAINING LOOP ---
         for epoch in range(epochs):
             model.train()
             epoch_train_loss_accum = 0.0
@@ -2986,9 +3723,37 @@ def train_controller_closed_loop_offline(
                     print(f"🛑 Early stopping fold {fold+1} at Epoch {epoch+1}.")
                     break
 
-    # --- AGGREGATE RESULTS ---
-    fold_best_train_losses = [min(fold_histories[f]["train_loss"]) for f in range(k_folds)]
-    fold_best_val_losses = [min(fold_histories[f]["val_loss"]) for f in range(k_folds)]
+        # --- PLOT LOSS CURVES ---
+        epoch_axis = np.array(fold_histories[fold]["val_epochs"])
+
+        plot_signals(
+            t=np.array(fold_train_batch_indices),
+            signals=[np.array(fold_train_batch_loss)],
+            labels=[f"Fold {fold+1} Total Loss"],
+            xlabel="Optimization Steps",
+            ylabel="Loss",
+            dirname=fold_dir,
+            filename="granular_training_loss"
+        )
+
+        plot_signals(
+            t=epoch_axis,
+            signals=[np.array(fold_train_epoch_history), np.array(fold_val_epoch_history)],
+            labels=["Avg Train Loss", "Avg Val Loss"],
+            xlabel="Epochs",
+            ylabel="Loss",
+            dirname=fold_dir,
+            filename="epoch_validation_loss"
+        )
+
+    # --- AGGREGATE RESULTS ACROSS ALL FOLDS ---
+    fold_best_train_losses = []
+    fold_best_val_losses = []
+
+    for f in range(k_folds):
+        best_val_epoch_idx = np.argmin(fold_histories[f]["val_loss"])
+        fold_best_val_losses.append(fold_histories[f]["val_loss"][best_val_epoch_idx])
+        fold_best_train_losses.append(fold_histories[f]["train_loss"][best_val_epoch_idx])
 
     avg_best_train_loss = float(np.mean(fold_best_train_losses))
     avg_best_val_loss = float(np.mean(fold_best_val_losses))
@@ -3011,6 +3776,12 @@ def train_controller_closed_loop_offline(
     print("==========================================")
     print(summary_results_df.to_string(index=False))
     print("==========================================\n")
+
+    save_df_to_csv(
+        summary_results_df,
+        dirname=dirname,
+        filename="k_fold_cross_validation_summary"
+    )
 
     return (
         fold_histories,

@@ -80,7 +80,7 @@ def objective(trial, model_class, Y_trajectories, U_trajectories, X_states, base
     model = model_class(config)
 
     # --- 2. EXECUTE CONTROLLER TRAINING ---
-    fold_histories, dict, mean_cv_val_loss = train_controller(
+    fold_histories, dict, mean_cv_val_loss = train_controller_open_loop(
         model=model,
         Y_trajectories=Y_trajectories,
         U_trajectories=U_trajectories,
@@ -212,7 +212,7 @@ def evaluate_dataset_size_scaling(
             controller = TransformerInverseController(hyperparam_config=hyperparam_config)
 
             # 4. Train model on subsetted dataset
-            _, metrics = train_controller(
+            _, metrics = train_controller_open_loop(
                 model=controller,
                 Y_trajectories=Y_sub,
                 U_trajectories=U_sub,
@@ -278,12 +278,13 @@ def evaluate_dataset_size_scaling(
 if __name__ == "__main__":
 
     # Instantiate plant using hyperparameters.
-    hyperparam_config = hyperparam_config_ChemostatPlant
+    dirname = "results/run_1"
+    hyperparam_config = hyperparam_config_TrophophasePlant
     
-    plant = ChemostatPlant(hyperparam_config=hyperparam_config)
+    plant = TrophophasePlant(hyperparam_config=hyperparam_config)
     
     dataset_path = (
-       "results/2026-08-11/2026-08-11_19-02-40/ChemostatPlant_training_data_run_1/dataset/2026-08-11_19-02-40_training_data.pt"
+       "results/2026-08-17/2026-08-17_22-44-04/TrophophasePlant_training_data_run_1/dataset/2026-08-17_22-44-04_training_data.pt"
     )
     
     # Load the dataset from disk. 
@@ -293,9 +294,30 @@ if __name__ == "__main__":
     U_trajectories=dataset["u"]
     X_states=dataset["states"]
 
+    # Set seed for reproducibility
+    np.random.seed(42)
+    N_total = len(Y_trajectories)
+    indices = np.random.permutation(N_total)
 
+    # Calculate split sizes (70% train, 15% test, 15% val)
+    n_train = int(0.70 * N_total)
+    n_test  = int(0.15 * N_total)
+
+    train_idx = indices[:n_train]
+    test_idx  = indices[n_train : n_train + n_test]
+    val_idx   = indices[n_train + n_test:]
+
+    # Slice data along axis 0
+    train_data = (Y_trajectories[train_idx], U_trajectories[train_idx])
+    save_training_dataset(train_data, dirname, "train_data")
+    test_data  = (Y_trajectories[test_idx],  U_trajectories[test_idx])
+    save_training_dataset(test_data, dirname, "test_data")
+
+    X_val = X_states[val_idx] if X_states is not None else None
+    val_data   = (Y_trajectories[val_idx],   U_trajectories[val_idx], X_val)
+    save_training_dataset(val_data, dirname, "val_data")
     # Initialize the inverse controller.
-    controller = LSTMInverseController(hyperparam_config=hyperparam_config)
+    controller = MambaInverseController(hyperparam_config=hyperparam_config)
 
     # Directory name to store training artifacts (models, plots, logs).
     dirname_open_loop = f"{plant.__class__.__name__}_training_open_loop"
@@ -312,6 +334,17 @@ if __name__ == "__main__":
     save_to_json(hyperparam_config, dirname_closed_loop_online,"hyperparam_config")   
 
     # run_optuna_study()
+
+    train_controller_open_loop(
+        model=controller,
+        train_data=train_data,
+        test_data=test_data,
+        hyperparam_config=hyperparam_config,
+        plant=plant,
+        dirname="results/run_1"
+    )
+
+
     
     # train_controller_sanem(
     #     controller,
@@ -325,36 +358,27 @@ if __name__ == "__main__":
     #     run_sim_with_plots=False
     # )  
 
-    train_controller_open_loop(
-            controller,
-            Y_trajectories=dataset["y"],      
-            U_trajectories=dataset["u"],
-            X_states=dataset["states"],
-            hyperparam_config=hyperparam_config,
-            plant=plant,
-            dirname=dirname_open_loop
-        )  
 
-    train_controller_closed_loop_offline(
-                controller,
-                Y_trajectories=dataset["y"],      
-                U_trajectories=dataset["u"],
-                X_states=dataset["states"],
-                hyperparam_config=hyperparam_config,
-                plant=plant,
-                dirname=dirname_closed_loop_offline
-            )  
+    # train_controller_closed_loop_offline(
+    #             controller,
+    #             Y_trajectories=dataset["y"],      
+    #             U_trajectories=dataset["u"],
+    #             X_states=dataset["states"],
+    #             hyperparam_config=hyperparam_config,
+    #             plant=plant,
+    #             dirname=dirname_closed_loop_offline
+    #         )  
 
 
-    train_controller_closed_loop_online(
-                controller,
-                Y_trajectories=dataset["y"],      
-                U_trajectories=dataset["u"],
-                X_states=dataset["states"],
-                hyperparam_config=hyperparam_config,
-                plant=plant,
-                dirname=dirname_closed_loop_online
-            )  
+    # train_controller_closed_loop_online(
+    #             controller,
+    #             Y_trajectories=dataset["y"],      
+    #             U_trajectories=dataset["u"],
+    #             X_states=dataset["states"],
+    #             hyperparam_config=hyperparam_config,
+    #             plant=plant,
+    #             dirname=dirname_closed_loop_online
+    #         )  
 
 
     # ESN
