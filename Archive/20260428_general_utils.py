@@ -5,11 +5,11 @@ import numpy as np
 import pandas as pd
 
 # import machine learning modules
-from sample.classes.controllers.MambaInverseController import MambaInverseController
-from src.sample.decorators.general_decorators import *
-from sample.utils.saving_and_loading_utils import *
-from src.sample.config import *
-from src.sample.utils.plotting_utils import plot_signals
+from seqControl.sample.classes.controllers.MambaInverseController import MambaInverseController
+from seqControl.sample.decorators.general_decorators import *
+from seqControl.sample.utils.saving_and_loading_utils import *
+from seqControl.sample.config import *
+from seqControl.sample.utils.plotting_utils import plot_signals
 import torch
 import torch.nn as nn
 import pandas as pd
@@ -100,7 +100,7 @@ def GPUtrain_controllerFFT(model, plant, epochs, seq_len, dt, model_config, batc
     master_df = pd.concat(all_data_frames, ignore_index=True)
 
     # Save master CSV
-    from src.sample.utils.general_utils import save_model, save_df_to_csv, plot_signals
+    from seqControl.sample.utils.general_utils import save_model, save_df_to_csv, plot_signals
     save_df_to_csv(master_df, dirname=dirname, filename="all_training_data_summary")
 
     # Save Loss
@@ -306,7 +306,7 @@ def GPUtrain_controller(model, plant, epochs, seq_len, dt, model_config, batch_s
     df_loss = pd.DataFrame({"epoch": range(1, epochs + 1), "loss": loss_history})
     
     # Import locally to avoid circular dependencies
-    from src.sample.utils.general_utils import save_model, save_df_to_csv, plot_signals
+    from seqControl.sample.utils.general_utils import save_model, save_df_to_csv, plot_signals
     
     save_model(model, dirname=dirname, model_config=model_config, filename="trained_controller")
     save_df_to_csv(df_loss, dirname=dirname, filename="training_loss_history")
@@ -447,7 +447,7 @@ def simulate_control(model, plant, reference_signal, duration, dt, device, dirna
 import torch
 import numpy as np
 import pandas as pd
-from src.sample.utils.general_utils import save_df_to_csv, plot_signals
+from seqControl.sample.utils.general_utils import save_df_to_csv, plot_signals
 
 def GPUSimulateControl(model, plant, reference_signal, duration, dt, device, dirname):
     model.eval()

@@ -1,1 +1,0 @@
-2026-07-29 20:53:11 - Duplicate key in file 'src/sample/style.mplstyle', line 75 ('legend.fontsize: 8')

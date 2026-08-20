@@ -5,7 +5,7 @@ Sonnleitner yeast fermentation
 
 import numpy as np
 import pandas as pd
-from sample.utils.saving_and_loading_utils import save_df_to_csv
+from seqControl.sample.utils.saving_and_loading_utils import save_df_to_csv
 # ===============================
 # Parameters
 # ===============================

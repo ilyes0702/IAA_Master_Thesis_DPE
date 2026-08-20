@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
 from mamba_ssm import Mamba
-from src.sample.utils.plotting_utils import plot_signals
+from seqControl.sample.utils.plotting_utils import plot_signals
 # Device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
