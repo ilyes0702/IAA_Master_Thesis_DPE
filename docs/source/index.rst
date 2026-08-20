@@ -1,17 +1,46 @@
-.. SeqControl documentation master file, created by
-   sphinx-quickstart on Thu Aug 20 13:02:06 2026.
+.. ChemPlot documentation master file, created by
+   sphinx-quickstart on Mon Feb  1 12:13:17 2021.
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-SeqControl documentation
-========================
+.. image:: korosensei.jpg
+  :width: 600
+  :align: center
 
-Add your content using ``reStructuredText`` syntax. See the
-`reStructuredText <https://www.sphinx-doc.org/en/master/usage/restructuredtext/index.html>`_
-documentation for details.
+.. raw:: html   
 
+    <h3> 
+    
+.. raw:: html
+
+    </h3>
+
+SeqControl: A Python library for data-driven control of dynamical systems
+===========================================================
+
+**Date**: |today| **Version**: |version|
+
+In the last decades, Machine Learning (ML) applications have had a great impact on molecular
+and material science. However, every ML model requires a definition of its applicability domain. 
+We developed a python package, Chemplot, that allows users to plot the chemical space of their
+datasets. Chemplot contains smart algorithms behind which uses both structural and tailored
+similarity. Moreover, it is easy to use even for non-experts.
+For details on the background of ChemPlot you can find `here <https://chemrxiv.org/engage/chemrxiv/article-details/617180aaff3ba991f99af550>`_ our paper.
+
+This guide provides the user with the explanantion of ChemPlot concepts and functionality.
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
+   :caption: User Manual:
+   
+   user_guide/installation
+   user_guide/getting_started
+   
+   citation
+   
+.. toctree::
+   :caption: API Reference:
+
+   api
+
 
