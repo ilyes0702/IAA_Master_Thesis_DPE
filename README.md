@@ -37,7 +37,8 @@ If you simply want to use `SeqControl` in your Python scripts without modifying 
 2. Run the following command:
 
 
-```pip install git+[https://github.com/ilyes0702/IAA_Master_Thesis_DPE.git](https://github.com/ilyes0702/IAA_Master_Thesis_DPE.git)
+```
+pip install git+[https://github.com/ilyes0702/IAA_Master_Thesis_DPE.git](https://github.com/ilyes0702/IAA_Master_Thesis_DPE.git)
 ```
 To install a specific version or release tag in the future, append @tag_name to the URL:
 ```
@@ -53,7 +54,8 @@ If you want to modify the source code, build new features, or run tests, set up 
 Step 1: Clone the Repository
 Download a local copy of the repository using git:
 
-```git clone https://github.com/ilyes0702/IAA_Master_Thesis_DPE.git
+```
+git clone https://github.com/ilyes0702/IAA_Master_Thesis_DPE.git
 cd IAA_Master_Thesis_DPE
 ```
 
@@ -65,9 +67,7 @@ Step 2: Install in Editable Mode
 Install the package using the -e flag. This links your environment to the source files in src/seqControl so that any changes you make to the code take effect immediately:
 
 ```
-
 pip install -e .
-
 ```
 
 
