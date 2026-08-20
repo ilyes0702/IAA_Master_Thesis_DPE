@@ -1,8 +1,7 @@
-IAA_Master_Thesis_DPE
-=====================
+seqControl
+==========
 
 .. toctree::
    :maxdepth: 4
 
-   noxfile
-   tests
+   seqControl
