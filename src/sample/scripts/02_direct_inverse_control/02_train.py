@@ -29,7 +29,7 @@ from src.sample.classes.controllers.TransformerInverseController import *
 from src.hyperparam_config import *
 
 from src.sample.utils.training_utils import * 
-from src.sample.utils.saving_utils import *
+from sample.utils.saving_and_loading_utils import *
 from src.sample.utils.plotting_utils import *
 
 # Device configuration: use GPU if available, otherwise fallback to CPU.
@@ -335,7 +335,7 @@ if __name__ == "__main__":
 
     # run_optuna_study()
 
-    train_controller_open_loop(
+    train_controller_closed_loop_offline(
         model=controller,
         train_data=train_data,
         test_data=test_data,

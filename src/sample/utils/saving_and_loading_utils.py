@@ -69,7 +69,96 @@ def save_model(model, dirname, hyperparam_config, filename="trained_controller")
     torch.save(checkpoint, full_path)
     print(f"💾 Model saved to: {full_path}")
 
+def load_scaler(scaler_dir):
+    """
+    Loads the fitted scaler_x and scaler_y for a specific fold.
+    
+    Args:
+        fold_dir (str): Path to the specific fold directory (e.g., 'name_directory/fold_1')
+    Returns:
+        scaler_x, scaler_y: The deserialized scikit-learn StandardScaler objects
+    """
+    with open(scaler_dir, "rb") as f:
+        scaler = pickle.load(f)
+        
+        
+    print(f"✅ Successfully loaded scalers from {scaler_dir}")
+    return scaler
 
+
+#=== FUNCTION TO LOAD TRAINED MODEL ===#
+def load_model(model_class, checkpoint_path, device="cuda"):
+    """
+    Loads a trained PyTorch model state dictionary and configuration from a checkpoint file.
+
+    Parameters:
+    - model_class (class): The class of the model to be instantiated.
+    - checkpoint_path (str): The system file path pointing to the saved checkpoint file (.pt).
+    - device (str or torch.device, optional): The target computing device (e.g., 'cpu', 'cuda') 
+      where the model parameters will be mapped. If None, it automatically falls back to 
+      GPU if available, otherwise CPU.
+
+    Returns:
+    - model (MambaInverseController): The instantiated model restored to its trained weights 
+      and set to evaluation mode.
+
+    The function unpacks a saved PyTorch checkpoint dictionary, extracts the embedded 
+    hyperparameter configuration dictionary, and uses it to dynamically instantiate the 
+    `MambaInverseController` architecture. It handles safe tensor device reassignment, 
+    maps the recovered parameters to the model structure, and locks the model layer states 
+    into evaluation mode (`.eval()`) for reliable forward-pass inference.
+    """
+    
+    # Load the serialized checkpoint dictionary from disk
+    checkpoint = torch.load(checkpoint_path, map_location="cuda", weights_only=False)
+    
+    # Extract structural configurations and instantiate the network
+    hyperparam_config = checkpoint['config']
+    model = model_class(hyperparam_config)
+    
+    # Transfer the model parameters to the target processing device
+    model = model.to(device)
+    
+    # Restore the historical weight state configurations
+    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # Freeze layers into evaluation mode for tracking inference
+    model.eval()
+    
+    return model
+
+def load_model_esn(model_class, checkpoint_path, device=None):
+    """
+    Loads a trained ESN model and configuration from a serialized pickle checkpoint file.
+
+    Parameters:
+    - model_class (class): The class of the ESN model to be instantiated (e.g., ESNInverseController).
+    - checkpoint_path (str): The system file path pointing to the saved pickle checkpoint file (.pkl or .pt).
+    - device (str or torch.device, optional): Ignored for the ESN itself (which runs on CPU/NumPy),
+      but kept in the signature for pipeline compatibility.
+
+    Returns:
+    - model (ESNInverseController): The instantiated ESN model restored to its trained state.
+    """
+    # Load the serialized checkpoint dictionary using pickle
+    with open(checkpoint_path, 'rb') as f:
+        checkpoint = pickle.load(f)
+    
+    # Extract the embedded hyperparameter configuration dictionary
+    hyperparam_config = checkpoint['config']
+    
+    # Instantiate a fresh, uninitialized ESN network structure
+    model = model_class(hyperparam_config)
+    
+    # Restore the underlying trained ReservoirPy Model object instance directly
+    # This recovers the analytically derived Ridge readout weight matrix
+    model.model = checkpoint['model_state_dict']
+    
+    # Safe state boundary check reset
+    if hasattr(model, "load_state_dict"):
+        model.load_state_dict(None)
+        
+    return model
 
 #=== FUNCTION TO SAVE DATAFRAME AS CSV IN SPECIFIED DIRECTORY ===#
 def save_df_to_csv(df, dirname, filename, max_path_length=255):

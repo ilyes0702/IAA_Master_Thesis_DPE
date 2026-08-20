@@ -1,12 +1,9 @@
 FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-# Fix locale issue for Sphinx and Python scripts
-ENV LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8
 
-# Install dependencies (--no-install-recommends keeps the image significantly smaller)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Added sudo, gfortran, and the BLAS/LAPACK/SUNDIALS libraries
+RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     python3-venv \
@@ -25,15 +22,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dvipng \
     ghostscript \
     cm-super \
-    locales \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip while still root
-RUN pip3 install --upgrade pip setuptools wheel
-
-# Create vscode user and configure sudo
-RUN useradd -m -s /bin/bash vscode && \
+# Create vscode user and give them sudo privileges
+RUN useradd -m vscode && \
     echo "vscode ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 USER vscode
 WORKDIR /workspace
+
+RUN pip3 install --upgrade pip

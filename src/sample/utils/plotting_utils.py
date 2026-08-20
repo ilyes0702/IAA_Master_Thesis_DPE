@@ -1,4 +1,4 @@
-from src.sample.utils.saving_utils import save_plot_image
+from sample.utils.saving_and_loading_utils import save_plot_image
 # ADD PROJECT DIRECTORY TO SYSTEM PATH
 import optuna
 # IMPORT DATA PROCESSING MODULES

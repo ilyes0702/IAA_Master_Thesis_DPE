@@ -13,6 +13,7 @@ plt.style.use("src/sample/style.mplstyle")
 import torch
 
 # Utility functions and classes for simulation
+from src.sample.utils.validation_utils import *
 from src.sample.utils.general_utils import *
 from src.hyperparam_config import *
 from src.sample.classes.plants.IdiophasePlant import *
@@ -96,7 +97,7 @@ def main():
         dt=hyperparam_config["training_data_cfg"]["dt"],
         device=hyperparam_config["train"]["device"],
         mode="constant",
-        constant_val=0.2,
+        constant_val=0.015,
     )
 
     r_static_y_2 = generate_reference_trajectory(
@@ -153,16 +154,27 @@ def main():
     model = load_model(MambaInverseController, "results/2026-08-17/2026-08-17_23-08-14/results/run_1/2026-08-17_23-08-14_best_model.pt")
     x_scaler = load_scaler("results/2026-08-17/2026-08-17_23-08-14/results/run_1/scalers/2026-08-17_23-08-14_scaler_x.pkl")
     y_scaler = load_scaler("results/2026-08-17/2026-08-17_23-08-14/results/run_1/scalers/2026-08-17_23-08-14_scaler_y.pkl")
-    simulate_tracking_stateful(
-        model=model,
-        plant=plant,
-        val_data=val_data,  # Tuple (Y_val, U_val, [X_val]) or Dict {"y": ..., "u": ...}
-        hyperparam_config=hyperparam_config,
-        x_scaler=x_scaler,
-        y_scaler=y_scaler,
-        dirname=dirname,
-        mode="closed_loop",  # Options: "open_loop" or "closed_loop"
-        plot_individual_plots=True,
+    # simulate_tracking_stateful(
+    #     model=model,
+    #     plant=plant,
+    #     val_data=val_data,  # Tuple (Y_val, U_val, [X_val]) or Dict {"y": ..., "u": ...}
+    #     hyperparam_config=hyperparam_config,
+    #     x_scaler=x_scaler,
+    #     y_scaler=y_scaler,
+    #     dirname=dirname,
+    #     mode="closed_loop",  # Options: "open_loop" or "closed_loop"
+    #     plot_individual_plots=True,
+    # )
+
+    simulate_tracking_stateful_external_ref_trajectory(
+        model,
+        plant,
+        [r_static_y_1.squeeze()],  # List of reference trajectories, one for each output dimension. Shape: [steps] for each trajectory.
+        hyperparam_config,
+        x_scaler,
+        y_scaler,
+        dirname,
+        plot_individual_plots=False
     )
 
     # comparison_summary = simulate_tracking_stateful_multi_model(

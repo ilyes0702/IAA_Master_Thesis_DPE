@@ -14,7 +14,7 @@ from tslearn.metrics import cdist_dtw
 from tslearn.barycenters import dtw_barycenter_averaging
 from tslearn.preprocessing import TimeSeriesScalerMeanVariance
 
-from src.sample.utils.saving_utils import *
+from sample.utils.saving_and_loading_utils import *
 from src.sample.utils.data_generation_utils import *
 from src.sample.classes.plants.ChemostatPlant import *
 from src.sample.classes.plants.IdiophasePlant import *

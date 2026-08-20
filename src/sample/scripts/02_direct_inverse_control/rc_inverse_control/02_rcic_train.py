@@ -31,7 +31,7 @@ from src.sample.classes.controllers.ESNInverseController import *
 from src.hyperparam_config import *
 
 from src.sample.utils.training_utils import * 
-from src.sample.utils.saving_utils import *
+from sample.utils.saving_and_loading_utils import *
 
 # Device configuration: use GPU if available, otherwise fallback to CPU.
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

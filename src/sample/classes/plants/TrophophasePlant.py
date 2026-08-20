@@ -198,31 +198,6 @@ class TrophophasePlant:
         # Return next state and tracking output evaluated at t + dt
         return state_next, self.get_y(state_next, t + dt)
 
-    # def step(self, state, u, t, dt):
-    #     """
-    #     4th Order Runge-Kutta integration accounting for explicitly time-dependent dynamics.
-    #     """
-    #     x1, x2 = state[:, 0:1], state[:, 1:2]
-        
-    #     # k1 at t
-    #     dx1_1, ds1_1 = self.dynamics(x1, x2, u, t)
-        
-    #     # k2 at t + 0.5*dt
-    #     dx1_2, ds1_2 = self.dynamics(x1 + 0.5*dt*dx1_1, x2 + 0.5*dt*ds1_1, u, t + 0.5*dt)
-        
-    #     # k3 at t + 0.5*dt
-    #     dx1_3, ds1_3 = self.dynamics(x1 + 0.5*dt*dx1_2, x2 + 0.5*dt*ds1_2, u, t + 0.5*dt)
-        
-    #     # k4 at t + dt
-    #     dx1_4, ds1_4 = self.dynamics(x1 + dt*dx1_3, x2 + dt*ds1_3, u, t + dt)
-        
-    #     x1_next = x1 + (dt / 6.0) * (dx1_1 + 2.0*dx1_2 + 2.0*dx1_3 + dx1_4)
-    #     x2_next = x2 + (dt / 6.0) * (ds1_1 + 2.0*ds1_2 + 2.0*ds1_3 + ds1_4)
-        
-    #     state_next = torch.cat([x1_next, x2_next], dim=1)
-        
-    #     # Return next state and the corresponding tracking output at time t + dt
-    #     return state_next, self.get_y(state_next, t + dt)
 
     def get_plot_config(self):
         return [
