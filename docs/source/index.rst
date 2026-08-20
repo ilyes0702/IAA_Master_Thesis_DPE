@@ -22,10 +22,10 @@ SeqControl: A Python library for data-driven control of dynamical systems
 
 In the last decades, Machine Learning (ML) applications have had a great impact on molecular
 and material science. However, every ML model requires a definition of its applicability domain. 
-We developed a python package, Chemplot, that allows users to plot the chemical space of their
-datasets. Chemplot contains smart algorithms behind which uses both structural and tailored
+We developed a python package, X, that allows users to plot the chemical space of their
+datasets. X contains smart algorithms behind which uses both structural and tailored
 similarity. Moreover, it is easy to use even for non-experts.
-For details on the background of SeqControl you can find more information `here <https://chemrxiv.org/engage/chemrxiv/article-details/617180aaff3ba991f99af550>`.
+For details on the background of SeqControl you can find more information here.
 
 Check out the User Guide explanations of the methods used and the functionality.
 

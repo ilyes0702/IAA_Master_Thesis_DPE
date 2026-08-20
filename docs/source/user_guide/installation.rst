@@ -1,94 +1,87 @@
-Installation
-========================
+======================
+Installion
+======================
 
-You can install the latest development version or specific releases of SeqControl directly from its GitHub repository.
+This tutorial guides you through installing **SeqControl** on your local machine, whether you want to use it as a dependency in another project or contribute to its development.
 
-Installing with pip
--------------------
+Prerequisites
+-------------
 
-The easiest way to install directly from GitHub is using ``pip``.
+Before installing, ensure you have the following installed on your system:
 
-Latest Development Version (Main Branch)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+* Python 3.8 or higher
+* ``git`` command line tool
+* ``pip`` (Python package manager)
 
-To install the latest code directly from the ``main`` branch, run:
+Option 1: Quick Install via Git & pip
+--------------------------------------
 
-.. code-block:: bash
+If you simply want to use ``SeqControl`` in your Python scripts without modifying the source code, you can install it directly from GitHub using ``pip``.
 
-    pip install git+https://github.com/ilyes0702/.git
-
-Installing a Specific Branch or Tag
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-If you want to install a specific version, release tag, or branch, append ``@branch-or-tag-name`` 
-to the end of the URL:
+1. Open your terminal or command prompt.
+2. Run the following command:
 
 .. code-block:: bash
 
-    # Install from a specific branch
-    pip install git+https://github.com/your-username/your-repo-name.git@dev
+    pip install git+https://github.com/ilyes0702/IAA_Master_Thesis_DPE.git
 
-    # Install from a specific tag or release
-    pip install git+https://github.com/your-username/your-repo-name.git@v1.0.0
-
-Editable / Developer Installation
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-If you plan to modify the package source code or contribute to development:
+3. To install a specific version or release tag in the future, append ``@tag_name`` to the URL:
 
 .. code-block:: bash
 
-    # Clone the repository
-    git clone https://github.com/your-username/your-repo-name.git
-    cd your-repo-name
+    pip install git+https://github.com/ilyes0702/IAA_Master_Thesis_DPE.git@v1.0.0
 
-    # Install in editable mode
+Option 2: Developer / Local Installation
+---------------------------------------
+
+If you want to modify the source code, build new features, or run tests, set up an editable local installation.
+
+Step 1: Clone the Repository
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+First, download a local copy of the repository using ``git``:
+
+.. code-block:: bash
+
+    git clone https://github.com/ilyes0702/IAA_Master_Thesis_DPE.git
+    cd IAA_Master_Thesis_DPE
+
+Step 2: Install in Editable Mode
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Install the package using the ``-e`` flag. This links your environment to the source files in ``src/seqControl`` so that any changes you make to the code take effect immediately without re-installing:
+
+.. code-block:: bash
+
     pip install -e .
 
-Including Optional Dependencies
--------------------------------
-
-If your package defines optional extras (e.g., ``[dev]`` or ``[docs]`` in ``setup.py`` or ``pyproject.toml``), 
-you can install them by wrapping the package name:
-
-.. code-block:: bash
-
-    pip install "your-package-name[dev] @ git+https://github.com/your-username/your-repo-name.git"
-
-Using Environment Files
------------------------
-
-requirements.txt
-^^^^^^^^^^^^^^^^
-
-To list this GitHub dependency inside a ``requirements.txt`` file, add the following line:
-
-.. code-block:: text
-
-    your-package-name @ git+https://github.com/your-username/your-repo-name.git@v1.0.0
-
-Conda environment.yml
-^^^^^^^^^^^^^^^^^^^^^
-
-To include this package in a Conda ``environment.yml`` file, add it under the ``pip`` section:
-
-.. code-block:: yaml
-
-    name: my_env
-    channels:
-      - defaults
-    dependencies:
-      - python=3.10
-      - pip:
-        - git+https://github.com/your-username/your-repo-name.git@main
-
-Prerequisites & Options
------------------------
-
-.. note::
-   * **Git Requirement:** Ensure ``git`` is installed on your local system and added to your system path.
-   * **Private Repositories:** For private GitHub repositories, ensure your local SSH keys or Personal Access Tokens (PAT) are configured, and use the SSH format:
+.. tip::
+   If you plan to run the test suite or build documentation locally, install the developer dependencies as well:
 
    .. code-block:: bash
 
-       pip install git+ssh://git@github.com/your-username/your-repo-name.git
+       pip install -r requirements.txt
+
+Verifying Your Installation
+---------------------------
+
+To verify that ``SeqControl`` is correctly installed and accessible in your Python environment:
+
+1. Launch a Python interactive shell:
+
+.. code-block:: bash
+
+    python
+
+2. Try importing the module:
+
+.. code-block:: python
+
+    import seqControl
+    print("SeqControl successfully installed!")
+
+3. *(Optional)* If you cloned the repository, run the test suite to ensure all components are functioning properly:
+
+.. code-block:: bash
+
+    pytest
